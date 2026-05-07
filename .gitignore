@@ -1,0 +1,23 @@
+node_modules/
+dist/
+out/
+.DS_Store
+*.log
+
+# Personal Claude Code settings (allowlists, additionalDirectories) — per-machine,
+# not a shared project setting. Use .claude/settings.shared.json if we ever want one.
+.claude/
+
+# Python virtualenv used by the rbx-* scripts (pyrekordbox)
+.venv-rbx/
+
+# Operational run state from rbx-* scripts: rollback logs, merge logs,
+# cluster analyses, relocation candidates. Regenerated per run.
+rbx-rollback-*.json
+rbx-merge-log*.json
+rbx-cluster-analysis.json
+rbx-reloc-candidates.json
+
+# Untracked local secrets — API keys, account identifiers, anything
+# machine- or user-specific that should never land in the repo.
+secrets.json

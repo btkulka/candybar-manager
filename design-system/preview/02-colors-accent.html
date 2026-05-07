@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en"><head><meta charset="UTF-8"/>
+<link rel="stylesheet" href="../colors_and_type.css"/>
+<style>
+  body { margin:0; padding:20px; background:var(--bg-base); width:700px; box-sizing:border-box; }
+  .row { display:grid; grid-template-columns:repeat(4,1fr); gap:10px; }
+  .sw { aspect-ratio:1.6; border-radius:10px; padding:10px; display:flex; flex-direction:column; justify-content:space-between; border:1px solid var(--border-subtle); font-size:11px; color:#05090c; font-weight:600; }
+  .val { font-family:var(--font-mono); font-size:10px; opacity:.75; }
+</style></head>
+<body>
+<div class="row">
+  <div class="sw" style="background:#7fffd4"><span>accent</span><span class="val">#7fffd4</span></div>
+  <div class="sw" style="background:#5ce0b8"><span>accent-dim</span><span class="val">#5ce0b8</span></div>
+  <div class="sw" style="background:rgba(127,255,212,0.15);color:#7fffd4"><span>accent-muted</span><span class="val">rgba 0.15</span></div>
+  <div class="sw" style="background:rgba(127,255,212,0.40);color:#05090c"><span>accent-glow</span><span class="val">rgba 0.40</span></div>
+</div>
+</body></html>

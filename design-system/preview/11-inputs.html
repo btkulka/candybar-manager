@@ -1,0 +1,324 @@
+<!doctype html>
+<html lang="en"><head><meta charset="UTF-8"/>
+<link rel="stylesheet" href="../colors_and_type.css"/>
+<style>
+  body {
+    margin: 0; padding: 32px; background: var(--bg-base); width: 760px; box-sizing: border-box;
+    font-family: var(--font-sans); color: var(--text-primary);
+    display: grid; grid-template-columns: 1fr 1fr; gap: 20px;
+  }
+  .lbl {
+    font-family: var(--font-mono); font-size: 10px; letter-spacing: .16em;
+    text-transform: uppercase; color: var(--text-muted);
+    grid-column: 1 / -1;
+    margin: 8px 0 -4px;
+  }
+
+  /* ============ FLOATING LABEL INPUT ============ */
+  .field {
+    position: relative;
+    padding-top: 10px;
+  }
+  .field input, .field select {
+    font-family: inherit; font-size: .95rem;
+    width: 100%; padding: 14px 14px 12px;
+    background: linear-gradient(180deg, #0f1216 0%, #14181d 100%);
+    color: var(--text-primary);
+    border: 1px solid rgba(255, 255, 255, .06);
+    border-radius: var(--radius-md);
+    box-shadow:
+      inset 0 2px 4px rgba(0, 0, 0, .5),
+      inset 0 -1px 0 rgba(255, 255, 255, .03);
+    transition: all .25s var(--ease-out);
+    box-sizing: border-box;
+  }
+  .field input:focus, .field select:focus {
+    outline: none;
+    border-color: var(--accent);
+    background: linear-gradient(180deg, #121821 0%, #161d26 100%);
+    box-shadow:
+      inset 0 1px 2px rgba(0, 0, 0, .4),
+      0 0 0 4px rgba(127, 255, 212, .14),
+      0 0 28px -4px rgba(127, 255, 212, .35);
+  }
+  .field .floating-label {
+    position: absolute;
+    left: 14px; top: 22px;
+    color: var(--text-muted);
+    font-size: .95rem;
+    pointer-events: none;
+    transition: all .2s var(--ease-out);
+    background: transparent;
+    padding: 0 4px;
+  }
+  .field input:focus ~ .floating-label,
+  .field input:not(:placeholder-shown) ~ .floating-label,
+  .field.filled .floating-label {
+    top: 1px;
+    left: 10px;
+    font-size: 10px;
+    font-family: var(--font-mono);
+    letter-spacing: .14em;
+    text-transform: uppercase;
+    color: var(--accent);
+    background: var(--bg-base);
+  }
+  .field .hint {
+    display: block;
+    margin-top: 6px;
+    font-size: .72rem;
+    color: var(--text-muted);
+    font-family: var(--font-mono);
+    letter-spacing: .04em;
+  }
+
+  /* ============ SEARCH INPUT w/ animated glyph ============ */
+  .search {
+    position: relative;
+  }
+  .search input {
+    width: 100%;
+    padding: 12px 14px 12px 42px;
+    background: linear-gradient(180deg, #0f1216 0%, #14181d 100%);
+    color: var(--text-primary);
+    border: 1px solid rgba(255,255,255,.06);
+    border-radius: 999px;
+    box-shadow:
+      inset 0 2px 4px rgba(0, 0, 0, .5);
+    font-family: inherit; font-size: .9rem;
+    transition: all .25s var(--ease-out);
+    box-sizing: border-box;
+  }
+  .search input:focus {
+    outline: none;
+    border-color: var(--accent);
+    box-shadow:
+      inset 0 1px 2px rgba(0, 0, 0, .4),
+      0 0 0 4px rgba(127, 255, 212, .14),
+      0 0 28px -4px rgba(127, 255, 212, .45);
+  }
+  .search svg {
+    position: absolute; left: 14px; top: 50%;
+    transform: translateY(-50%);
+    width: 16px; height: 16px;
+    stroke: var(--text-muted); stroke-width: 2; fill: none;
+    stroke-linecap: round; stroke-linejoin: round;
+    transition: stroke .2s;
+  }
+  .search input:focus + svg { stroke: var(--accent); }
+
+  /* ============ SWITCH — dopamine version ============ */
+  .switch-wrap {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 14px 18px;
+    background: linear-gradient(180deg, #121519 0%, #0c0e12 100%);
+    border: 1px solid rgba(255,255,255,.05);
+    border-radius: var(--radius-md);
+    box-shadow:
+      inset 0 1px 0 rgba(255,255,255,.04),
+      0 4px 12px -6px rgba(0,0,0,.6);
+    cursor: pointer;
+    transition: all .2s;
+  }
+  .switch-wrap:hover { border-color: rgba(127,255,212,.15); }
+  .switch-wrap .copy { display: flex; flex-direction: column; gap: 3px; }
+  .switch-wrap .t { font-size: .9rem; font-weight: 500; }
+  .switch-wrap .s { font-size: .72rem; color: var(--text-muted); }
+
+  .switch {
+    position: relative; display: inline-block;
+    width: 48px; height: 28px; flex-shrink: 0;
+  }
+  .switch input { opacity: 0; width: 0; height: 0; position: absolute; }
+  .switch .track {
+    position: absolute; inset: 0;
+    background: linear-gradient(180deg, #0a0c10 0%, #14181d 100%);
+    border: 1px solid rgba(255,255,255,.06);
+    border-radius: 14px;
+    cursor: pointer;
+    box-shadow:
+      inset 0 2px 3px rgba(0, 0, 0, .6),
+      inset 0 -1px 0 rgba(255, 255, 255, .03);
+    transition: all .3s cubic-bezier(.34, 1.56, .64, 1);
+  }
+  .switch .thumb {
+    position: absolute;
+    height: 22px; width: 22px;
+    left: 3px; top: 2px;
+    background: radial-gradient(circle at 35% 30%, #5a6470 0%, #2b3139 100%);
+    border-radius: 50%;
+    box-shadow:
+      inset 0 1px 0 rgba(255,255,255,.15),
+      0 2px 4px rgba(0,0,0,.5),
+      0 0 0 1px rgba(0,0,0,.3);
+    transition: all .3s cubic-bezier(.34, 1.56, .64, 1);
+  }
+  .switch input:checked ~ .track {
+    background: linear-gradient(180deg, #1a3a2f 0%, #0e241c 100%);
+    border-color: rgba(127, 255, 212, .35);
+    box-shadow:
+      inset 0 2px 3px rgba(0, 0, 0, .5),
+      inset 0 0 0 1px rgba(127, 255, 212, .15),
+      0 0 18px -4px rgba(127, 255, 212, .5);
+  }
+  .switch input:checked ~ .thumb {
+    transform: translateX(20px);
+    background: radial-gradient(circle at 35% 30%, #c8ffed 0%, #7fffd4 50%, #4dd4b0 100%);
+    box-shadow:
+      inset 0 1px 0 rgba(255,255,255,.6),
+      0 2px 6px rgba(0,0,0,.5),
+      0 0 14px rgba(127, 255, 212, .65);
+  }
+
+  /* ============ FILE DROP ZONE ============ */
+  .dropzone {
+    grid-column: 1 / -1;
+    position: relative;
+    padding: 36px;
+    border: 2px dashed rgba(127, 255, 212, .2);
+    border-radius: var(--radius-md);
+    background:
+      radial-gradient(ellipse at center, rgba(127, 255, 212, .06) 0%, transparent 60%),
+      linear-gradient(180deg, #0f1216 0%, #0a0c10 100%);
+    text-align: center;
+    cursor: pointer;
+    transition: all .3s var(--ease-out);
+    overflow: hidden;
+  }
+  .dropzone::before {
+    content: '';
+    position: absolute; inset: -50%;
+    background: conic-gradient(from 0deg, transparent 0%, rgba(127, 255, 212, .1) 25%, transparent 50%);
+    animation: spin 8s linear infinite;
+    opacity: 0;
+    transition: opacity .4s;
+    pointer-events: none;
+  }
+  .dropzone:hover::before { opacity: 1; }
+  .dropzone:hover {
+    border-color: rgba(127, 255, 212, .5);
+    transform: translateY(-1px);
+    box-shadow: 0 10px 30px -10px rgba(127, 255, 212, .25);
+  }
+  .dropzone > * { position: relative; z-index: 1; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .dropzone .big-icon {
+    width: 48px; height: 48px; margin: 0 auto 10px;
+    display: flex; align-items: center; justify-content: center;
+    background: linear-gradient(180deg, #1a3a2f, #0e241c);
+    border: 1px solid rgba(127, 255, 212, .25);
+    border-radius: 12px;
+    color: var(--accent);
+    box-shadow:
+      inset 0 1px 0 rgba(255,255,255,.08),
+      0 0 20px -4px rgba(127, 255, 212, .35);
+  }
+  .dropzone .big-icon svg { width: 24px; height: 24px; stroke: currentColor; fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+  .dropzone h4 { margin: 0 0 4px; font-size: 1rem; font-weight: 600; }
+  .dropzone p { margin: 0; font-size: .82rem; color: var(--text-muted); }
+  .dropzone .kbd {
+    font-family: var(--font-mono); font-size: .68rem;
+    padding: 2px 6px; border-radius: 4px;
+    background: rgba(255,255,255,.06);
+    border: 1px solid rgba(255,255,255,.08);
+    color: var(--accent);
+    margin: 0 2px;
+  }
+
+  /* ============ RANGE SLIDER ============ */
+  .range-field {
+    grid-column: 1 / -1;
+    padding: 14px 18px;
+    background: linear-gradient(180deg, #121519, #0c0e12);
+    border: 1px solid rgba(255,255,255,.05);
+    border-radius: var(--radius-md);
+  }
+  .range-field .hdr { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 12px; }
+  .range-field .hdr .t { font-size: .9rem; font-weight: 500; }
+  .range-field .hdr .v {
+    font-family: var(--font-mono); font-size: .8rem;
+    color: var(--accent);
+    padding: 2px 8px;
+    background: rgba(127, 255, 212, .1);
+    border: 1px solid rgba(127, 255, 212, .2);
+    border-radius: 4px;
+  }
+  .range {
+    -webkit-appearance: none; appearance: none;
+    width: 100%; height: 6px;
+    background: linear-gradient(90deg, var(--accent) 0% 60%, #1a1f25 60% 100%);
+    border-radius: 3px;
+    box-shadow: inset 0 1px 2px rgba(0,0,0,.5);
+    outline: none;
+  }
+  .range::-webkit-slider-thumb {
+    -webkit-appearance: none; appearance: none;
+    width: 20px; height: 20px;
+    background: radial-gradient(circle at 35% 30%, #c8ffed, #7fffd4 50%, #4dd4b0);
+    border: 1px solid rgba(0,0,0,.5);
+    border-radius: 50%;
+    cursor: grab;
+    box-shadow:
+      inset 0 1px 0 rgba(255,255,255,.6),
+      0 2px 4px rgba(0,0,0,.5),
+      0 0 12px rgba(127, 255, 212, .6);
+  }
+  .range::-webkit-slider-thumb:active { cursor: grabbing; transform: scale(1.08); }
+</style></head>
+<body>
+
+  <div class="lbl">Text inputs · floating label</div>
+  <div class="field filled">
+    <input type="text" value="Strings Of Life" placeholder=" "/>
+    <span class="floating-label">Track title</span>
+    <span class="hint">AIFF · 44.1 kHz · 16-bit</span>
+  </div>
+  <div class="field">
+    <input type="text" placeholder=" "/>
+    <span class="floating-label">Library root</span>
+    <span class="hint">e.g. /Users/you/Music/Track Lab</span>
+  </div>
+
+  <div class="lbl">Search · Select</div>
+  <div class="search">
+    <input type="text" placeholder="Search 1,284 tracks…"/>
+    <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+  </div>
+  <div class="field filled">
+    <select>
+      <option>AIFF (recommended)</option>
+      <option>WAV</option>
+      <option>MP3 320</option>
+    </select>
+    <span class="floating-label">Output format</span>
+  </div>
+
+  <div class="lbl">Toggle switches</div>
+  <label class="switch-wrap">
+    <div class="copy"><span class="t">Floating console</span><span class="s">Show the debug log panel</span></div>
+    <span class="switch"><input type="checkbox" checked/><span class="track"></span><span class="thumb"></span></span>
+  </label>
+  <label class="switch-wrap">
+    <div class="copy"><span class="t">Auto-fix tag casing</span><span class="s">On scan · lossless metadata only</span></div>
+    <span class="switch"><input type="checkbox"/><span class="track"></span><span class="thumb"></span></span>
+  </label>
+
+  <div class="lbl">Range · Drop zone</div>
+
+  <div class="range-field">
+    <div class="hdr">
+      <span class="t">Fuzzy match threshold</span>
+      <span class="v">0.60</span>
+    </div>
+    <input class="range" type="range" min="0" max="100" value="60"/>
+  </div>
+
+  <div class="dropzone">
+    <div class="big-icon">
+      <svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+    </div>
+    <h4>Drop a CSV or Rekordbox XML here</h4>
+    <p>or click to browse · press <span class="kbd">⌘</span><span class="kbd">V</span> to paste a playlist URL</p>
+  </div>
+
+</body></html>

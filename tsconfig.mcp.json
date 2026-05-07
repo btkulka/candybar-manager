@@ -1,0 +1,21 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "CommonJS",
+    "moduleResolution": "Node",
+    "outDir": "dist/mcp",
+    "rootDir": "src",
+    "strict": true,
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "skipLibCheck": true
+  },
+  "include": [
+    "src/mcp-server.ts",
+    "src/lib/trackHealthCheck.ts",
+    "src/lib/trackConverter.ts",
+    "src/lib/constants.ts",
+    "src/lib/fileUtils.ts",
+    "src/types.ts"
+  ]
+}

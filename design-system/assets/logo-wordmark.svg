@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 220 40" fill="none" aria-hidden="true">
+  <rect x="4" y="4" width="32" height="32" rx="7" fill="rgba(127,255,212,0.15)" stroke="rgba(127,255,212,0.5)" stroke-width="2"></rect>
+  <circle cx="20" cy="20" r="8" fill="none" stroke="#7fffd4" stroke-width="2"></circle>
+  <circle cx="20" cy="20" r="2.5" fill="#7fffd4"></circle>
+  <text x="50" y="26" font-family="Inter, system-ui, sans-serif" font-size="18" font-weight="700" fill="#f0f4f8" letter-spacing="-0.4">Track Lab</text>
+</svg>

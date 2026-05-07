@@ -1,0 +1,1502 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark" />
+    <title>Track Lab</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="app">
+      <!-- Side Navigation -->
+      <aside class="sidenav">
+        <div class="sidenav-brand">
+          <svg class="logo topbar-logo" viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+            <rect x="3" y="3" width="26" height="26" rx="6" fill="var(--accent-muted)" stroke="var(--accent-dim)"/>
+            <circle cx="16" cy="16" r="7" fill="none" stroke="var(--accent)"/>
+            <circle cx="16" cy="16" r="2" fill="var(--accent)" stroke="none"/>
+          </svg>
+          <span class="topbar-brand">Track Lab</span>
+        </div>
+        <nav class="topbar-nav">
+          <button class="nav-link active" data-page="library" data-tooltip="Library">
+            <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M9 18V5l12-2v13"/>
+              <circle cx="6" cy="18" r="3"/>
+              <circle cx="18" cy="16" r="3"/>
+            </svg>
+            <span>Library</span>
+          </button>
+          <button class="nav-link" data-page="organize" data-tooltip="Organize by artist">
+            <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
+            </svg>
+            <span>Organize</span>
+          </button>
+          <button class="nav-link" data-page="source" data-tooltip="Library check + lossless sourcing">
+            <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="11" cy="11" r="8"/>
+              <line x1="21" y1="21" x2="16.65" y2="16.65"/>
+              <line x1="11" y1="8" x2="11" y2="14"/>
+              <line x1="8" y1="11" x2="14" y2="11"/>
+            </svg>
+            <span>Sourcing</span>
+          </button>
+          <button class="nav-link" data-page="usb-health" data-tooltip="USB drive health check">
+            <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <rect x="6" y="10" width="12" height="10" rx="1"/>
+              <path d="M9 10V7h6v3"/>
+              <line x1="12" y1="7" x2="12" y2="4"/>
+              <circle cx="12" cy="3" r="1" fill="currentColor" stroke="none"/>
+            </svg>
+            <span>USB</span>
+          </button>
+          <button class="nav-link" data-page="restore" data-tooltip="Restore library from Rekordbox XML">
+            <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M3 12a9 9 0 1 0 3-6.7"/>
+              <path d="M3 3v6h6"/>
+            </svg>
+            <span>Restore</span>
+          </button>
+        </nav>
+      </aside>
+
+      <!-- Main column (player bar + content) -->
+      <div class="app-main">
+        <!-- Top bar: player + indicators -->
+        <header class="topbar">
+        <!-- Center: mini player -->
+        <div class="sidebar-player topbar-player" id="sidebar-player">
+          <div class="sidebar-player-art" id="sidebar-player-art"></div>
+          <div class="sidebar-player-info">
+            <div class="sidebar-player-track" id="sidebar-player-track">
+              <span class="sidebar-player-title" id="sidebar-player-title">No track loaded</span>
+            </div>
+          </div>
+          <div class="sidebar-player-controls">
+            <button class="sidebar-player-btn" id="sidebar-player-play" data-tooltip="Play / Pause" disabled>
+              <svg class="icon-play" viewBox="0 0 24 24" fill="currentColor" stroke="none"><polygon points="6 3 20 12 6 21 6 3"/></svg>
+              <svg class="icon-pause" viewBox="0 0 24 24" fill="currentColor" stroke="none"><rect x="5" y="4" width="4" height="16" rx="1"/><rect x="15" y="4" width="4" height="16" rx="1"/></svg>
+            </button>
+            <div class="sidebar-player-progress-wrap" id="sidebar-player-progress-wrap">
+              <div class="sidebar-player-progress" id="sidebar-player-progress"></div>
+            </div>
+            <span class="sidebar-player-time">
+              <span id="sidebar-player-time">0:00</span>
+              <span class="sidebar-player-time-sep">/</span>
+              <span id="sidebar-player-duration">0:00</span>
+            </span>
+            <div class="sidebar-player-volume">
+              <button class="sidebar-player-btn sidebar-player-mute-btn" id="sidebar-player-mute" data-tooltip="Mute">
+                <svg class="icon-volume" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" fill="currentColor" stroke="none"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/></svg>
+                <svg class="icon-volume-muted" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" fill="currentColor" stroke="none"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/></svg>
+              </button>
+              <input type="range" class="sidebar-player-volume-slider" id="sidebar-player-volume" min="0" max="1" step="0.01" value="1" aria-label="Volume" />
+            </div>
+          </div>
+        </div>
+
+        <!-- Right: status + activity + services + utilities -->
+        <div class="topbar-right">
+          <div class="activity-tray" id="activity-tray">
+            <div class="activity-tray-header">
+              <svg class="activity-tray-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
+              </svg>
+            </div>
+            <div class="activity-tray-jobs" id="activity-jobs"></div>
+          </div>
+          <div class="service-status spotify-status checking" id="spotify-status" title="Click to refresh Spotify connection">
+            <div class="service-loading-dot"></div>
+            <svg class="service-icon spotify-icon" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M12 0C5.4 0 0 5.4 0 12s5.4 12 12 12 12-5.4 12-12S18.66 0 12 0zm5.521 17.34c-.24.359-.66.48-1.021.24-2.82-1.74-6.36-2.101-10.561-1.141-.418.122-.779-.179-.899-.539-.12-.421.18-.78.54-.9 4.56-1.021 8.52-.6 11.64 1.32.42.18.479.659.301 1.02zm1.44-3.3c-.301.42-.841.6-1.262.3-3.239-1.98-8.159-2.58-11.939-1.38-.479.12-1.02-.12-1.14-.6-.12-.48.12-1.021.6-1.141C9.6 9.9 15 10.561 18.72 12.84c.361.181.54.78.241 1.2zm.12-3.36C15.24 8.4 8.82 8.16 5.16 9.301c-.6.179-1.2-.181-1.38-.721-.18-.601.18-1.2.72-1.381 4.26-1.26 11.28-1.02 15.721 1.621.539.3.719 1.02.419 1.56-.299.421-1.02.599-1.559.3z"/>
+            </svg>
+            <span class="spotify-status-text"></span>
+          </div>
+          <div class="service-status soundcloud-status checking" id="soundcloud-status" title="Click to refresh SoundCloud connection">
+            <div class="service-loading-dot"></div>
+            <svg class="service-icon soundcloud-icon" viewBox="0 0 291.319 291.319" fill="currentColor">
+              <path d="M72.83,218.485h18.207V103.832c-6.828,1.93-12.982,5.435-18.207,10.041V218.485z M36.415,140.921v77.436l1.174,0.127 h17.033v-77.682H37.589C37.191,140.812,36.814,140.857,36.415,140.921z M0,179.63c0,14.102,7.338,26.328,18.207,33.147V146.52 C7.338,153.329,0,165.556,0,179.63z M109.245,218.485h18.207v-109.6c-5.444-3.396-11.537-5.972-18.207-7.467V218.485z M253.73,140.803h-10.242c0.519-3.934,0.847-7.932,0.847-12.003c0-50.545-41.044-91.635-91.68-91.635 c-29.792,0-56.202,14.347-72.885,36.423v144.897h155.96c20.751,0,37.59-16.848,37.59-37.59S274.481,140.803,253.73,140.803z M181.66,218.485h18.207V130.417c-5.226-4.143-11.199-7.411-17.716-9.677h-0.491V218.485z"/>
+            </svg>
+            <span class="soundcloud-status-text"></span>
+          </div>
+          <div class="service-status qobuz-status checking" id="qobuz-status" title="Open Qobuz settings">
+            <div class="service-loading-dot"></div>
+            <svg class="service-icon qobuz-icon" viewBox="0 0 24 24" fill="currentColor" aria-label="Qobuz">
+              <path d="M12 2.5a9.5 9.5 0 1 0 5.3 17.38l2.22 2.22 2.12-2.12-2.22-2.22A9.5 9.5 0 0 0 12 2.5zm0 3.3a6.2 6.2 0 1 1 0 12.4 6.2 6.2 0 0 1 0-12.4z"/>
+            </svg>
+            <span class="qobuz-status-text"></span>
+          </div>
+          <div class="service-status beatport-status checking" id="beatport-status" title="Open Beatport settings">
+            <div class="service-loading-dot"></div>
+            <svg class="service-icon beatport-icon" viewBox="0 0 24 24" fill="currentColor" aria-label="Beatport">
+              <path d="M21.429 17.055a7.114 7.114 0 0 1-.794 3.246 6.917 6.917 0 0 1-2.181 2.492 6.698 6.698 0 0 1-3.063 1.163 6.653 6.653 0 0 1-3.239-.434 6.796 6.796 0 0 1-2.668-1.932 7.03 7.03 0 0 1-1.481-2.983 7.124 7.124 0 0 1 .049-3.345 7.015 7.015 0 0 1 1.566-2.937l-4.626 4.73-2.421-2.479 5.201-5.265a3.791 3.791 0 0 0 1.066-2.675V0h3.41v6.613a7.172 7.172 0 0 1-.519 2.794 7.02 7.02 0 0 1-1.559 2.353l-.153.156a6.768 6.768 0 0 1 3.49-1.725 6.687 6.687 0 0 1 3.845.5 6.873 6.873 0 0 1 2.959 2.564 7.118 7.118 0 0 1 1.118 3.8Zm-3.089 0a3.89 3.89 0 0 0-.611-2.133 3.752 3.752 0 0 0-1.666-1.424 3.65 3.65 0 0 0-2.158-.233 3.704 3.704 0 0 0-1.92 1.037 3.852 3.852 0 0 0-1.031 1.955 3.908 3.908 0 0 0 .205 2.213c.282.7.76 1.299 1.374 1.721a3.672 3.672 0 0 0 2.076.647 3.637 3.637 0 0 0 2.635-1.096c.347-.351.622-.77.81-1.231.188-.461.285-.956.286-1.456Z"/>
+            </svg>
+            <span class="beatport-status-text"></span>
+          </div>
+          <div class="topbar-divider"></div>
+          <div class="status" id="status" title="App status">
+            <span class="status-dot"></span>
+          </div>
+          <button class="topbar-btn" id="open-settings" data-tooltip="Settings">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="3"/>
+              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+            </svg>
+          </button>
+          <button class="topbar-btn" id="toggle-devtools" data-tooltip="Toggle Developer Console">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <polyline points="4 17 10 11 4 5"/>
+              <line x1="12" y1="19" x2="20" y2="19"/>
+            </svg>
+          </button>
+        </div>
+      </header>
+
+      <!-- Main Content Area -->
+      <main class="content">
+        <!-- Organize by Artist Page -->
+        <div class="page active" id="page-organize">
+          <header class="page-header">
+            <div>
+              <h2>Organize by Artist</h2>
+              <p>Moves tracks from a source bin into artist folders based on metadata.</p>
+            </div>
+          </header>
+
+          <section class="card">
+            <div class="card-header">
+              <h3>Configuration</h3>
+            </div>
+            <div class="fields">
+              <div class="field">
+                <label for="organize-source">Source Bin</label>
+                <p class="field-desc">Folder containing unorganized tracks</p>
+                <div class="input-row">
+                  <input id="organize-source" type="text" placeholder="/Users/you/Music/Inbox" title="Folder containing unorganized tracks" />
+                  <button type="button" class="btn-secondary" data-browse="organize-source" data-type="dir" data-tooltip="Browse for source folder">Browse</button>
+                </div>
+              </div>
+            </div>
+            <div class="card-actions">
+              <button class="btn-ghost" id="save-organize" data-tooltip="Save this folder as the default source">Save as Default</button>
+              <button class="btn-primary" id="scan-tracks" data-tooltip="Scan the source folder for audio files">Scan Tracks</button>
+            </div>
+
+            <!-- Scan progress -->
+            <div class="organize-progress" id="scan-progress" style="display: none;">
+              <div class="organize-progress-header">
+                <span class="organize-progress-label" id="scan-progress-label">Scanning…</span>
+                <span class="organize-progress-counts" id="scan-progress-counts">0 / 0</span>
+              </div>
+              <div class="organize-progress-bar">
+                <div class="organize-progress-bar-fill" id="scan-progress-bar-fill" style="width: 0%"></div>
+              </div>
+              <div class="organize-progress-current" id="scan-progress-current"></div>
+            </div>
+          </section>
+
+          <!-- Track List Section -->
+          <section class="card track-list-card" id="track-list-section" style="display: none;">
+            <div class="card-header">
+              <h3>Tracks</h3>
+              <div class="organize-filter-tabs">
+                <button class="filter-tab active" data-organize-filter="all" data-tooltip="Show all tracks">All</button>
+                <button class="filter-tab" data-organize-filter="warnings" data-tooltip="Show only tracks with health warnings">Warnings</button>
+                <button class="filter-tab" data-organize-filter="ready" data-tooltip="Show only tracks that are ready to organize (healthy, have artist, not yet processed)">Ready</button>
+                <button class="filter-tab" data-organize-filter="successful" data-tooltip="Show only tracks that were organized successfully">Successful</button>
+              </div>
+              <div class="track-list-header-actions">
+                <span class="track-count" id="track-count">0 tracks</span>
+                <button class="btn-ghost btn-sm" id="clear-tracks" data-tooltip="Clear the scanned track list">Clear</button>
+              </div>
+            </div>
+
+            <!-- Warning banner for missing artists -->
+            <div class="warning-banner" id="missing-artist-warning" style="display: none;">
+              <svg class="warning-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+                <line x1="12" y1="9" x2="12" y2="13"/>
+                <line x1="12" y1="17" x2="12.01" y2="17"/>
+              </svg>
+              <span id="missing-artist-text" style="flex: 1;">Some tracks are missing artist tags. Edit them or ignore to proceed.</span>
+              <button class="btn-ghost btn-sm" id="ignore-all-missing" data-tooltip="Mark all tracks missing artist tags as ignored">Ignore All</button>
+            </div>
+
+            <!-- Organize progress -->
+            <div class="organize-progress" id="organize-progress" style="display: none;">
+              <div class="organize-progress-header">
+                <span class="organize-progress-label" id="organize-progress-label">Organizing…</span>
+                <span class="organize-progress-counts" id="organize-progress-counts">0 / 0</span>
+              </div>
+              <div class="organize-progress-bar">
+                <div class="organize-progress-bar-fill" id="organize-progress-bar-fill" style="width: 0%"></div>
+              </div>
+              <div class="organize-progress-stats" id="organize-progress-stats">
+                <span class="organize-progress-stat success"><span class="dot"></span><span id="organize-progress-success">0</span> moved</span>
+                <span class="organize-progress-stat conflict"><span class="dot"></span><span id="organize-progress-conflict">0</span> conflicts</span>
+                <span class="organize-progress-stat error"><span class="dot"></span><span id="organize-progress-error">0</span> failed</span>
+                <span class="organize-progress-stat skipped"><span class="dot"></span><span id="organize-progress-skipped">0</span> skipped</span>
+              </div>
+              <div class="organize-progress-current" id="organize-progress-current"></div>
+            </div>
+
+            <div class="track-list" id="track-list">
+              <!-- Track items will be dynamically inserted here -->
+            </div>
+
+            <div class="card-actions">
+              <button class="btn-primary" id="run-organize" disabled data-tooltip="Move all scanned tracks into your library">Organize</button>
+            </div>
+          </section>
+
+          <!-- Organize conflicts section -->
+          <section class="card" id="organize-conflicts-section" style="display: none;">
+            <div class="card-header">
+              <h3>Conflicts</h3>
+              <span class="track-count" id="organize-conflicts-count">0 conflicts</span>
+            </div>
+            <div id="organize-conflicts-list"></div>
+          </section>
+
+        </div>
+
+        <!-- Library & Sourcing Page (merged: library-check + store-search) -->
+        <div class="page" id="page-source">
+          <header class="page-header">
+            <div>
+              <h2>Library &amp; Sourcing</h2>
+              <p>Drop a CSV or Spotify playlist. We check your library first, then source missing tracks lossless on Qobuz and Beatport.</p>
+            </div>
+          </header>
+
+          <div class="wizard" id="source-wizard">
+
+            <!-- Lane 1: Source -->
+            <section class="wizard-lane" data-lane="source" data-state="active">
+              <div class="lane-body">
+                <div class="lane-header">
+                  <h3>Pick a track list</h3>
+                  <p class="lane-hint">CSV file with artist and title, or a Spotify playlist.</p>
+                </div>
+                <div class="lane-content" id="source-source-slot"></div>
+              </div>
+            </section>
+
+            <!-- Lane 2: Search -->
+            <section class="wizard-lane" data-lane="search" data-state="locked">
+              <div class="lane-body">
+                <div class="lane-header">
+                  <h3>Search stores</h3>
+                  <p class="lane-hint">Find each track on Qobuz and Beatport.</p>
+                </div>
+                <div class="lane-content">
+                  <div id="source-progress-section" class="wizard-progress" style="display: none;">
+                    <div class="progress-hero">
+                      <div class="progress-hero-main">
+                        <div class="progress-phase-row">
+                          <svg class="spinner" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                            <circle cx="12" cy="12" r="10" stroke-opacity="0.25"/>
+                            <path d="M12 2a10 10 0 0 1 10 10" stroke-linecap="round"/>
+                          </svg>
+                          <span class="progress-phase-label" id="source-progress-message">Searching…</span>
+                        </div>
+                        <div class="progress-count-row">
+                          <strong class="progress-count-big" id="source-progress-count">0 / 0</strong>
+                          <span class="progress-meta" id="source-progress-elapsed">0s</span>
+                          <span class="progress-meta" id="source-progress-eta"></span>
+                        </div>
+                      </div>
+                      <div class="progress-percent-big" id="source-progress-percent">0%</div>
+                    </div>
+
+                    <div class="progress-bar-container progress-bar-container--prominent">
+                      <div class="progress-bar progress-bar--gradient" id="source-progress-bar" style="width: 0%"></div>
+                    </div>
+
+                    <div class="progress-chips">
+                      <div class="progress-chip progress-chip--qobuz">
+                        <span class="progress-chip-value" id="source-progress-qobuz-count">0</span>
+                        <span class="progress-chip-label">Qobuz</span>
+                      </div>
+                      <div class="progress-chip progress-chip--beatport">
+                        <span class="progress-chip-value" id="source-progress-beatport-count">0</span>
+                        <span class="progress-chip-label">Beatport</span>
+                      </div>
+                      <div class="progress-chip progress-chip--miss">
+                        <span class="progress-chip-value" id="source-progress-notfound-count">0</span>
+                        <span class="progress-chip-label">Not found</span>
+                      </div>
+                    </div>
+
+                    <div class="progress-recent-section">
+                      <div class="progress-recent-header">Recent matches</div>
+                      <div class="progress-recent" id="source-progress-recent"></div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            <!-- Lane 3: Review -->
+            <section class="wizard-lane" data-lane="review" data-state="locked">
+              <div class="lane-body">
+                <div class="lane-header">
+                  <h3>Review matches</h3>
+                  <p class="lane-hint">Select tracks to add to your store carts or export.</p>
+                </div>
+                <div class="lane-content">
+                  <section id="source-results-section" class="wizard-results" style="display: none;">
+                    <div class="source-summary">
+                      <div class="summary-stat">
+                        <span class="stat-value" id="source-stat-total">0</span>
+                        <span class="stat-label">Total</span>
+                      </div>
+                      <div class="summary-stat">
+                        <span class="stat-value" id="source-stat-qobuz">0</span>
+                        <span class="stat-label">Qobuz</span>
+                      </div>
+                      <div class="summary-stat">
+                        <span class="stat-value" id="source-stat-beatport">0</span>
+                        <span class="stat-label">Beatport</span>
+                      </div>
+                      <div class="summary-stat">
+                        <span class="stat-value" id="source-stat-notfound">0</span>
+                        <span class="stat-label">Not Found</span>
+                      </div>
+                    </div>
+
+                    <div class="source-tabs">
+                      <button class="source-tab active" data-source-tab="all" data-tooltip="Show all sourced tracks">All <span class="tab-count" id="source-tab-count-all">0</span></button>
+                      <button class="source-tab" data-source-tab="qobuz" data-tooltip="Show Qobuz matches">Qobuz <span class="tab-count" id="source-tab-count-qobuz">0</span></button>
+                      <button class="source-tab" data-source-tab="beatport" data-tooltip="Show Beatport matches">Beatport <span class="tab-count" id="source-tab-count-beatport">0</span></button>
+                      <button class="source-tab" data-source-tab="notfound" data-tooltip="Show tracks with no matches found">Not Found <span class="tab-count" id="source-tab-count-notfound">0</span></button>
+                    </div>
+
+                    <div class="source-filter-bar">
+                      <div class="search-input-wrapper">
+                        <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                          <circle cx="11" cy="11" r="8"/>
+                          <line x1="21" y1="21" x2="16.65" y2="16.65"/>
+                        </svg>
+                        <input type="text" id="source-search" placeholder="Search results..." title="Filter results by artist or title" />
+                      </div>
+                      <button class="btn-ghost btn-sm" id="source-add-more" data-tooltip="Import another playlist or CSV and merge its tracks into these results">+ Add More Tracks</button>
+                      <button class="btn-primary btn-sm" id="source-add-to-cart" data-tooltip="Add selected tracks to store cart">Add Selected to Cart</button>
+                      <button class="btn-secondary btn-sm" id="source-export-csv" data-tooltip="Export results to a CSV file">Export CSV</button>
+                      <button class="btn-ghost btn-sm" id="clear-source-results" data-tooltip="Clear source search results">Clear</button>
+                    </div>
+
+                    <div id="source-cart-add-progress" class="cart-add-progress" style="display: none;">
+                      <div class="cart-add-progress-top">
+                        <span class="cart-add-progress-store" id="source-cart-add-store">Qobuz</span>
+                        <span class="cart-add-progress-count" id="source-cart-add-count">0 / 0</span>
+                      </div>
+                      <div class="progress-bar-container progress-bar-container--prominent">
+                        <div class="progress-bar progress-bar--gradient" id="source-cart-add-bar" style="width: 0%"></div>
+                      </div>
+                      <div class="cart-add-progress-message" id="source-cart-add-message">Authenticating…</div>
+                    </div>
+
+                    <div class="source-results-list" id="source-results-list"></div>
+                    <div class="empty-state" id="source-empty" style="display: none;">
+                      <p>No results in this tab.</p>
+                    </div>
+                  </section>
+                </div>
+              </div>
+            </section>
+
+            <!-- Lane 4: Cart -->
+            <section class="wizard-lane" data-lane="cart" data-state="locked">
+              <div class="lane-body">
+                <div class="lane-header">
+                  <h3>Review your cart</h3>
+                  <p class="lane-hint">Confirm what each store has queued, then check out.</p>
+                </div>
+                <div class="lane-content">
+                  <section id="source-cart-section" class="wizard-cart-review" style="display: none;">
+                    <div class="cart-store-block" id="source-cart-qobuz" style="display: none;">
+                      <button type="button" class="cart-store-header" data-accordion-toggle aria-expanded="true">
+                        <span class="accordion-chevron" aria-hidden="true">▾</span>
+                        <h4><span class="source-badge qobuz">Qobuz</span></h4>
+                        <div class="cart-store-meta">
+                          <span id="source-cart-qobuz-count">0 tracks</span>
+                          <span class="progress-separator">·</span>
+                          <strong id="source-cart-qobuz-total">$0.00</strong>
+                        </div>
+                      </button>
+                      <div class="cart-store-body">
+                        <div class="cart-store-list" id="source-cart-qobuz-list"></div>
+                        <div class="cart-store-actions">
+                          <button class="btn-secondary btn-sm" id="source-open-qobuz-cart" data-tooltip="Open your Qobuz cart in the embedded panel">Open Cart</button>
+                          <button class="btn-primary btn-sm" id="source-auto-checkout-qobuz" data-tooltip="Drive the Qobuz cart to the Place Order page and ask before committing">Auto-Checkout Qobuz</button>
+                        </div>
+                      </div>
+                    </div>
+                    <div class="cart-store-block" id="source-cart-beatport" style="display: none;">
+                      <button type="button" class="cart-store-header" data-accordion-toggle aria-expanded="true">
+                        <span class="accordion-chevron" aria-hidden="true">▾</span>
+                        <h4><span class="source-badge beatport">Beatport</span></h4>
+                        <div class="cart-store-meta">
+                          <span id="source-cart-beatport-count">0 tracks</span>
+                          <span class="progress-separator">·</span>
+                          <strong id="source-cart-beatport-total">$0.00</strong>
+                        </div>
+                      </button>
+                      <div class="cart-store-body">
+                        <div class="cart-store-list" id="source-cart-beatport-list"></div>
+                        <div class="cart-store-actions">
+                          <button class="btn-secondary btn-sm" id="source-open-beatport-cart" data-tooltip="Open your Beatport cart in the embedded panel">Open Cart</button>
+                          <button class="btn-primary btn-sm" id="source-auto-checkout-beatport" data-tooltip="Drive the Beatport cart to the Place Order page and ask before committing">Auto-Checkout Beatport</button>
+                        </div>
+                      </div>
+                    </div>
+                    <div class="cart-actions-bar">
+                      <button class="btn-primary btn-sm" id="source-download-purchases" style="display: none;" data-tooltip="Download the tracks you just purchased">Download Purchases</button>
+                    </div>
+                  </section>
+                </div>
+              </div>
+            </section>
+
+          </div>
+        </div>
+
+        <div class="page" id="page-usb-health">
+          <header class="page-header">
+            <div>
+              <h2>USB Health</h2>
+              <p>Check a USB drive for Pioneer XDJ-RX3 compatibility before a gig.</p>
+            </div>
+          </header>
+
+          <!-- Volume Selector Card -->
+          <section class="card" id="usb-volume-card">
+            <div class="card-header">
+              <h3>Volumes</h3>
+              <button class="btn-ghost btn-sm" id="usb-refresh-volumes" data-tooltip="Re-detect connected volumes">Refresh</button>
+            </div>
+            <div id="usb-volume-list" class="usb-volume-list">
+              <div class="empty-state">No volumes detected. Click Refresh to scan for connected drives.</div>
+            </div>
+            <div class="card-actions">
+              <button class="btn-ghost btn-sm" id="usb-select-folder" data-tooltip="Pick a folder to scan as a USB volume">Select Folder&hellip;</button>
+              <button class="btn-primary" id="usb-scan-btn" disabled data-tooltip="Scan the selected volume for XDJ-RX3 compatibility">Scan USB</button>
+            </div>
+          </section>
+
+          <!-- Scan Progress -->
+          <section class="card" id="usb-progress-section" style="display:none;">
+            <div class="progress-bar-container">
+              <div class="progress-bar" id="usb-progress-bar" style="width:0%"></div>
+            </div>
+            <div style="display:flex;justify-content:space-between;margin-top:6px;">
+              <span id="usb-progress-message" class="status-text">Starting&hellip;</span>
+              <span id="usb-progress-count" class="text-muted"></span>
+            </div>
+          </section>
+
+          <!-- Volume Health Card (shown post-scan) -->
+          <section class="card" id="usb-volume-health-card" style="display:none;">
+            <div class="card-header">
+              <h3 id="usb-volume-name">Volume</h3>
+              <span id="usb-volume-fs-badge" class="usb-fs-badge"></span>
+            </div>
+            <div id="usb-volume-stats" class="usb-volume-stats"></div>
+            <div id="usb-volume-issues" class="usb-volume-issues"></div>
+          </section>
+
+          <!-- KPI Grid -->
+          <div class="kpi-grid" id="usb-kpi-grid" style="display:none;">
+            <div class="kpi-card">
+              <div class="kpi-value" id="usb-kpi-total">0</div>
+              <div class="kpi-label">Total Tracks</div>
+            </div>
+            <div class="kpi-card success">
+              <div class="kpi-value" id="usb-kpi-healthy">0</div>
+              <div class="kpi-label">Healthy</div>
+              <div class="kpi-pct" id="usb-kpi-healthy-pct">0%</div>
+            </div>
+            <div class="kpi-card warning">
+              <div class="kpi-value" id="usb-kpi-warnings">0</div>
+              <div class="kpi-label">Warnings</div>
+              <div class="kpi-pct" id="usb-kpi-warnings-pct">0%</div>
+            </div>
+            <div class="kpi-card error">
+              <div class="kpi-value" id="usb-kpi-errors">0</div>
+              <div class="kpi-label">Errors</div>
+              <div class="kpi-pct" id="usb-kpi-errors-pct">0%</div>
+            </div>
+          </div>
+          <div id="usb-scan-timestamp" class="scan-timestamp" style="display:none;"></div>
+
+          <!-- Track Table Card -->
+          <section class="card" id="usb-table-section" style="display:none;">
+            <div class="card-header">
+              <div class="filter-tabs">
+                <button class="usb-filter-tab active" data-filter="all" data-tooltip="Show all tracks on this volume">All</button>
+                <button class="usb-filter-tab" data-filter="errors" data-tooltip="Show only tracks with errors">Errors</button>
+                <button class="usb-filter-tab" data-filter="warnings" data-tooltip="Show only tracks with warnings">Warnings</button>
+              </div>
+              <span id="usb-track-count" class="track-count"></span>
+            </div>
+            <div class="table-container">
+              <table class="data-table" id="usb-data-table">
+                <thead>
+                  <tr>
+                    <th class="col-status" data-sort="status">Status<span class="sort-indicator"></span></th>
+                    <th class="col-artist" data-sort="artist">Artist<span class="sort-indicator"></span></th>
+                    <th class="col-title" data-sort="title">Title<span class="sort-indicator"></span></th>
+                    <th class="col-format" data-sort="format">Format<span class="sort-indicator"></span></th>
+                    <th class="col-sample-rate" data-sort="sampleRate">Sample Rate<span class="sort-indicator"></span></th>
+                    <th class="col-bitrate" data-sort="bitRate">Bit Rate<span class="sort-indicator"></span></th>
+                    <th class="col-duration" data-sort="duration">Duration<span class="sort-indicator"></span></th>
+                    <th class="col-date-added" data-sort="dateAdded">Added<span class="sort-indicator"></span></th>
+                    <th class="col-issues">Issues</th>
+                  </tr>
+                </thead>
+                <tbody id="usb-table-body"></tbody>
+              </table>
+            </div>
+          </section>
+
+          <!-- Additional XDJ-compat summary widgets -->
+          <div id="usb-results" style="display:none;">
+            <section class="card" id="usb-drive-overview-card">
+              <div class="card-header">
+                <h3>Drive Overview</h3>
+                <span class="usb-compat-summary" id="usb-compat-summary"></span>
+              </div>
+              <div id="usb-drive-overview" class="usb-drive-overview"></div>
+            </section>
+
+            <section class="card">
+              <div class="card-header"><h3>Compatibility Checklist</h3></div>
+              <div id="usb-checklist" class="usb-checklist"></div>
+            </section>
+
+            <section class="card">
+              <div class="card-header"><h3>Format Breakdown</h3></div>
+              <div id="usb-format-breakdown" class="usb-format-breakdown"></div>
+            </section>
+
+            <section class="card">
+              <div class="card-header"><h3>KPIs</h3></div>
+              <div id="usb-kpi-row" class="usb-kpi-row"></div>
+            </section>
+
+            <section class="card">
+              <div class="card-header"><h3>Compatibility Matrix</h3></div>
+              <div id="usb-matrix-wrap" class="usb-matrix-wrap"></div>
+            </section>
+          </div>
+
+        </div>
+
+
+        <!-- ===== LIBRARY PAGE (combined Browse + Health) ===== -->
+        <div class="page" id="page-library">
+
+          <!-- KPI strip + issue list (compact, inline above toolbar) -->
+          <div class="library-top-row">
+            <div class="library-kpi-strip" id="library-dashboard" style="display: none;">
+              <div class="library-kpi-bar">
+                <span class="library-kpi-item" id="kpi-total" title="Total tracks">0 tracks</span>
+                <span class="library-kpi-sep">&middot;</span>
+                <span class="library-kpi-item kpi-healthy" id="kpi-healthy" title="Healthy tracks">0 healthy</span>
+                <span class="library-kpi-sep">&middot;</span>
+                <span class="library-kpi-item kpi-warnings" id="kpi-warnings" title="Tracks with warnings">0 warnings</span>
+                <span class="library-kpi-sep">&middot;</span>
+                <span class="library-kpi-item kpi-errors" id="kpi-errors" title="Tracks with errors">0 errors</span>
+                <button class="btn-ghost btn-sm library-duplicates-btn" id="toggle-duplicates" style="display:none;" data-tooltip="Show potential duplicates">Duplicates <span id="duplicates-badge"></span></button>
+                <span class="library-kpi-timestamp">
+                  <span id="scan-timestamp"></span>
+                  <button class="btn-icon library-rescan-btn" id="run-library-scan" data-tooltip="Rescan library">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <path d="M23 4v6h-6"/>
+                      <path d="M1 20v-6h6"/>
+                      <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
+                    </svg>
+                  </button>
+                </span>
+              </div>
+              <div class="library-issue-chips" id="issue-list"></div>
+            </div>
+
+            <!-- Connected Devices panel (auto-detected external drives) -->
+            <section class="connected-devices-section" id="connected-devices-section" style="display:none;">
+              <div class="connected-devices-header">
+                <h3>Connected Devices</h3>
+                <div class="cd-header-actions">
+                  <span class="cd-status" id="cd-status"></span>
+                  <button class="btn-ghost btn-sm" id="cd-refresh" data-tooltip="Refresh connected devices">Refresh</button>
+                </div>
+              </div>
+              <div id="cd-volume-list" class="cd-volume-list"></div>
+            </section>
+          </div>
+
+          <!-- Progress bar (shown during scan) -->
+          <div class="library-progress-inline" id="library-progress-section" style="display: none;">
+            <div class="progress-bar-container">
+              <div class="progress-bar" id="library-progress-bar" style="width: 0%"></div>
+            </div>
+            <span class="library-progress-text" id="library-progress-message">Scanning...</span>
+            <span class="library-progress-text" id="library-progress-count"></span>
+          </div>
+
+          <!-- Skeleton -->
+          <div id="health-skeleton-section" style="display: none;">
+            <div class="skeleton-list">
+              <div class="skeleton-row"></div>
+              <div class="skeleton-row"></div>
+              <div class="skeleton-row"></div>
+            </div>
+          </div>
+
+          <!-- Browse health summary (top of library view) -->
+          <div class="browse-health-summary" id="browse-health-summary" hidden></div>
+
+          <!-- Browse Toolbar -->
+          <div class="browse-toolbar">
+            <div class="browse-search-wrap">
+              <svg class="browse-search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="11" cy="11" r="8"/>
+                <line x1="21" y1="21" x2="16.65" y2="16.65"/>
+              </svg>
+              <input class="browse-search-input" id="browse-search" type="text" placeholder="Search tracks, artists, albums&hellip;" title="Search tracks, artists, albums" />
+            </div>
+            <button class="btn-ghost btn-sm" id="toggle-split-panel" data-tooltip="Toggle split panel">Split</button>
+            <select id="split-dimension" class="browse-select" title="Split dimension">
+              <option value="artist">Artist</option>
+              <option value="album">Album</option>
+              <option value="genre">Genre</option>
+            </select>
+            <button class="btn-ghost btn-sm" id="toggle-columns-panel" data-tooltip="Toggle columns">Columns</button>
+            <select id="add-column-select" class="browse-add-column-select" title="Add column">
+              <option value="">Add column&hellip;</option>
+              <option value="artist">Artist</option>
+              <option value="album">Album</option>
+              <option value="genre">Genre</option>
+              <option value="bpm">BPM</option>
+              <option value="key">Key</option>
+            </select>
+            <button class="btn-ghost btn-sm missing-art-btn" id="missing-art-mode" data-tooltip="Enter Missing Album Art selection mode" style="display:none;">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                <rect x="3" y="3" width="18" height="18" rx="2"/>
+                <circle cx="9" cy="9" r="2"/>
+                <path d="M21 15l-5-5L5 21"/>
+              </svg>
+              <span>Missing Art</span>
+              <span class="chip-count" id="missing-art-count">0</span>
+            </button>
+            <button class="btn-primary btn-sm" id="fix-flow-start" data-tooltip="Start fix flow" style="display:none;">Fix All</button>
+          </div>
+
+          <!-- Active issue filter banner -->
+          <div class="active-issue-filter" id="active-issue-filter" style="display:none;">
+            <span id="filter-code-label"></span>
+            <button class="btn-icon btn-sm" id="clear-issue-filter" data-tooltip="Clear filter">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+              </svg>
+            </button>
+          </div>
+
+          <!-- Browse Columns + Compact List -->
+          <div class="library-health-panels">
+            <div id="browse-columns-area" class="browse-columns-area" hidden>
+              <div class="browse-column-strip" id="browse-column-strip"></div>
+            </div>
+
+            <div class="browse-panel browse-split-panel" id="split-panel" hidden>
+              <div class="browse-split-header" id="split-panel-header">Artist</div>
+              <ul class="bv5-browser-list" id="split-list"></ul>
+            </div>
+
+            <div class="browse-main">
+              <div class="bv4-list-header">
+                <span class="bv4-col-num">#</span>
+                <span class="bv4-col-art" aria-hidden="true"></span>
+                <span class="bv4-col-title">Track</span>
+                <span class="bv4-col-meta">Format &middot; BPM &middot; Duration</span>
+              </div>
+              <div class="bv4-list" id="browse-compact-list"></div>
+            </div>
+
+            <!-- Inspector panel -->
+            <div class="library-inspector" id="library-inspector" style="display: none;">
+              <div class="inspector-header">
+                <button class="btn-icon" id="inspector-close" data-tooltip="Close inspector">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+                  </svg>
+                </button>
+              </div>
+              <div class="inspector-art" id="inspector-art"></div>
+              <div class="inspector-title" id="inspector-title"></div>
+              <div class="inspector-artist" id="inspector-artist"></div>
+              <div class="inspector-meta" id="inspector-meta"></div>
+              <div class="inspector-format" id="inspector-format"></div>
+              <div class="inspector-issues" id="inspector-issues"></div>
+              <div class="inspector-actions" id="inspector-actions"></div>
+            </div>
+          </div>
+
+          <!-- Duplicates Drawer -->
+          <section class="card duplicates-section" id="duplicates-section" style="display: none;">
+            <div class="card-header">
+              <h3>Potential Duplicates</h3>
+              <span class="track-count" id="duplicates-count">0 pairs</span>
+              <button class="btn-icon btn-sm" id="duplicates-close" data-tooltip="Close">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+                </svg>
+              </button>
+            </div>
+            <p class="section-description">These tracks appear to be duplicates based on artist and title similarity. Review and decide which to keep.</p>
+            <div class="duplicates-list" id="duplicates-list"></div>
+          </section>
+
+        </div>
+        <!-- ===== END LIBRARY PAGE ===== -->
+
+        <!-- ===== RESTORE PAGE ===== -->
+        <div class="page" id="page-restore">
+          <div class="page-header">
+            <h2>Restore Library</h2>
+            <p>Rebuild your library from a Rekordbox XML using connected USBs and your Beatport/Qobuz purchases.</p>
+          </div>
+
+          <!-- Wizard stepper -->
+          <nav class="wiz-stepper" id="restore-stepper">
+            <button type="button" class="wiz-step is-active" data-step="configure" disabled><span class="wiz-step-num">1</span> Configure</button>
+            <button type="button" class="wiz-step" data-step="review" disabled><span class="wiz-step-num">2</span> Review</button>
+            <button type="button" class="wiz-step" data-step="running" disabled><span class="wiz-step-num">3</span> Run</button>
+            <button type="button" class="wiz-step" data-step="report" disabled><span class="wiz-step-num">4</span> Report</button>
+          </nav>
+
+          <!-- Stage 1: CONFIGURE -->
+          <section class="wiz-stage is-active" data-stage="configure" id="restore-stage-configure">
+            <div class="wiz-grid">
+              <div class="wiz-card">
+                <h3>Rekordbox XML</h3>
+                <div class="restore-row">
+                  <input type="text" id="restore-xml-path" placeholder="/path/to/rekordbox.xml" readonly class="restore-input" />
+                  <button class="btn-secondary" id="restore-pick-xml" data-tooltip="Choose the Rekordbox export XML to restore from">Choose…</button>
+                </div>
+              </div>
+
+              <div class="wiz-card">
+                <h3>Library root</h3>
+                <div class="restore-row">
+                  <input type="text" id="restore-library-root" placeholder="Using app library root" class="restore-input" />
+                </div>
+                <p class="wiz-hint">Leave blank to use your configured library root.</p>
+              </div>
+
+              <div class="wiz-card">
+                <div class="wiz-card-header">
+                  <h3>USB volumes</h3>
+                  <button class="btn-ghost btn-sm" id="restore-refresh-volumes" data-tooltip="Re-detect mounted USB volumes">Refresh</button>
+                </div>
+                <div id="restore-volumes" class="restore-volumes">
+                  <span class="wiz-hint">Click refresh to detect mounted volumes.</span>
+                </div>
+              </div>
+
+              <div class="wiz-card">
+                <h3>Sources</h3>
+                <div class="wiz-sources" id="restore-sources">
+                  <label class="wiz-source-row" data-source="usb">
+                    <input type="checkbox" id="restore-src-usb" checked>
+                    <span class="wiz-source-label">USB</span>
+                    <span class="wiz-source-status" id="restore-status-usb">—</span>
+                  </label>
+                  <label class="wiz-source-row" data-source="beatport">
+                    <input type="checkbox" id="restore-src-beatport" checked>
+                    <span class="wiz-source-label">Beatport</span>
+                    <span class="wiz-source-status" id="restore-status-beatport">—</span>
+                  </label>
+                  <label class="wiz-source-row" data-source="qobuz">
+                    <input type="checkbox" id="restore-src-qobuz" checked>
+                    <span class="wiz-source-label">Qobuz</span>
+                    <span class="wiz-source-status" id="restore-status-qobuz">—</span>
+                  </label>
+                  <label class="wiz-source-row" data-source="soundcloud">
+                    <input type="checkbox" id="restore-src-soundcloud">
+                    <span class="wiz-source-label">SoundCloud <span class="wiz-badge wiz-badge-warn">experimental, lossy</span></span>
+                    <span class="wiz-source-status" id="restore-status-soundcloud">—</span>
+                  </label>
+                </div>
+              </div>
+
+              <div class="wiz-card">
+                <h3>Performance</h3>
+                <div class="restore-row">
+                  <label for="restore-concurrency">Concurrent downloads</label>
+                  <input type="number" id="restore-concurrency" value="5" min="1" max="10" class="restore-input-sm" />
+                </div>
+              </div>
+
+              <div class="wiz-card">
+                <h3>Advanced</h3>
+                <label class="wiz-check" title="Read audio tags (artist/title) from USB files. Slower — but catches tracks whose folder/path has changed.">
+                  <input type="checkbox" id="restore-usb-tag-matching">
+                  <span>Match USB by audio tags (slower, higher recall)</span>
+                </label>
+                <label class="wiz-check" title="After recovery, rewrite Location attributes in the Rekordbox XML to point at staged files. Creates a timestamped backup.">
+                  <input type="checkbox" id="restore-rewrite-xml">
+                  <span>Rewrite XML Locations after recovery (backup first)</span>
+                </label>
+              </div>
+            </div>
+
+            <div class="wiz-actions">
+              <button class="btn-primary" id="restore-to-review" data-tooltip="Preview what will be recovered before running">Review plan →</button>
+            </div>
+          </section>
+
+          <!-- Stage 2: REVIEW -->
+          <section class="wiz-stage" data-stage="review" id="restore-stage-review" style="display: none;">
+            <div class="wiz-hero" id="restore-review-hero">
+              <div class="wiz-hero-stat"><div class="wiz-hero-num" id="review-xml-count">—</div><div class="wiz-hero-label">tracks in XML</div></div>
+              <div class="wiz-hero-stat"><div class="wiz-hero-num" id="review-lib-count">—</div><div class="wiz-hero-label">in library</div></div>
+              <div class="wiz-hero-stat is-primary"><div class="wiz-hero-num" id="review-missing-count">—</div><div class="wiz-hero-label">to recover</div></div>
+            </div>
+            <div class="wiz-card">
+              <h3>Plan</h3>
+              <ul class="wiz-plan-list" id="review-plan"></ul>
+              <p class="wiz-hint" id="review-eta">—</p>
+            </div>
+            <div class="wiz-card" id="review-warnings-card" style="display:none;">
+              <h3>Warnings</h3>
+              <ul class="wiz-warn-list" id="review-warnings"></ul>
+            </div>
+            <div class="wiz-actions">
+              <button class="btn-ghost" id="restore-back-to-configure">← Back</button>
+              <button class="btn-primary" id="restore-start" data-tooltip="Start the restore job">Start restore</button>
+            </div>
+          </section>
+
+          <!-- Stage 3: RUNNING -->
+          <section class="wiz-stage" data-stage="running" id="restore-stage-running" style="display: none;">
+            <div class="wiz-run-layout">
+              <!-- Phase timeline -->
+              <aside class="wiz-timeline">
+                <h3>Phases</h3>
+                <ol class="wiz-timeline-list" id="restore-timeline">
+                  <li class="wiz-phase" data-phase="parsing"><span class="wiz-phase-icon"></span><span class="wiz-phase-label">Parse XML</span></li>
+                  <li class="wiz-phase" data-phase="scanning_library"><span class="wiz-phase-icon"></span><span class="wiz-phase-label">Scan library</span></li>
+                  <li class="wiz-phase" data-phase="computing_missing"><span class="wiz-phase-icon"></span><span class="wiz-phase-label">Find missing</span></li>
+                  <li class="wiz-phase" data-phase="usb_scan"><span class="wiz-phase-icon"></span><span class="wiz-phase-label">USB scan</span></li>
+                  <li class="wiz-phase" data-phase="beatport_fetch"><span class="wiz-phase-icon"></span><span class="wiz-phase-label">Beatport purchases</span></li>
+                  <li class="wiz-phase" data-phase="beatport_download"><span class="wiz-phase-icon"></span><span class="wiz-phase-label">Beatport download</span></li>
+                  <li class="wiz-phase" data-phase="qobuz_fetch"><span class="wiz-phase-icon"></span><span class="wiz-phase-label">Qobuz purchases</span></li>
+                  <li class="wiz-phase" data-phase="qobuz_download"><span class="wiz-phase-icon"></span><span class="wiz-phase-label">Qobuz download</span></li>
+                  <li class="wiz-phase" data-phase="xml_rewrite"><span class="wiz-phase-icon"></span><span class="wiz-phase-label">Rewrite XML</span></li>
+                  <li class="wiz-phase" data-phase="complete"><span class="wiz-phase-icon"></span><span class="wiz-phase-label">Done</span></li>
+                </ol>
+              </aside>
+
+              <!-- Dashboard -->
+              <div class="wiz-dashboard">
+                <div class="wiz-dash-row wiz-kpis">
+                  <div class="wiz-kpi"><div class="wiz-kpi-num" id="kpi-recovered">0</div><div class="wiz-kpi-label">recovered</div></div>
+                  <div class="wiz-kpi"><div class="wiz-kpi-num" id="kpi-still-missing">0</div><div class="wiz-kpi-label">still missing</div></div>
+                  <div class="wiz-kpi"><div class="wiz-kpi-num" id="kpi-rate">—</div><div class="wiz-kpi-label">per minute</div></div>
+                  <div class="wiz-kpi"><div class="wiz-kpi-num" id="kpi-eta">—</div><div class="wiz-kpi-label">ETA</div></div>
+                  <div class="wiz-kpi"><div class="wiz-kpi-num" id="kpi-elapsed">0s</div><div class="wiz-kpi-label">elapsed</div></div>
+                </div>
+
+                <div class="wiz-progress-bar-outer">
+                  <div class="wiz-progress-bar" id="restore-progress-bar" style="width: 0%"></div>
+                </div>
+                <div class="wiz-phase-current" id="restore-phase-current">Starting…</div>
+                <div class="wiz-current-track" id="restore-current-track"></div>
+
+                <h3 class="wiz-dash-heading">Accounts</h3>
+                <div class="wiz-account-grid" id="restore-accounts">
+                  <p class="wiz-hint">No store accounts active yet.</p>
+                </div>
+
+                <div class="wiz-dash-row wiz-log-row">
+                  <div class="wiz-log">
+                    <div class="wiz-log-header"><h3>Live log</h3><span class="wiz-hint" id="restore-log-count">0 entries</span></div>
+                    <div class="wiz-log-body" id="restore-log"></div>
+                  </div>
+                </div>
+
+                <div class="wiz-actions wiz-actions-danger">
+                  <button class="btn-ghost" id="restore-abort" data-tooltip="Stop the restore — already-recovered tracks stay in the staging folder">Abort</button>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <!-- Stage 4: REPORT -->
+          <section class="wiz-stage" data-stage="report" id="restore-stage-report" style="display: none;">
+            <div class="wiz-hero wiz-hero-report" id="restore-report-hero"></div>
+
+            <div class="wiz-grid">
+              <div class="wiz-card">
+                <h3>By source</h3>
+                <div class="wiz-breakdown" id="report-by-source"></div>
+              </div>
+              <div class="wiz-card">
+                <h3>By account</h3>
+                <div class="wiz-breakdown" id="report-by-account"></div>
+              </div>
+              <div class="wiz-card" id="report-failure-card">
+                <h3>Still missing — why</h3>
+                <div class="wiz-breakdown" id="report-failures"></div>
+              </div>
+              <div class="wiz-card" id="report-xml-card" style="display:none;">
+                <h3>XML rewrite</h3>
+                <div class="wiz-breakdown" id="report-xml"></div>
+              </div>
+            </div>
+
+            <div class="wiz-card">
+              <div class="wiz-report-toolbar">
+                <div class="restore-report-filters">
+                  <button class="btn-ghost btn-sm restore-filter is-active" data-filter="all">All</button>
+                  <button class="btn-ghost btn-sm restore-filter" data-filter="recovered">Recovered</button>
+                  <button class="btn-ghost btn-sm restore-filter" data-filter="still_missing">Still missing</button>
+                </div>
+                <div class="wiz-report-actions">
+                  <button class="btn-ghost btn-sm" id="report-export" data-tooltip="Save the full report as JSON">Export JSON</button>
+                  <button class="btn-ghost btn-sm" id="report-open-stage" data-tooltip="Open the staging folder in Finder">Open stage folder</button>
+                  <button class="btn-secondary btn-sm" id="report-retry-failed" data-tooltip="Re-run restore for just the still-missing tracks">Retry failed</button>
+                </div>
+              </div>
+              <table class="restore-report-table" id="restore-report-table">
+                <thead><tr><th>Track</th><th>Source</th><th>Account</th><th>Detail</th></tr></thead>
+                <tbody></tbody>
+              </table>
+            </div>
+
+            <div class="wiz-actions">
+              <button class="btn-ghost" id="restore-new-run">New restore</button>
+            </div>
+          </section>
+        </div>
+        <!-- ===== END RESTORE PAGE ===== -->
+
+
+      </main>
+      </div>
+    </div>
+
+    <!-- Delete Confirmation Modal -->
+    <div class="modal-overlay" id="rekordbox-resync-modal" style="display: none;">
+      <div class="modal">
+        <div class="modal-header">
+          <h3>Resync from Rekordbox</h3>
+          <button class="btn-icon modal-close" id="rekordbox-resync-modal-close" data-tooltip="Close">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+            </svg>
+          </button>
+        </div>
+        <div class="modal-body">
+          <p class="delete-warning">This will wipe the <strong>Candybar database</strong> (<code>candybar.db</code>) and rebuild it from rekordbox's <code>export.xml</code>. Rekordbox's own <code>master.db</code> is <strong>not</strong> touched.</p>
+          <div class="delete-file-info">
+            <span class="delete-file-name">Cleared (in candybar.db):</span>
+            <span class="delete-file-path">library_tracks, library_issues, library_duplicates, library_scan_runs (for the current library root)</span>
+          </div>
+          <div class="delete-file-info">
+            <span class="delete-file-name">Preserved:</span>
+            <span class="delete-file-path">ignored tracks, dismissed duplicates, dismissed issues, download history</span>
+          </div>
+          <p class="delete-note">Make sure your rekordbox XML is up to date before continuing. Any unsaved local edits to candybar's library data (issues, duplicate flags) will be lost.</p>
+        </div>
+        <div class="modal-actions">
+          <button class="btn-ghost" id="rekordbox-resync-modal-cancel" data-tooltip="Cancel resync">Cancel</button>
+          <button class="btn-danger" id="rekordbox-resync-modal-confirm" data-tooltip="Wipe and reimport">Resync</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="modal-overlay" id="delete-modal" style="display: none;">
+      <div class="modal">
+        <div class="modal-header">
+          <h3>Delete Track</h3>
+          <button class="btn-icon modal-close" id="delete-modal-close" data-tooltip="Close">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+            </svg>
+          </button>
+        </div>
+        <div class="modal-body">
+          <p class="delete-warning">Are you sure you want to permanently delete this file?</p>
+          <div class="delete-file-info">
+            <span class="delete-file-name" id="delete-file-name"></span>
+            <span class="delete-file-path" id="delete-file-path"></span>
+          </div>
+          <p class="delete-note">This action cannot be undone.</p>
+        </div>
+        <div class="modal-actions">
+          <button class="btn-ghost" id="delete-modal-cancel" data-tooltip="Cancel delete">Cancel</button>
+          <button class="btn-danger" id="delete-modal-confirm" data-tooltip="Permanently delete file">Delete</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Fix Track Modal -->
+    <div class="modal-overlay" id="fix-modal" style="display: none;">
+      <div class="modal">
+        <div class="modal-header">
+          <h3>Fix Track</h3>
+          <button class="btn-icon modal-close" id="fix-modal-close" data-tooltip="Close">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+            </svg>
+          </button>
+        </div>
+        <div class="modal-body">
+          <p class="modal-description">Convert this track to AIFF format for XDJ-RX3 compatibility.</p>
+          <div class="fix-file-info">
+            <div class="fix-file-row">
+              <svg class="fix-file-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                <polyline points="14 2 14 8 20 8"/>
+              </svg>
+              <span class="fix-file-name" id="fix-file-name"></span>
+            </div>
+            <div class="fix-issues" id="fix-issues-list"></div>
+          </div>
+          <label class="checkbox-label fix-delete-label">
+            <input type="checkbox" id="fix-delete-original" title="Delete original file after conversion" />
+            <span>Delete original file after conversion</span>
+          </label>
+        </div>
+        <div class="modal-actions">
+          <button class="btn-ghost" id="fix-modal-cancel" data-tooltip="Cancel fix">Cancel</button>
+          <button class="btn-primary" id="fix-modal-confirm" data-tooltip="Convert the track to AIFF">Convert to AIFF</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Toast Container -->
+    <div class="toast-container" id="toast-container"></div>
+
+    <!-- ID3 Tag Editor Drawer -->
+    <div class="drawer-overlay" id="tag-editor-modal" style="display: none;">
+      <div class="drawer">
+        <div class="drawer-header">
+          <h3>Edit Track Tags</h3>
+          <button class="btn-icon" id="close-tag-editor" data-tooltip="Close without saving">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+            </svg>
+          </button>
+        </div>
+        <div class="drawer-body">
+          <div class="album-art-section">
+            <div class="album-art-preview" id="album-art-preview">
+              <svg class="album-art-placeholder" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                <rect x="3" y="3" width="18" height="18" rx="2"/>
+                <circle cx="12" cy="12" r="4"/>
+                <circle cx="12" cy="12" r="1"/>
+              </svg>
+            </div>
+            <div class="album-art-buttons">
+              <button class="btn-secondary btn-sm" id="change-album-art" data-tooltip="Choose an image file for album art">Choose File</button>
+              <button class="btn-secondary btn-sm" id="search-album-art" data-tooltip="Search online for album art">Search Art</button>
+            </div>
+            <div class="album-art-suggestions" id="album-art-suggestions" style="display: none;">
+              <div class="album-art-suggestions-status" id="album-art-suggestions-status"></div>
+              <div class="album-art-suggestions-grid" id="album-art-suggestions-grid"></div>
+            </div>
+          </div>
+          <div class="modal-fields">
+            <div class="field">
+              <label for="edit-title">Title</label>
+              <input type="text" id="edit-title" placeholder="Track title" title="Track title" />
+            </div>
+            <div class="field">
+              <label for="edit-artist">Artist <span class="required">*</span></label>
+              <input type="text" id="edit-artist" placeholder="Artist name" title="Primary artist (required)" />
+            </div>
+            <div class="field">
+              <label for="edit-remixer">Remixer</label>
+              <input type="text" id="edit-remixer" placeholder="Remix artist" title="Remix artist" />
+            </div>
+            <div class="field">
+              <label for="edit-album">Album</label>
+              <input type="text" id="edit-album" placeholder="Album name" title="Album name" />
+            </div>
+            <div class="field">
+              <label for="edit-genre">Genre</label>
+              <input type="text" id="edit-genre" placeholder="Genre" title="Genre" />
+            </div>
+            <div class="field">
+              <label for="edit-year">Year</label>
+              <input type="text" id="edit-year" placeholder="2024" title="Release year" />
+            </div>
+            <div class="field">
+              <label for="edit-bpm">BPM</label>
+              <input type="text" id="edit-bpm" placeholder="128" title="Tempo in beats per minute" />
+            </div>
+            <div class="field">
+              <label for="edit-key">Key</label>
+              <input type="text" id="edit-key" placeholder="8A" title="Camelot or musical key (e.g. 8A)" />
+            </div>
+            <div class="field">
+              <label for="edit-label">Label</label>
+              <input type="text" id="edit-label" placeholder="Record label" title="Record label" />
+            </div>
+            <div class="field">
+              <label for="edit-comment">Comment</label>
+              <input type="text" id="edit-comment" placeholder="Notes" title="Free-form comment" />
+            </div>
+            <input type="hidden" id="edit-file-path" />
+          </div>
+        </div>
+        <div class="drawer-footer">
+          <button class="btn-ghost" id="scan-tags" data-tooltip="Search online and fill empty fields" style="margin-right: auto;">Scan Tags</button>
+          <button class="btn-ghost" id="cancel-tag-editor" data-tooltip="Discard changes">Cancel</button>
+          <button class="btn-primary" id="save-tag-editor" data-tooltip="Save tag changes">Save</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Store Purchase Modal (multi-phase workflow) -->
+    <div class="modal-overlay" id="store-purchase-modal" style="display: none;">
+      <div class="modal modal-lg">
+        <div class="modal-header">
+          <h3>Purchase Missing Tracks</h3>
+          <button class="btn-icon modal-close" id="store-purchase-close" data-tooltip="Close">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+            </svg>
+          </button>
+        </div>
+        <div class="modal-body">
+          <!-- Search phase -->
+          <div class="purchase-phase" id="store-search-phase">
+            <h4>Searching Stores</h4>
+            <div class="progress-bar-container">
+              <div class="progress-bar" id="store-search-progress-bar" style="width: 0%"></div>
+            </div>
+            <span class="progress-label" id="store-search-progress-label">Starting&hellip;</span>
+          </div>
+
+          <!-- Review matches phase -->
+          <div class="purchase-phase" id="store-match-stats" style="display: none;"></div>
+          <div class="purchase-phase" id="store-match-actions" style="display: none;">
+            <button class="btn-ghost btn-sm" id="store-select-all" data-tooltip="Select all matched tracks">Select All</button>
+            <button class="btn-ghost btn-sm" id="store-select-none" data-tooltip="Deselect all tracks">Select None</button>
+            <button class="btn-ghost btn-sm" id="store-research-btn" data-tooltip="Re-search the stores for selected tracks">Re-search</button>
+          </div>
+          <div class="purchase-phase match-list" id="store-match-list" style="display: none;"></div>
+
+          <!-- Cart phase -->
+          <div class="purchase-phase" id="store-cart-phase" style="display: none;">
+            <h4>Adding to Carts</h4>
+            <div class="progress-bar-container">
+              <div class="progress-bar" id="store-cart-progress-bar" style="width: 0%"></div>
+            </div>
+            <span class="progress-label" id="store-cart-progress-label"></span>
+          </div>
+
+          <!-- Done phase -->
+          <div class="purchase-phase" id="store-done-phase" style="display: none;">
+            <h4>Ready to Purchase</h4>
+            <div class="done-summary" id="store-done-summary"></div>
+            <div class="done-actions">
+              <button class="btn-primary btn-sm" id="store-open-qobuz-cart" style="display: none;" data-tooltip="Open your Qobuz cart in the panel">Open Qobuz Cart</button>
+              <button class="btn-secondary btn-sm" id="store-open-beatport-cart" style="display: none;" data-tooltip="Open your Beatport cart in the panel">Open Beatport Cart</button>
+              <button class="btn-primary btn-sm" id="store-download-btn" style="display: none;" data-tooltip="Download purchased tracks">Download Purchases</button>
+            </div>
+          </div>
+
+          <!-- Download phase -->
+          <div class="purchase-phase" id="store-download-phase" style="display: none;">
+            <h4>Downloading</h4>
+            <div class="progress-bar-container">
+              <div class="progress-bar" id="store-download-progress-bar" style="width: 0%"></div>
+            </div>
+            <span class="progress-label" id="store-download-progress-label"></span>
+          </div>
+        </div>
+        <div class="modal-actions">
+          <button class="btn-ghost" id="store-purchase-cancel" data-tooltip="Cancel the purchase flow">Cancel</button>
+          <button class="btn-primary" id="store-purchase-btn" data-tooltip="Proceed with the current phase">Proceed</button>
+          <button class="btn-primary" id="store-add-cart-btn" style="display: none;" data-tooltip="Add selected tracks to store carts">Add to Carts</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Settings Modal -->
+    <div class="modal-overlay" id="settings-modal">
+      <div class="modal modal-settings">
+        <div class="modal-header">
+          <h3>Settings</h3>
+          <button class="btn-icon modal-close" id="close-settings" data-tooltip="Close">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+            </svg>
+          </button>
+        </div>
+        <div class="modal-body settings-modal-body">
+          <aside class="settings-nav" role="tablist">
+            <button type="button" class="settings-nav-item is-active" data-target="library" role="tab" data-tooltip="Library paths and scanning" data-tooltip-pos="right">Library</button>
+            <button type="button" class="settings-nav-item" data-target="rekordbox" role="tab" data-tooltip="Rekordbox XML import settings" data-tooltip-pos="right">Rekordbox</button>
+            <button type="button" class="settings-nav-item" data-target="console" role="tab" data-tooltip="Developer console options" data-tooltip-pos="right">Console</button>
+            <button type="button" class="settings-nav-item" data-target="spotify" role="tab" data-tooltip="Spotify API credentials" data-tooltip-pos="right">Spotify</button>
+            <button type="button" class="settings-nav-item" data-target="qobuz" role="tab" data-tooltip="Qobuz accounts and credentials" data-tooltip-pos="right">Qobuz</button>
+            <button type="button" class="settings-nav-item" data-target="beatport" role="tab" data-tooltip="Beatport accounts and credentials" data-tooltip-pos="right">Beatport</button>
+          </aside>
+          <div class="settings-sections">
+          <div class="settings-section is-active" data-section="library">
+            <h4>Library</h4>
+            <div class="setting-row">
+              <div class="setting-info">
+                <label>Library Root</label>
+                <p class="setting-desc"><span id="library-root-display">(not set)</span></p>
+                <p class="setting-desc" id="library-scan-status" style="display: none;"></p>
+              </div>
+              <button class="btn-secondary btn-sm" id="library-root-choose" data-tooltip="Choose library root folder">Choose…</button>
+            </div>
+            <div class="setting-row">
+              <div class="setting-info">
+                <label for="setting-archive-path">Archive Path</label>
+                <p class="setting-desc">Where processed tracks are moved.</p>
+              </div>
+              <input type="text" id="setting-archive-path" placeholder="/path/to/archive" title="Folder where processed tracks are moved" />
+              <button class="btn-secondary btn-sm" data-browse="setting-archive-path" data-type="dir" data-tooltip="Browse for archive folder">Browse</button>
+            </div>
+          </div>
+
+          <div class="settings-section" data-section="rekordbox">
+            <h4>Rekordbox (Repair)</h4>
+            <div class="setting-row">
+              <div class="setting-info">
+                <label for="setting-rekordbox-xml-path">Export XML</label>
+                <p class="setting-desc">Path to <code>export.xml</code> from rekordbox. Used to find missing files and backfill library metadata.</p>
+              </div>
+              <input type="text" id="setting-rekordbox-xml-path" placeholder="/path/to/export.xml" title="Path to rekordbox export.xml" />
+              <button class="btn-secondary btn-sm" data-browse="setting-rekordbox-xml-path" data-type="file" data-tooltip="Browse for rekordbox export.xml">Browse</button>
+            </div>
+            <div class="setting-row">
+              <div class="setting-info">
+                <p class="setting-desc" id="rekordbox-status">—</p>
+              </div>
+              <button class="btn-secondary btn-sm" id="rekordbox-scan-btn" data-tooltip="Scan rekordbox XML for files missing on disk">Scan Missing</button>
+              <button class="btn-secondary btn-sm" id="rekordbox-import-btn" data-tooltip="Import rekordbox metadata into the library database">Import to Library</button>
+            </div>
+            <div class="setting-row">
+              <div class="setting-info">
+                <label>Resync from Rekordbox</label>
+                <p class="setting-desc">Wipe the local <strong>Candybar database</strong> (<code>candybar.db</code>) for the current library root and rebuild it from rekordbox's <code>export.xml</code>. Does <strong>not</strong> touch rekordbox's own <code>master.db</code>. Useful when stale paths from an old drive are polluting matches. Ignores, dismissed duplicates, and download history are preserved.</p>
+              </div>
+              <button class="btn-danger btn-sm" id="rekordbox-resync-btn" data-tooltip="Wipe library data and re-import from rekordbox XML">Resync (Wipe + Reimport)</button>
+            </div>
+            <div id="rekordbox-missing-list" class="setting-desc" style="max-height: 200px; overflow-y: auto; margin-top: 8px;"></div>
+          </div>
+
+          <div class="settings-section" data-section="console">
+            <h4>Console</h4>
+            <div class="setting-row">
+              <div class="setting-info">
+                <label for="setting-floating-console">Floating Console</label>
+                <p class="setting-desc">Show a floating console with live script output.</p>
+              </div>
+              <label class="switch">
+                <input type="checkbox" id="setting-floating-console" title="Toggle a floating console for live output" />
+                <span class="switch-slider"></span>
+              </label>
+            </div>
+          </div>
+
+          <div class="settings-section" data-section="spotify">
+            <h4>Spotify</h4>
+            <div class="setting-row">
+              <div class="setting-info">
+                <label for="setting-spotify-client-id">Client ID</label>
+              </div>
+              <input type="text" id="setting-spotify-client-id" placeholder="Spotify client ID" title="Spotify API client ID" />
+            </div>
+            <div class="setting-row">
+              <div class="setting-info">
+                <label for="setting-spotify-client-secret">Client Secret</label>
+              </div>
+              <div class="password-wrap">
+                <input type="password" id="setting-spotify-client-secret" placeholder="Spotify client secret" title="Spotify API client secret" />
+                <button type="button" class="password-toggle" data-password-toggle="setting-spotify-client-secret" aria-label="Show password" data-tooltip="Show password">
+                  <svg class="icon-eye" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z"/><circle cx="12" cy="12" r="3"/></svg>
+                  <svg class="icon-eye-off" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.94 10.94 0 0 1 12 20c-7 0-11-7-11-7a19.77 19.77 0 0 1 4.22-4.88"/><path d="M9.88 4.24A10.94 10.94 0 0 1 12 4c7 0 11 7 11 7a19.88 19.88 0 0 1-3.17 4"/><path d="M14.12 14.12a3 3 0 0 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div class="settings-section" data-section="qobuz">
+            <div class="account-section-header qobuz-section-header">
+              <div class="account-section-icon-wrap">
+                <svg class="account-section-icon" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                  <path d="M12 2.5a9.5 9.5 0 1 0 5.3 17.38l2.22 2.22 2.12-2.12-2.22-2.22A9.5 9.5 0 0 0 12 2.5zm0 3.3a6.2 6.2 0 1 1 0 12.4 6.2 6.2 0 0 1 0-12.4z"/>
+                </svg>
+              </div>
+              <div class="account-section-titles">
+                <h4>Qobuz</h4>
+                <p class="account-section-desc">Hi-res studio-quality downloads. Sign in to one or more Qobuz accounts to search, cart, and restore from your purchase history.</p>
+              </div>
+            </div>
+            <div id="qobuz-accounts-list" class="accounts-list"></div>
+            <button type="button" class="btn-secondary add-account-btn" id="add-qobuz-account" data-tooltip="Add another Qobuz account">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+              <span>Add Qobuz account</span>
+            </button>
+          </div>
+
+          <div class="settings-section" data-section="beatport">
+            <div class="account-section-header beatport-section-header">
+              <div class="account-section-icon-wrap">
+                <svg class="account-section-icon" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                  <path d="M21.429 17.055a7.114 7.114 0 0 1-.794 3.246 6.917 6.917 0 0 1-2.181 2.492 6.698 6.698 0 0 1-3.063 1.163 6.653 6.653 0 0 1-3.239-.434 6.796 6.796 0 0 1-2.668-1.932 7.03 7.03 0 0 1-1.481-2.983 7.124 7.124 0 0 1 .049-3.345 7.015 7.015 0 0 1 1.566-2.937l-4.626 4.73-2.421-2.479 5.201-5.265a3.791 3.791 0 0 0 1.066-2.675V0h3.41v6.613a7.172 7.172 0 0 1-.519 2.794 7.02 7.02 0 0 1-1.559 2.353l-.153.156a6.768 6.768 0 0 1 3.49-1.725 6.687 6.687 0 0 1 3.845.5 6.873 6.873 0 0 1 2.959 2.564 7.118 7.118 0 0 1 1.118 3.8Zm-3.089 0a3.89 3.89 0 0 0-.611-2.133 3.752 3.752 0 0 0-1.666-1.424 3.65 3.65 0 0 0-2.158-.233 3.704 3.704 0 0 0-1.92 1.037 3.852 3.852 0 0 0-1.031 1.955 3.908 3.908 0 0 0 .205 2.213c.282.7.76 1.299 1.374 1.721a3.672 3.672 0 0 0 2.076.647 3.637 3.637 0 0 0 2.635-1.096c.347-.351.622-.77.81-1.231.188-.461.285-.956.286-1.456Z"/>
+                </svg>
+              </div>
+              <div class="account-section-titles">
+                <h4>Beatport</h4>
+                <p class="account-section-desc">DJ-focused electronic music store. Sign in to search, cart, and redownload your Beatport purchases — add multiple accounts if you have separate buyer profiles.</p>
+              </div>
+            </div>
+            <div id="beatport-accounts-list" class="accounts-list"></div>
+            <button type="button" class="btn-secondary add-account-btn" id="add-beatport-account" data-tooltip="Add another Beatport account">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+              <span>Add Beatport account</span>
+            </button>
+          </div>
+          </div>
+        </div>
+        <div class="modal-actions">
+          <button class="btn-primary" id="save-settings" data-tooltip="Save all settings">Save</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Floating console (script output) -->
+    <div id="floating-console" class="floating-console" style="display: none;">
+      <div class="floating-console-header">
+        <span class="floating-console-title">Console</span>
+        <div class="floating-console-actions">
+          <button class="floating-console-btn" id="floating-console-clear" data-tooltip="Clear">Clear</button>
+          <button class="floating-console-btn" id="floating-console-close" data-tooltip="Hide console">×</button>
+        </div>
+      </div>
+      <div class="floating-console-body" id="floating-console-body"></div>
+    </div>
+
+    <!-- Store Panel: resize handle (draggable border between app and panel) -->
+    <div id="store-panel-resize-handle" class="store-panel-resize-handle" style="display: none;"></div>
+
+    <!-- Store Panel: toolbar (sits at the top-right, above the WebContentsView) -->
+    <div id="store-panel-toolbar" class="store-panel-toolbar" style="display: none;">
+      <div class="store-panel-toolbar-left">
+        <button class="btn-icon btn-sm" id="store-panel-back" data-tooltip="Back">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 18 9 12 15 6"/></svg>
+        </button>
+        <button class="btn-icon btn-sm" id="store-panel-forward" data-tooltip="Forward">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 6 15 12 9 18"/></svg>
+        </button>
+        <span class="store-panel-label" id="store-panel-label">Beatport</span>
+      </div>
+      <button class="btn-icon btn-sm" id="store-panel-close" data-tooltip="Close panel">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+        </svg>
+      </button>
+    </div>
+
+    <!-- Right drawer (generic, content set programmatically) -->
+    <div id="right-drawer" class="right-drawer right-drawer--hidden">
+      <div class="right-drawer__collapsed" id="right-drawer-collapsed">
+        <button class="right-drawer__expand-btn" id="right-drawer-expand" data-tooltip="Expand drawer">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 18 9 12 15 6"/></svg>
+        </button>
+      </div>
+      <div class="right-drawer__panel" id="right-drawer-panel">
+        <div class="right-drawer__header">
+          <h3 class="right-drawer__title" id="right-drawer-title"></h3>
+          <div class="right-drawer__header-actions">
+            <button class="btn-icon btn-sm" id="right-drawer-collapse" data-tooltip="Collapse">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 6 15 12 9 18"/></svg>
+            </button>
+            <button class="btn-icon btn-sm" id="right-drawer-hide" data-tooltip="Close">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+              </svg>
+            </button>
+          </div>
+        </div>
+        <div class="right-drawer__body" id="right-drawer-body"></div>
+      </div>
+    </div>
+
+    <!-- Album Art Fix Overlay -->
+    <div id="album-art-fix-overlay" class="aaf-overlay" hidden>
+      <div class="aaf-panel" role="dialog" aria-modal="true" aria-labelledby="aaf-heading">
+        <div class="aaf-header">
+          <div class="aaf-header-left">
+            <h2 id="aaf-heading">Fix Missing Album Art</h2>
+            <span class="aaf-counter" id="aaf-counter">0 of 0</span>
+          </div>
+          <button class="btn-icon" id="aaf-close" data-tooltip="Close">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+            </svg>
+          </button>
+        </div>
+        <div class="aaf-progress"><div class="aaf-progress-fill" id="aaf-progress-fill"></div></div>
+
+        <div class="aaf-body" id="aaf-body">
+          <div class="aaf-track">
+            <div class="aaf-track-title" id="aaf-track-title"></div>
+            <div class="aaf-track-artist" id="aaf-track-artist"></div>
+            <div class="aaf-track-meta" id="aaf-track-meta"></div>
+          </div>
+
+          <div class="aaf-carousel">
+            <div class="aaf-carousel-head">
+              <h3>Suggestions</h3>
+              <span class="aaf-status" id="aaf-status"></span>
+            </div>
+            <div class="aaf-viewer">
+              <button class="btn-secondary btn-sm aaf-nav" id="aaf-prev-suggestion" aria-label="Previous suggestion" data-tooltip="Previous suggestion" disabled>&lsaquo;</button>
+              <div class="aaf-preview" id="aaf-preview"></div>
+              <button class="btn-secondary btn-sm aaf-nav" id="aaf-next-suggestion" aria-label="Next suggestion" data-tooltip="Next suggestion" disabled>&rsaquo;</button>
+            </div>
+            <div class="aaf-suggestion-meta" id="aaf-suggestion-meta"></div>
+            <div class="aaf-grid" id="aaf-grid"></div>
+          </div>
+        </div>
+
+        <div class="aaf-complete" id="aaf-complete" hidden>
+          <div class="aaf-complete-icon">✓</div>
+          <div class="aaf-complete-text" id="aaf-complete-text"></div>
+          <button class="btn-primary" id="aaf-done" data-tooltip="Finish the album art fix flow">Done</button>
+        </div>
+
+        <div class="aaf-footer">
+          <button class="btn-ghost btn-sm" id="aaf-back" data-tooltip="Go back to the previous track" disabled>Previous Track</button>
+          <div class="aaf-footer-right">
+            <button class="btn-ghost" id="aaf-skip" data-tooltip="Skip this track without changing its art">Skip</button>
+            <button class="btn-primary" id="aaf-apply" data-tooltip="Apply the selected album art to this track" disabled>Apply Album Art</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Album Art Viewer (click any .track-art image to zoom) -->
+    <div class="art-viewer-overlay" id="art-viewer" style="display: none;">
+      <img class="art-viewer-image" id="art-viewer-image" alt="Album art" />
+    </div>
+
+    <script type="module" src="./src/renderer.ts"></script>
+  </body>
+</html>

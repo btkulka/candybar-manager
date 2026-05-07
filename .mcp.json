@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "candybar-audio-tools": {
+      "command": "node",
+      "args": ["dist/mcp/mcp-server.js"],
+      "cwd": "/Volumes/Candy Bar/source/candybar-manager"
+    }
+  }
+}

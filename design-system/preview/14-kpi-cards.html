@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en"><head><meta charset="UTF-8"/>
+<link rel="stylesheet" href="../colors_and_type.css"/>
+<style>
+  body { margin:0; padding:24px; background:var(--bg-base); width:700px; box-sizing:border-box; font-family:var(--font-sans); color:var(--text-primary); }
+  .kpi-grid { display:grid; grid-template-columns:repeat(4,1fr); gap:12px; }
+  .kpi { background:var(--bg-surface); border:1px solid var(--border-subtle); border-radius:var(--radius-lg); padding:14px 16px; display:flex; flex-direction:column; gap:4px; }
+  .kpi-num { font-size:1.6rem; font-weight:700; font-variant-numeric:tabular-nums; letter-spacing:-.02em; }
+  .kpi-label { font-size:.7rem; font-weight:600; text-transform:uppercase; letter-spacing:.08em; color:var(--text-muted); }
+  .kpi.ok .kpi-num { color:#1db954; }
+  .kpi.warn .kpi-num { color:#f1c40f; }
+  .kpi.err .kpi-num { color:#e74c3c; }
+</style></head>
+<body>
+<div class="kpi-grid">
+  <div class="kpi"><div class="kpi-num tabular">1,284</div><div class="kpi-label">TRACKS</div></div>
+  <div class="kpi ok"><div class="kpi-num tabular">1,241</div><div class="kpi-label">HEALTHY</div></div>
+  <div class="kpi warn"><div class="kpi-num tabular">31</div><div class="kpi-label">WARNINGS</div></div>
+  <div class="kpi err"><div class="kpi-num tabular">12</div><div class="kpi-label">ERRORS</div></div>
+</div>
+</body></html>

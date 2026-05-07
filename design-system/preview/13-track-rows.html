@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en"><head><meta charset="UTF-8"/>
+<link rel="stylesheet" href="../colors_and_type.css"/>
+<style>
+  body { margin:0; padding:20px; background:var(--bg-base); width:700px; box-sizing:border-box; font-family:var(--font-sans); color:var(--text-primary); }
+  .card { background:var(--bg-surface); border:1px solid var(--border-subtle); border-radius:var(--radius-lg); padding:16px 20px; }
+  .track { display:flex; align-items:center; gap:12px; }
+  .art { width:48px; height:48px; border-radius:var(--radius-sm); background:linear-gradient(135deg,#2a1f4a,#4a2f6a); flex-shrink:0; }
+  .info { flex:1; min-width:0; }
+  .title { font-size:.9rem; font-weight:500; color:var(--text-primary); margin-bottom:2px; }
+  .artist { font-size:.8rem; color:var(--text-secondary); }
+  .meta { display:flex; gap:8px; align-items:center; margin-top:4px; }
+  .format { font-size:.7rem; color:var(--text-muted); background:var(--bg-elevated); padding:2px 6px; border-radius:4px; font-family:var(--font-mono); }
+  .health { width:20px; height:20px; flex-shrink:0; }
+  svg { width:18px; height:18px; stroke:currentColor; stroke-width:2; fill:none; stroke-linecap:round; stroke-linejoin:round; }
+  .ok { color:#1db954; }
+  .warn { color:#f1c40f; }
+  .err { color:#e74c3c; }
+  .row { display:flex; flex-direction:column; gap:8px; }
+  .track.err-row { border:1px solid rgba(231,76,60,.4); background:rgba(231,76,60,.05); padding:10px 12px; border-radius:var(--radius-md); }
+</style></head>
+<body>
+<div class="card row">
+  <div class="track"><div class="art"></div><div class="info"><div class="title">Strings Of Life (Juan Atkins Remix)</div><div class="artist">Derrick May · Transmat · 1987</div><div class="meta"><span class="format">AIFF</span><span class="format">128 BPM</span><span class="format">8A</span></div></div><div class="health ok"><svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg></div></div>
+  <div class="track err-row"><div class="art" style="background:#1a2430"></div><div class="info"><div class="title">Untitled Track 04.mp3</div><div class="artist" style="color:#f1c40f;font-style:italic">Missing artist</div><div class="meta"><span class="format">MP3 · 320</span></div></div><div class="health warn"><svg viewBox="0 0 24 24"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/></svg></div></div>
+</div>
+</body></html>

@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="en"><head><meta charset="UTF-8"/>
+<link rel="stylesheet" href="../colors_and_type.css"/>
+<style>
+  body { margin:0; padding:20px; background:var(--bg-base); width:700px; box-sizing:border-box; }
+  .row { display:grid; grid-template-columns:repeat(3,1fr); gap:10px; }
+  .sw { aspect-ratio:2; border-radius:10px; padding:12px; display:flex; flex-direction:column; justify-content:space-between; font-size:12px; font-weight:600; }
+  .val { font-family:var(--font-mono); font-size:10px; opacity:.7; }
+</style></head>
+<body>
+<div class="row">
+  <div class="sw" style="background:rgba(29,185,84,0.10);color:#1db954;border:1px solid rgba(29,185,84,0.3)"><span>success · healthy</span><span class="val">#1db954</span></div>
+  <div class="sw" style="background:rgba(241,196,15,0.10);color:#f1c40f;border:1px solid rgba(241,196,15,0.3)"><span>warning</span><span class="val">#f1c40f</span></div>
+  <div class="sw" style="background:rgba(231,76,60,0.10);color:#e74c3c;border:1px solid rgba(231,76,60,0.3)"><span>danger · error</span><span class="val">#e74c3c</span></div>
+</div>
+</body></html>
