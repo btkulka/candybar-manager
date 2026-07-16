@@ -21,27 +21,42 @@ export type TrackForDuplicateCheck = {
   dateAdded: number | null;
 };
 
+type NormTrack = {
+  track: TrackForDuplicateCheck;
+  /** Version-STRIPPED (remix/edit/feat removed) — fuzzy "same song?" scoring. */
+  nArtist: string;
+  nTitle: string;
+  /** Version-PRESERVING — tells an original apart from a remix/edit. */
+  vArtist: string;
+  vTitle: string;
+  /** First 3 chars of nTitle, for the cheap pre-filter. */
+  titleStart: string;
+};
+
+/** Precompute both normalized forms once per track. findDuplicates compares each
+ *  track against up to ~50 neighbours, so recomputing these regexes per-pair was
+ *  the hot path. */
+function normalizeTrack(track: TrackForDuplicateCheck): NormTrack {
+  const nTitle = normalizeForComparison(track.title);
+  return {
+    track,
+    nArtist: normalizeForComparison(track.artist),
+    nTitle,
+    vArtist: normalizeTrackKey(track.artist),
+    vTitle: normalizeTrackKey(track.title),
+    titleStart: nTitle.substring(0, 3),
+  };
+}
+
 /**
- * Calculate similarity score between two tracks
+ * Calculate similarity score between two (pre-normalized) tracks
  */
 function calculateTrackSimilarity(
-  track1: TrackForDuplicateCheck,
-  track2: TrackForDuplicateCheck
+  a: NormTrack,
+  b: NormTrack
 ): { similarity: number; reason: string } {
-  // Version-STRIPPED keys ("(Original Mix)", "(... Remix)", feat. tags removed) —
-  // used for fuzzy "same song?" scoring.
-  const artist1 = normalizeForComparison(track1.artist);
-  const artist2 = normalizeForComparison(track2.artist);
-  const title1 = normalizeForComparison(track1.title);
-  const title2 = normalizeForComparison(track2.title);
-
-  // Version-PRESERVING keys — used to tell an original apart from a remix/edit so
-  // two genuinely different versions are never collapsed into a 1.0 exact match
-  // (which the health UI would then invite the user to permanently delete).
-  const vArtist1 = normalizeTrackKey(track1.artist);
-  const vArtist2 = normalizeTrackKey(track2.artist);
-  const vTitle1 = normalizeTrackKey(track1.title);
-  const vTitle2 = normalizeTrackKey(track2.title);
+  const { track: track1, nArtist: artist1, nTitle: title1, vArtist: vArtist1, vTitle: vTitle1 } = a;
+  const { track: track2, nArtist: artist2, nTitle: title2, vArtist: vArtist2, vTitle: vTitle2 } = b;
 
   // True exact match: the version-preserving keys agree (and are non-empty).
   if (vArtist1 === vArtist2 && vTitle1 === vTitle2 && vArtist1 !== '' && vTitle1 !== '') {
@@ -121,7 +136,6 @@ export function findDuplicates(
   threshold = 0.85
 ): DuplicatePair[] {
   const duplicates: DuplicatePair[] = [];
-  const checkedPairs = new Set<string>();
 
   // Sort tracks by artist+title for more efficient comparison
   const sortedTracks = [...tracks].sort((a, b) => {
@@ -129,33 +143,33 @@ export function findDuplicates(
     const keyB = `${b.artist}-${b.title}`.toLowerCase();
     return keyA.localeCompare(keyB);
   });
+  // Normalize each track ONCE up front (the window scan below would otherwise
+  // recompute these regexes for every neighbour comparison).
+  const normed = sortedTracks.map(normalizeTrack);
 
   for (let i = 0; i < sortedTracks.length; i++) {
-    const track1 = sortedTracks[i];
+    const n1 = normed[i];
+    const track1 = n1.track;
 
     // Only compare with nearby tracks (optimization)
-    // Since sorted, similar tracks should be close together
+    // Since sorted, similar tracks should be close together.
+    // The window ensures each (i, j) pair is visited at most once, so no
+    // separate "checked pairs" set is needed.
     const searchWindow = Math.min(50, sortedTracks.length - i);
 
     for (let j = i + 1; j < i + searchWindow && j < sortedTracks.length; j++) {
-      const track2 = sortedTracks[j];
+      const n2 = normed[j];
+      const track2 = n2.track;
 
       // Skip if same file
       if (track1.filePath === track2.filePath) continue;
 
-      // Create a unique key for this pair
-      const pairKey = [track1.filePath, track2.filePath].sort().join('|');
-      if (checkedPairs.has(pairKey)) continue;
-      checkedPairs.add(pairKey);
-
       // Quick check - if first characters of normalized titles don't match, skip
-      const title1Start = normalizeForComparison(track1.title).substring(0, 3);
-      const title2Start = normalizeForComparison(track2.title).substring(0, 3);
-      if (title1Start !== title2Start && stringSimilarity(title1Start, title2Start) < 0.5) {
+      if (n1.titleStart !== n2.titleStart && stringSimilarity(n1.titleStart, n2.titleStart) < 0.5) {
         continue;
       }
 
-      const { similarity, reason } = calculateTrackSimilarity(track1, track2);
+      const { similarity, reason } = calculateTrackSimilarity(n1, n2);
 
       if (similarity >= threshold) {
         duplicates.push({

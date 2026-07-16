@@ -729,10 +729,13 @@ server.tool(
         '-y', aiffPath
       );
 
-      const { execFileSync } = await import('child_process');
+      const { execFile } = await import('child_process');
+      const { promisify } = await import('util');
+      const execFileAsync = promisify(execFile);
       const ffmpegBin: string = require('ffmpeg-static');
       try {
-        execFileSync(ffmpegBin, ffmpegArgs, { stdio: 'pipe' });
+        // Async (not execFileSync) so a large-file transcode doesn't block the event loop.
+        await execFileAsync(ffmpegBin, ffmpegArgs);
         // Clean up the intermediate FLAC (journaled) and temp art.
         await safeDelete(rawPath, { context: 'mcp-download-cleanup', detail: { convertedTo: aiffPath } }).catch(() => {});
         if (artPath) await fs.unlink(artPath).catch(() => {});
@@ -741,7 +744,7 @@ server.tool(
         // Fallback: try without art
         try {
           const fallbackArgs = ['-i', rawPath, '-acodec', 'pcm_s24be', '-ar', '44100', '-ac', '2', '-write_id3v2', '1', '-y', aiffPath];
-          execFileSync(ffmpegBin, fallbackArgs, { stdio: 'pipe' });
+          await execFileAsync(ffmpegBin, fallbackArgs);
           await safeDelete(rawPath, { context: 'mcp-download-cleanup', detail: { convertedTo: aiffPath } }).catch(() => {});
           if (artPath) await fs.unlink(artPath).catch(() => {});
           return { content: [{ type: 'text', text: JSON.stringify({ success: true, path: aiffPath, format: 'AIFF', note: 'Converted without art embedding' }) }] };

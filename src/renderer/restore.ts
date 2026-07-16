@@ -772,8 +772,11 @@ export function initRestore() {
   backToConfigureBtn?.addEventListener('click', () => setStage('configure'));
   startBtn?.addEventListener('click', () => void startRestore());
   abortBtn?.addEventListener('click', () => {
-    // No cancellation IPC yet — users can close the window / devtools ctrl+c as escape hatch.
-    showToast('info', 'Abort not wired', 'Close the app to stop an in-flight restore.');
+    // Cooperative cancellation: restore stops at the next phase boundary and,
+    // crucially, before the destructive XML rewrite. In-flight downloads finish.
+    void window.candybar.abortRestore();
+    if (abortBtn) abortBtn.disabled = true;
+    showToast('info', 'Aborting restore…', 'Stopping at the next safe point; in-flight downloads finish.');
   });
   newRunBtn?.addEventListener('click', () => setStage('configure'));
 

@@ -189,8 +189,20 @@ export class JobManager extends EventEmitter {
       this.emit(record.status === 'cancelled' ? 'job-cancelled' : 'job-failed', this.toJobInfo(record));
     } finally {
       this.running.delete(record.id);
+      this.pruneCompletedJobs();
       this.tick();
     }
+  }
+
+  // Cap retained settled jobs so the jobs Map (which holds full results for the
+  // process lifetime) can't grow without bound. Running/queued jobs are kept.
+  private static readonly MAX_RETAINED_JOBS = 200;
+  private pruneCompletedJobs(): void {
+    const settled = Array.from(this.jobs.values())
+      .filter(r => r.status === 'completed' || r.status === 'failed' || r.status === 'cancelled')
+      .sort((a, b) => (a.completedAt ?? 0) - (b.completedAt ?? 0));
+    const excess = settled.length - JobManager.MAX_RETAINED_JOBS;
+    for (let i = 0; i < excess; i++) this.jobs.delete(settled[i].id);
   }
 
   private toJobInfo(record: JobRecord): JobInfo {

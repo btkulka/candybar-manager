@@ -65,7 +65,11 @@ export function recordWrite(entry: WriteJournalEntry): void {
   const dir = journalDir;
   const now = new Date();
   const line = JSON.stringify({ ts: now.toISOString(), ...entry }) + '\n';
-  const file = path.join(dir, `${now.toISOString().slice(0, 7)}.jsonl`);
+  // Rotate by LOCAL year-month so a write late in the local month lands in the
+  // current month's file (UTC slicing pushed those into next month's file). The
+  // ts above stays ISO/UTC for precision.
+  const localMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+  const file = path.join(dir, `${localMonth}.jsonl`);
   appendChain = appendChain
     .then(async () => {
       await fs.mkdir(dir, { recursive: true });

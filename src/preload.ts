@@ -386,8 +386,10 @@ contextBridge.exposeInMainWorld('candybar', {
     usbVolumesAllowlist?: string[];
     usbTagMatching?: boolean;
     rewriteXml?: boolean;
-  }): Promise<{ success: boolean; report?: unknown; reportPath?: string; error?: string }> =>
+  }): Promise<{ success: boolean; report?: unknown; reportPath?: string; error?: string; aborted?: boolean }> =>
     ipcRenderer.invoke('restore-run', { options }),
+  abortRestore: (): Promise<{ success: boolean; aborting: boolean }> =>
+    ipcRenderer.invoke('restore-abort'),
   onRestoreProgress: (
     callback: (p: {
       phase: string;

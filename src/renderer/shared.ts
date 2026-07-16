@@ -319,7 +319,8 @@ declare global {
         usbVolumesAllowlist?: string[];
         usbTagMatching?: boolean;
         rewriteXml?: boolean;
-      }) => Promise<{ success: boolean; report?: unknown; reportPath?: string; error?: string }>;
+      }) => Promise<{ success: boolean; report?: unknown; reportPath?: string; error?: string; aborted?: boolean }>;
+      abortRestore: () => Promise<{ success: boolean; aborting: boolean }>;
       onRestoreProgress: (
         callback: (p: {
           phase: string;

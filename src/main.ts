@@ -3332,7 +3332,10 @@ ipcMain.handle('restore-pick-xml', async () => {
   return { success: true, path: result.filePaths[0] };
 });
 
+let restoreAbortController: AbortController | null = null;
+
 ipcMain.handle('restore-run', async (event, { options }: { options: Omit<RestoreOptions, 'beatportAccounts' | 'qobuzAccounts'> }) => {
+  restoreAbortController = new AbortController();
   try {
     const config = await readConfig(CONFIG_PATH, CONFIG_DEFAULTS_PATH);
     const libraryRoot = options.libraryRoot || await getLibraryRoot();
@@ -3346,13 +3349,25 @@ ipcMain.handle('restore-run', async (event, { options }: { options: Omit<Restore
     };
     const report = await restoreLibrary(fullOptions, (p: RestoreProgress) => {
       event.sender.send('restore-progress', p);
-    });
+    }, restoreAbortController.signal);
     // Persist a copy of the report to user data for later reference.
     const reportPath = path.join(app.getPath('userData'), `restore-report-${Date.now()}.json`);
     await fs.promises.writeFile(reportPath, JSON.stringify(report, null, 2));
     return { success: true, report, reportPath };
   } catch (error) {
+    const aborted = restoreAbortController?.signal.aborted;
+    if (aborted) {
+      mainLog.info('Restore aborted by user');
+      return { success: false, aborted: true, error: 'Restore aborted' };
+    }
     mainLog.error('IPC restore-run failed:', error);
     return { success: false, error: error instanceof Error ? error.message : 'Restore failed' };
+  } finally {
+    restoreAbortController = null;
   }
+});
+
+ipcMain.handle('restore-abort', () => {
+  restoreAbortController?.abort();
+  return { success: true, aborting: restoreAbortController !== null };
 });

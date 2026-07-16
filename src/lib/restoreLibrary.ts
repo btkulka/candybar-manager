@@ -233,9 +233,16 @@ function buildStoreMatch(
 
 export async function restoreLibrary(
   options: RestoreOptions,
-  onProgress?: (p: RestoreProgress) => void
+  onProgress?: (p: RestoreProgress) => void,
+  signal?: AbortSignal
 ): Promise<RestoreReport> {
   const startedAt = new Date();
+  // Cooperative cancellation: throw at phase boundaries (and crucially before the
+  // destructive XML rewrite) when the user aborts. Downloads already in flight
+  // finish, but no new phase starts.
+  const checkAbort = () => {
+    if (signal?.aborted) throw new Error('Restore aborted by user');
+  };
   await fsp.mkdir(options.stageDir, { recursive: true });
 
   const totals: RestoreProgress['totals'] = {
@@ -424,6 +431,7 @@ export async function restoreLibrary(
     emit({ phase: 'beatport_fetch', message: `${toDownload.length} of ${remaining.length} missing tracks matched Beatport purchases`, withPerAccount: true });
 
     if (toDownload.length > 0) {
+      checkAbort();
       phaseStart('beatport_download', `Downloading ${toDownload.length} tracks from Beatport`);
       const dl = await downloadBeatportPurchases(
         beatportAccounts[0]?.id ?? LEGACY_ACCOUNT_ID,
@@ -525,6 +533,7 @@ export async function restoreLibrary(
     emit({ phase: 'qobuz_fetch', message: `${toDownload.length} of ${remaining.length} missing tracks matched Qobuz purchases`, withPerAccount: true });
 
     if (toDownload.length > 0) {
+      checkAbort();
       phaseStart('qobuz_download', `Downloading ${toDownload.length} tracks from Qobuz`);
       const dl = await downloadQobuzPurchases(
         qobuzAccounts[0]?.id ?? LEGACY_ACCOUNT_ID,
@@ -607,6 +616,7 @@ export async function restoreLibrary(
   // ---------- Optional XML rewrite ----------
   let xmlRewrite: XmlRewriteSummary | undefined;
   if (options.rewriteXml) {
+    checkAbort(); // last safe point before the destructive rewrite
     const updates = resultsList
       .filter(r => r.status === 'recovered' && r.destPath && !collidingPaths.has(r.destPath))
       .map(r => ({ trackId: r.track.trackId, newPath: r.destPath! }));
