@@ -134,3 +134,55 @@ export function looseTrackKey(artist: string, title: string): string {
   if (a && t) return `${a} - ${t}`;
   return a || t;
 }
+
+/**
+ * Version-PRESERVING title normalization. Keeps remix/edit/extended/radio/etc.
+ * words so different versions stay distinct, but folds case/diacritics/
+ * punctuation, maps &→and, strips *feat* credits (a credit, not a version), and
+ * folds the generic "Original Mix/Version" label away — stores (esp. Beatport)
+ * stamp "(Original Mix)" on the *default* recording, so it means "the base
+ * version", not a distinct one. Complements normalizeLoose (which strips ALL
+ * version info): the difference between the two is a track's version signature.
+ */
+export function normalizeTitleKeepVersion(str: string): string {
+  if (!str) return '';
+  return str
+    .toLowerCase()
+    .normalize('NFKD')
+    .replace(/[̀-ͯ]/g, '')
+    // strip bracketed feat credits: "(feat. X)", "[featuring Y]"
+    .replace(/\s*[\(\[][^)\]]*\b(feat|ft|featuring)\b[^)\]]*[\)\]]/gi, '')
+    // strip inline feat credits, stopping at a dash or an opening bracket so a
+    // trailing "(Extended Mix)" survives
+    .replace(/\b(feat\.?|ft\.?|featuring)\b.*?(?=\s*[-–—\(\[]|$)/gi, '')
+    // fold the generic "(Original Mix/Version/Edit)" / "Original Mix" label
+    .replace(/[\(\[]\s*original(\s+(mix|version|edit))?\s*[\)\]]/gi, ' ')
+    .replace(/\boriginal(\s+(mix|version))\b/gi, ' ')
+    .replace(/&/g, 'and')
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/**
+ * A track's "version signature": the descriptor tokens that make one version
+ * distinct from another (e.g. "extended mix", "adam beyer remix"). Computed as
+ * the version-preserving tokens minus the version-stripped base tokens, sorted
+ * for order-independence. A bare title and its "(Original Mix)" both yield ""
+ * (same version); a remix/edit/extended/radio variant yields a non-empty
+ * signature. Two titles are the same version iff their signatures are equal.
+ */
+export function titleVersionSignature(title: string): string {
+  if (!title) return '';
+  const base = new Set(normalizeLoose(title).split(' ').filter(Boolean));
+  return normalizeTitleKeepVersion(title)
+    .split(' ')
+    .filter(t => t && !base.has(t))
+    .sort()
+    .join(' ');
+}
+
+/** True when two titles denote the same version (remix/edit/extended/etc. match). */
+export function sameTitleVersion(a: string, b: string): boolean {
+  return titleVersionSignature(a) === titleVersionSignature(b);
+}

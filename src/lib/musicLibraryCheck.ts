@@ -2,18 +2,23 @@ import fs from 'fs/promises';
 import path from 'path';
 import { parseFile } from 'music-metadata';
 import { parse } from 'csv-parse/sync';
-import { normalizeForComparison, normalizeBasic } from './stringUtils';
+import { normalizeForComparison, normalizeBasic, sameTitleVersion } from './stringUtils';
 import { walkAudioDir } from './fileUtils';
 import { METADATA_CONCURRENCY } from './constants';
 import { createScopedLogger } from './logger';
-import fuzzball from 'fuzzball';
+import * as fuzzball from 'fuzzball';
 import type { SpotifyTrack } from './spotify';
 
 const log = createScopedLogger('LibraryCheck');
 
-// Fuzzy matching confidence thresholds (0-1 scale)
-const MATCH_THRESHOLD = 0.60; // Below this = no match
-const UNCERTAIN_THRESHOLD = 0.90; // Below this but above MATCH_THRESHOLD = uncertain, needs confirmation
+// Fuzzy matching confidence thresholds (0-1 scale). Exported for tests.
+export const MATCH_THRESHOLD = 0.60; // Below this = no match
+export const UNCERTAIN_THRESHOLD = 0.90; // Below this but above MATCH_THRESHOLD = uncertain, needs confirmation
+// A remix/edit/extended/radio variant of a song you own is a DIFFERENT track a
+// DJ still needs to buy, so it must never be auto-filed as "already in library".
+// When two titles are the same song but different versions, cap confidence just
+// below UNCERTAIN_THRESHOLD so it surfaces for review instead of being hidden.
+const VERSION_MISMATCH_CAP = UNCERTAIN_THRESHOLD - 0.01; // 0.89
 
 /**
  * Build a normalized key for matching, stripping remix tags, feat info, etc.
@@ -27,24 +32,30 @@ export function buildNormalizedKey(artist: string, title: string): string {
 
 /**
  * Calculate field similarity using fuzzball's best algorithms.
- * Returns 0-1 score using the best of ratio and token_set_ratio.
- * Note: partial_ratio is intentionally excluded - it matches substrings
- * and produces too many false positives (e.g. "Love" matching "Falling In Love").
+ * Returns 0-1 score using the best of ratio and token_sort_ratio.
+ * Note: both partial_ratio AND token_set_ratio are intentionally excluded — they
+ * score a perfect 100 whenever one string's tokens are a subset of the other's,
+ * which collapses genuinely different tracks (e.g. "Home" vs "Home (Nobody Is
+ * Not Loved)", or "Adam Beyer" vs "Adam Beyer, Layton Giordani") onto each other.
+ * token_sort_ratio still absorbs word-reordering ("Beyer, Adam" ≈ "Adam Beyer")
+ * but penalizes extra tokens, so subset relationships no longer read as identical.
  */
 function fieldSimilarity(a: string, b: string): number {
   if (!a && !b) return 1;
   if (!a || !b) return 0;
   const ratio = fuzzball.ratio(a, b);
-  const tokenSet = fuzzball.token_set_ratio(a, b);
-  return Math.max(ratio, tokenSet) / 100;
+  const tokenSort = fuzzball.token_sort_ratio(a, b);
+  return Math.max(ratio, tokenSort) / 100;
 }
 
 /**
  * Calculate overall match confidence between a CSV track and a library track
- * Returns a confidence score from 0 to 1
+ * Returns a confidence score from 0 to 1.
+ * Exported for unit testing of the version-aware bucketing.
  */
-function calculateMatchConfidence(csvTrack: TrackRecord, libraryTrack: TrackRecord): number {
-  // Exact key match = 100%
+export function calculateMatchConfidence(csvTrack: TrackRecord, libraryTrack: TrackRecord): number {
+  // Exact key match = 100%. The key (normalizeBasic) preserves version tags, so
+  // this only fires for a true same-version match.
   if (csvTrack.key === libraryTrack.key) return 1;
 
   // --- Pass 1: Raw comparison ---
@@ -78,7 +89,16 @@ function calculateMatchConfidence(csvTrack: TrackRecord, libraryTrack: TrackReco
   if (csvArtistNorm === libArtistNorm && csvArtistNorm.length > 0) bonus += 0.1;
   if (csvTitleNorm === libTitleNorm && csvTitleNorm.length > 0) bonus += 0.15;
 
-  return Math.min(1, weightedScore + bonus);
+  const confidence = Math.min(1, weightedScore + bonus);
+
+  // Same song, different version → cap below the "already in library" bar. The
+  // fuzzy score above matches on version-STRIPPED fields (so an owned remix and
+  // this remix still read as the same song), but a version mismatch means it's a
+  // distinct track to source, not a duplicate to hide.
+  if (!sameTitleVersion(csvTrack.title, libraryTrack.title)) {
+    return Math.min(confidence, VERSION_MISMATCH_CAP);
+  }
+  return confidence;
 }
 
 /**
@@ -99,10 +119,14 @@ function findTopMatches(
     return [{ track: exactMatch, confidence: 1 }];
   }
 
-  // Try exact match on normalized key (strips remix tags, feat, etc.)
+  // Try exact match on normalized key (strips remix tags, feat, etc.). Because
+  // the normalized key is version-agnostic, only accept it as a near-certain
+  // match when the versions also agree — otherwise a remix/edit collapses onto
+  // the base track. On a version mismatch, fall through to the fuzzy pass, which
+  // caps same-song/different-version pairs into the "uncertain" bucket.
   const csvNormKey = buildNormalizedKey(csvTrack.artist, csvTrack.title);
   const normMatch = normalizedLibraryMap.get(csvNormKey);
-  if (normMatch) {
+  if (normMatch && sameTitleVersion(csvTrack.title, normMatch.title)) {
     return [{ track: normMatch, confidence: 0.98 }];
   }
 
