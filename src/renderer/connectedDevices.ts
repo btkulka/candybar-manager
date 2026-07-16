@@ -825,6 +825,13 @@ async function bulkArchive(tracks: LibraryHealthTrack[], volumePath: string) {
 }
 
 async function bulkDelete(tracks: LibraryHealthTrack[], volumePath: string) {
+  if (tracks.length === 0) return;
+  const confirmed = window.confirm(
+    `Move ${tracks.length} track${tracks.length > 1 ? 's' : ''} from this device to Trash?\n\n` +
+    `The files are moved to the macOS Trash (recoverable).`
+  );
+  if (!confirmed) return;
+
   let ok = 0;
   let fail = 0;
   for (const track of tracks) {
@@ -847,10 +854,15 @@ async function handleUsbTrackAction(
   volumePath: string
 ) {
   if (action === 'delete') {
+    const confirmed = window.confirm(
+      `Move this file to Trash?\n\n${track.filePath}\n\n` +
+      `The file is moved to the macOS Trash (recoverable).`
+    );
+    if (!confirmed) return;
     try {
       const result = await window.candybar.deleteTrackFile(track.filePath);
       if (result.success) {
-        showToast('success', 'Track Deleted', `${track.fileName} has been deleted.`);
+        showToast('success', 'Moved to Trash', `${track.fileName} moved to Trash.`);
         removeTrackFromUsbResult(volumePath, track);
       } else {
         showToast('error', 'Delete Failed', result.error || 'Unknown error deleting file.');

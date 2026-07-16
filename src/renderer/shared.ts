@@ -535,7 +535,11 @@ export function setValue(id: string, value: string) {
 export function escapeHtml(text: string): string {
   const div = document.createElement('div');
   div.textContent = text;
-  return div.innerHTML;
+  // textContent->innerHTML escapes &, <, > but NOT quotes. This value is often
+  // interpolated into double-quoted HTML attributes (img src, title, data-fp),
+  // so quotes must be escaped too or a value like `" onerror=alert(1) x="`
+  // breaks out of the attribute and injects markup/handlers.
+  return div.innerHTML.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
 export function formatDuration(seconds: number | null | undefined): string {
@@ -1126,6 +1130,7 @@ export function initTagEditor() {
         filePath,
         title,
         artist,
+        album: getValue('edit-album'),
         year: getValue('edit-year'),
         genre: getValue('edit-genre'),
         label: getValue('edit-label'),

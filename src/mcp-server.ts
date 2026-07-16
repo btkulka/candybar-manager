@@ -12,6 +12,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod';
 import { checkTrackHealth, TrackHealth } from './lib/trackHealthCheck';
 import { convertToAiff, reencodeToMp3, deleteOriginalAfterConversion } from './lib/trackConverter';
+import { safeDelete } from './lib/safeDelete';
 import * as mm from 'music-metadata';
 import path from 'path';
 import fs from 'fs/promises';
@@ -19,6 +20,12 @@ import os from 'os';
 import { readConfig, setSecretsPath } from './lib/config';
 import { JSDOM } from 'jsdom';
 import crypto from 'crypto';
+
+import { initWriteJournal } from './lib/writeJournal';
+
+// Share the Electron app's write journal so conversions/deletes driven via MCP
+// land in the same recovery log (userData for app name 'candybar-manager').
+initWriteJournal(path.join(os.homedir(), 'Library', 'Application Support', 'candybar-manager'));
 
 const server = new McpServer({
   name: 'candybar-audio-tools',
@@ -712,8 +719,8 @@ server.tool(
       const ffmpegBin: string = require('ffmpeg-static');
       try {
         execFileSync(ffmpegBin, ffmpegArgs, { stdio: 'pipe' });
-        // Clean up temp files
-        await fs.unlink(rawPath).catch(() => {});
+        // Clean up the intermediate FLAC (journaled) and temp art.
+        await safeDelete(rawPath, { context: 'mcp-download-cleanup', detail: { convertedTo: aiffPath } }).catch(() => {});
         if (artPath) await fs.unlink(artPath).catch(() => {});
         return { content: [{ type: 'text', text: JSON.stringify({ success: true, path: aiffPath, format: 'AIFF', qobuzFormatId: dlFormatId, hasMetadata: true, hasArt: !!artPath }) }] };
       } catch (convErr) {
@@ -721,7 +728,7 @@ server.tool(
         try {
           const fallbackArgs = ['-i', rawPath, '-acodec', 'pcm_s24be', '-ar', '44100', '-ac', '2', '-write_id3v2', '1', '-y', aiffPath];
           execFileSync(ffmpegBin, fallbackArgs, { stdio: 'pipe' });
-          await fs.unlink(rawPath).catch(() => {});
+          await safeDelete(rawPath, { context: 'mcp-download-cleanup', detail: { convertedTo: aiffPath } }).catch(() => {});
           if (artPath) await fs.unlink(artPath).catch(() => {});
           return { content: [{ type: 'text', text: JSON.stringify({ success: true, path: aiffPath, format: 'AIFF', note: 'Converted without art embedding' }) }] };
         } catch {

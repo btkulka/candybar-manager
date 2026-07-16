@@ -3,6 +3,7 @@
  * Used by Restore Library to compute the authoritative owned-track list.
  */
 import fs from 'fs/promises';
+import { recordWrite } from './writeJournal';
 
 export type RekordboxTrack = {
   trackId: string;
@@ -29,7 +30,9 @@ function decodeLocation(loc: string): string {
 
 /** Encode an absolute file path for a Rekordbox Location attribute (file://localhost + encodeURI). */
 export function pathToLocation(absPath: string): string {
-  return 'file://localhost' + encodeURI(absPath);
+  // encodeURI leaves '#' and '?' unencoded, but in a file:// URL those begin the
+  // fragment/query and would silently truncate the Location. Encode them explicitly.
+  return 'file://localhost' + encodeURI(absPath).replace(/#/g, '%23').replace(/\?/g, '%3F');
 }
 
 export type LocationUpdate = { trackId: string; newPath: string };
@@ -76,7 +79,13 @@ export async function rewriteLocations(
     else updated.push(u.trackId);
   }
 
-  if (updated.length > 0) await fs.writeFile(xmlPath, xmlText);
+  if (updated.length > 0) {
+    await fs.writeFile(xmlPath, xmlText);
+    recordWrite({
+      op: 'xml-rewrite', src: xmlPath, outcome: 'ok',
+      detail: { backupPath, updated: updated.length, notFound: notFound.length, trackIds: updated },
+    });
+  }
   return { backupPath, updated, notFound };
 }
 

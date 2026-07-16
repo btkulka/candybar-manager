@@ -3,6 +3,8 @@ import fs from 'fs/promises';
 import path from 'path';
 import { createScopedLogger } from './logger';
 import { repairAiffHeader } from './aiffRepair';
+import { recordWrite } from './writeJournal';
+import { safeDelete } from './safeDelete';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const ffmpegPath: string = require('ffmpeg-static');
 // eslint-disable-next-line @typescript-eslint/no-var-requires, @typescript-eslint/no-require-imports
@@ -68,6 +70,33 @@ function summarizeFfmpegError(stderr: string): string {
 // repair-and-retry flow (see shared.ts updateTrackTagsWithRepair).
 const AIFC_CORRUPT_HEADER_PATTERN = /could not find COMM tag or invalid block_align value/i;
 
+/**
+ * Guard against ffmpeg's '-y' silently overwriting an unrelated pre-existing file
+ * at the derived destination (callers then delete the source → permanent loss of
+ * the clobbered file). Returns an error string when the destination holds a
+ * DIFFERENT existing file, or null when it's safe (destination free, or resolves
+ * to the input itself — the in-place case, which we handle via a temp + rename).
+ */
+async function conversionTargetError(filePath: string, outputPath: string): Promise<string | null> {
+  if (path.resolve(filePath) === path.resolve(outputPath)) return null; // in-place; temp+rename below
+  try {
+    const outStat = await fs.stat(outputPath);
+    const inStat = await fs.stat(filePath).catch(() => null);
+    // Same underlying file (e.g. case-insensitive FS treating .AIF/.aif as one).
+    if (inStat && inStat.ino === outStat.ino && inStat.dev === outStat.dev) return null;
+    return `a different file already exists at the destination (${path.basename(outputPath)}); refusing to overwrite`;
+  } catch {
+    return null; // destination does not exist — safe
+  }
+}
+
+/** Unique sibling temp path preserving the output extension (so ffmpeg infers the format). */
+function tempConversionPath(outputPath: string): string {
+  const ext = path.extname(outputPath);
+  const stem = outputPath.slice(0, outputPath.length - ext.length);
+  return `${stem}.converting-${Date.now()}-${Math.random().toString(36).slice(2, 8)}${ext}`;
+}
+
 export async function convertToAiff(
   filePath: string,
   onProgress?: ProgressCallback
@@ -78,10 +107,22 @@ export async function convertToAiff(
   }
 
   const ext = path.extname(filePath);
-  const outputPath = filePath.slice(0, -ext.length) + '.aif';
+  // For an AIFF-family input, keep the SAME filename (convert in place via temp)
+  // so existing Rekordbox path references aren't orphaned by a .aiff -> .aif rename.
+  const isAiffInput = /\.aiff?$/i.test(ext);
+  const outputPath = isAiffInput ? filePath : filePath.slice(0, -ext.length) + '.aif';
+
+  const conflict = await conversionTargetError(filePath, outputPath);
+  if (conflict) {
+    log.warn(`convertToAiff refusing to overwrite: ${conflict}`);
+    return { success: false, originalPath: filePath, errorMessage: conflict };
+  }
+
+  const tmpPath = tempConversionPath(outputPath);
+  const inPlace = path.resolve(filePath) === path.resolve(outputPath);
 
   return new Promise((resolve) => {
-    const args = ['-i', filePath, '-c:a', 'pcm_s24be', '-ar', '44100', '-y', outputPath];
+    const args = ['-i', filePath, '-c:a', 'pcm_s24be', '-ar', '44100', '-y', tmpPath];
     const proc = spawn(ffmpegPath, args);
     let stderr = '';
     let duration = 0;
@@ -96,11 +137,20 @@ export async function convertToAiff(
       }
     });
 
-    proc.on('close', (code) => {
+    proc.on('close', async (code) => {
       if (code === 0) {
+        try {
+          await fs.rename(tmpPath, outputPath);
+        } catch (err) {
+          await fs.unlink(tmpPath).catch(() => {});
+          resolve({ success: false, originalPath: filePath, errorMessage: `failed to finalize output: ${err instanceof Error ? err.message : String(err)}` });
+          return;
+        }
         onProgress?.({ filePath, percent: 100 });
+        recordWrite({ op: 'convert', src: filePath, dest: outputPath, context: 'convert-aiff', outcome: 'ok', detail: inPlace ? { inPlace: true } : undefined });
         resolve({ success: true, originalPath: filePath, outputPath });
       } else {
+        await fs.unlink(tmpPath).catch(() => {});
         log.error('ffmpeg convertToAiff failed:', stderr.slice(-500));
         if (AIFC_CORRUPT_HEADER_PATTERN.test(stderr)) {
           resolve({ success: false, originalPath: filePath, errorMessage: `AIFC_CORRUPT_HEADER: ${filePath}` });
@@ -114,7 +164,8 @@ export async function convertToAiff(
       }
     });
 
-    proc.on('error', (err) => {
+    proc.on('error', async (err) => {
+      await fs.unlink(tmpPath).catch(() => {});
       resolve({ success: false, originalPath: filePath, errorMessage: err.message });
     });
   });
@@ -127,19 +178,39 @@ export async function reencodeToMp3(filePath: string): Promise<ConversionResult>
   }
 
   const ext = path.extname(filePath);
-  const outputPath = filePath.slice(0, -ext.length) + '.mp3';
+  // .mp3 input → re-encode in place (same filename via temp); other formats → .mp3.
+  const isMp3Input = ext.toLowerCase() === '.mp3';
+  const outputPath = isMp3Input ? filePath : filePath.slice(0, -ext.length) + '.mp3';
+
+  const conflict = await conversionTargetError(filePath, outputPath);
+  if (conflict) {
+    log.warn(`reencodeToMp3 refusing to overwrite: ${conflict}`);
+    return { success: false, originalPath: filePath, errorMessage: conflict };
+  }
+
+  const tmpPath = tempConversionPath(outputPath);
+  const inPlace = path.resolve(filePath) === path.resolve(outputPath);
 
   return new Promise((resolve) => {
-    const args = ['-i', filePath, '-c:a', 'libmp3lame', '-b:a', '320k', '-ar', '44100', '-y', outputPath];
+    const args = ['-i', filePath, '-c:a', 'libmp3lame', '-b:a', '320k', '-ar', '44100', '-y', tmpPath];
     const proc = spawn(ffmpegPath, args);
     let stderr = '';
 
     proc.stderr.on('data', (data: Buffer) => { stderr += data.toString(); });
 
-    proc.on('close', (code) => {
+    proc.on('close', async (code) => {
       if (code === 0) {
+        try {
+          await fs.rename(tmpPath, outputPath);
+        } catch (err) {
+          await fs.unlink(tmpPath).catch(() => {});
+          resolve({ success: false, originalPath: filePath, errorMessage: `failed to finalize output: ${err instanceof Error ? err.message : String(err)}` });
+          return;
+        }
+        recordWrite({ op: 'convert', src: filePath, dest: outputPath, context: 'reencode-mp3', outcome: 'ok', detail: inPlace ? { inPlace: true } : undefined });
         resolve({ success: true, originalPath: filePath, outputPath });
       } else {
+        await fs.unlink(tmpPath).catch(() => {});
         log.error('ffmpeg reencodeToMp3 failed:', stderr.slice(-500));
         if (AIFC_CORRUPT_HEADER_PATTERN.test(stderr)) {
           resolve({ success: false, originalPath: filePath, errorMessage: `AIFC_CORRUPT_HEADER: ${filePath}` });
@@ -153,7 +224,8 @@ export async function reencodeToMp3(filePath: string): Promise<ConversionResult>
       }
     });
 
-    proc.on('error', (err) => {
+    proc.on('error', async (err) => {
+      await fs.unlink(tmpPath).catch(() => {});
       resolve({ success: false, originalPath: filePath, errorMessage: err.message });
     });
   });
@@ -298,8 +370,11 @@ export async function createMp3PreviewResponse(
 
 export async function deleteOriginalAfterConversion(originalPath: string, outputPath: string | undefined): Promise<void> {
   if (!outputPath) return;
+  // In-place conversion (e.g. .aiff fixed under the same name) → the "original"
+  // IS the output; deleting it would destroy the just-converted file.
+  if (path.resolve(originalPath) === path.resolve(outputPath)) return;
   try {
-    await fs.unlink(originalPath);
+    await safeDelete(originalPath, { context: 'convert-cleanup', detail: { convertedTo: outputPath } });
     log.info('Deleted original after conversion:', originalPath);
   } catch (err) {
     log.warn('Failed to delete original after conversion:', originalPath, err);

@@ -156,7 +156,7 @@ export async function organizeTracks({ tracks, rootDir, log, onProgress }: Organ
       }
 
       log(`Moving '${fileName}' to '${targetDir}'\n`);
-      await safeMove(track.filePath, targetPath);
+      await safeMove(track.filePath, targetPath, 'organize');
 
       finish(
         { filePath: track.filePath, success: true, resultPath: targetPath },

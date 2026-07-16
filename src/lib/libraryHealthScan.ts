@@ -5,6 +5,7 @@ import { checkAiffIntegrity } from './audioIntegrityCheck';
 import type { LibraryHealthTrack } from '../types';
 import { findDuplicates, DuplicatePair, TrackForDuplicateCheck } from './duplicateDetection';
 import { walkAudioDir, safeMove } from './fileUtils';
+import { safeDelete } from './safeDelete';
 import { getDefaultArchivePath } from './config';
 import { createScopedLogger } from './logger';
 import { getDismissedDuplicateKeys, makeDuplicatePairKey } from './db';
@@ -61,11 +62,11 @@ export async function archiveTrackFile(
     // destination already has a copy (prior archive attempt), the source is
     // redundant — delete it so the library is cleaned up either way.
     try {
-      await safeMove(filePath, archiveDest);
+      await safeMove(filePath, archiveDest, 'archive');
     } catch (moveErr) {
       const destExists = await fs.promises.access(archiveDest).then(() => true, () => false);
       if (!destExists) throw moveErr;
-      await fs.promises.unlink(filePath);
+      await safeDelete(filePath, { context: 'archive', detail: { reason: 'archive-dest-already-existed', archiveDest } });
       log.info(`Archive destination already existed; removed source: ${filePath}`);
     }
 
@@ -134,17 +135,21 @@ export async function scanLibraryHealth({
   const existingFingerprints = getExistingFingerprints(libraryRoot);
   const presentPaths = new Set<string>(audioFiles);
 
-  // Prune tracks that no longer exist on disk
-  const pruned = pruneTracksNotIn(libraryRoot, presentPaths);
-  if (pruned > 0) log.info(`Pruned ${pruned} missing tracks from DB`);
-
   if (total === 0) {
+    // An empty walk almost always means the library root is unavailable
+    // (unmounted drive, permission error) rather than "every track was deleted".
+    // Return WITHOUT pruning — pruning here would wipe all persisted metadata.
     const emptySummary: HealthSummary = { total: 0, healthy: 0, warnings: 0, errors: 0, byIssueCode: {} };
     saveScanRun(libraryRoot, emptySummary, Date.now());
     saveDuplicates(libraryRoot, []);
     onProgress?.({ phase: 'complete', current: 0, total: 0 });
     return { summary: emptySummary, tracks: [], duplicates: [], scannedAt: Date.now(), libraryRoot };
   }
+
+  // Prune tracks that no longer exist on disk (only once we know the walk found
+  // files, so a transient empty result can't wipe the whole index).
+  const pruned = pruneTracksNotIn(libraryRoot, presentPaths);
+  if (pruned > 0) log.info(`Pruned ${pruned} missing tracks from DB`);
 
   // Incremental scan: stat each file, compare mtime, re-parse only changed/new
   const BATCH_SIZE = 50;

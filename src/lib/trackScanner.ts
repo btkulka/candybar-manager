@@ -7,6 +7,8 @@ import { checkTrackHealth } from './trackHealthCheck';
 import { AUDIO_EXTENSIONS, METADATA_CONCURRENCY } from './constants';
 import { createScopedLogger } from './logger';
 import { safeMove } from './fileUtils';
+import { recordWrite, statBytes } from './writeJournal';
+import { safeDelete } from './safeDelete';
 import type { TrackHealth, TrackInfo, UpdateTagsParams, ScanProgress } from '../types';
 export type { TrackHealth, TrackInfo, UpdateTagsParams, ScanProgress };
 
@@ -73,17 +75,18 @@ async function flattenAndClean(sourceDir: string): Promise<{ flattened: number; 
           }
         }
 
-        await safeMove(audioFile, destPath);
+        await safeMove(audioFile, destPath, 'scan-flatten');
         flattened++;
       }
 
-      // Remove the now-empty (or non-audio) subdirectory tree
-      await fs.rm(fullPath, { recursive: true, force: true });
+      // Trash the residual (post-extraction) subdirectory tree rather than a
+      // permanent recursive rm, so any unsupported/ancillary files are recoverable.
+      await safeDelete(fullPath, { context: 'scan-flatten', recursive: true, detail: { recursive: true } });
       removed++;
     } else if (entry.isFile()) {
       const ext = path.extname(entry.name).toLowerCase();
       if (!AUDIO_EXTENSIONS.has(ext) || entry.name.startsWith('.')) {
-        await fs.unlink(fullPath);
+        await safeDelete(fullPath, { context: 'scan-flatten' });
         removed++;
       }
     }
@@ -214,6 +217,7 @@ export async function updateTags(params: UpdateTagsParams): Promise<TrackInfo> {
   const { filePath } = params;
   const fileExt = path.extname(filePath).toLowerCase();
   let finalPath = filePath;
+  const preWriteBytes = await statBytes(filePath);
 
   if (fileExt === '.mp3') {
     updateTagsNodeID3(params);
@@ -222,6 +226,16 @@ export async function updateTags(params: UpdateTagsParams): Promise<TrackInfo> {
   } else {
     throw new Error(`Tag writing is not supported for ${fileExt} files`);
   }
+
+  recordWrite({
+    op: 'tag-write',
+    src: filePath,
+    dest: finalPath !== filePath ? finalPath : undefined,
+    bytes: preWriteBytes,
+    outcome: 'ok',
+    // Field names only — values (esp. base64 album art) would bloat the journal.
+    detail: { fields: Object.keys(params).filter((k) => k !== 'filePath' && params[k as keyof UpdateTagsParams] !== undefined) },
+  });
 
   const ext = path.extname(finalPath).toLowerCase();
   const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -329,6 +343,20 @@ async function updateTagsFfmpeg(params: UpdateTagsParams): Promise<string> {
     ? filePath.slice(0, filePath.length - ext.length) + outputExt
     : filePath;
 
+  // Guard: converting to a new extension must not overwrite a DIFFERENT existing
+  // file already at finalPath (e.g. an existing Track.aiff when tagging Track.wav),
+  // which would then be followed by deleting the source — permanent loss.
+  if (finalPath !== filePath) {
+    const existing = await fs.stat(finalPath).catch(() => null);
+    if (existing) {
+      const src = await fs.stat(filePath).catch(() => null);
+      const sameFile = src && existing.ino === src.ino && existing.dev === src.dev;
+      if (!sameFile) {
+        throw new Error(`Cannot convert ${path.basename(filePath)} to ${outputExt}: a different file already exists at ${path.basename(finalPath)}`);
+      }
+    }
+  }
+
   const args = ['-i', filePath];
 
   // If album art is provided, add it as a second input
@@ -340,6 +368,16 @@ async function updateTagsFfmpeg(params: UpdateTagsParams): Promise<string> {
       await fs.writeFile(artTempPath, Buffer.from(matches[2], 'base64'));
       args.push('-i', artTempPath);
     }
+  }
+
+  // When no new art is supplied, detect whether the source already carries
+  // embedded cover art so we can preserve it — mapping only 0:a would drop it.
+  let hasEmbeddedArt = false;
+  if (!artTempPath) {
+    try {
+      const meta = await parseFile(filePath, { duration: false });
+      hasEmbeddedArt = Boolean(meta.common.picture && meta.common.picture.length);
+    } catch { /* ignore — treat as no embedded art */ }
   }
 
   // Audio stream handling:
@@ -367,6 +405,9 @@ async function updateTagsFfmpeg(params: UpdateTagsParams): Promise<string> {
     // ID3v2 APIC frames want a title/comment tag on the attached picture stream.
     args.push('-metadata:s:v:0', 'title=Album cover');
     args.push('-metadata:s:v:0', 'comment=Cover (front)');
+  } else if (hasEmbeddedArt) {
+    // Preserve the source's existing embedded cover art instead of dropping it.
+    args.push('-map', '0:v', '-c:v', 'copy', '-disposition:v:0', 'attached_pic');
   }
 
   // Add metadata flags
@@ -416,9 +457,14 @@ async function updateTagsFfmpeg(params: UpdateTagsParams): Promise<string> {
     });
 
     await fs.rename(tempPath, finalPath);
-    // Remove original WAV/FLAC after successful conversion to AIFF.
+    // Remove original WAV/FLAC after successful conversion to AIFF (recoverable via Trash).
     if (ext !== outputExt) {
-      await fs.unlink(filePath).catch(() => {});
+      try {
+        await safeDelete(filePath, { context: 'tag-write-convert', detail: { convertedTo: finalPath } });
+      } catch (err) {
+        // Best-effort — safeDelete already journaled the failure; both files now exist.
+        log.warn('Failed to remove original after tag-write conversion:', filePath, err);
+      }
     }
   } finally {
     // Clean up temp files even if ffmpeg or rename fails

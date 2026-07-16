@@ -69,6 +69,8 @@ import {
 } from './lib/libraryStore';
 import { exportCatalog } from './lib/catalogExport';
 import { safeMove } from './lib/fileUtils';
+import { initWriteJournal, recordWrite, statBytes, flushWriteJournal } from './lib/writeJournal';
+import { safeDelete, setTrashHandler } from './lib/safeDelete';
 import { listUsbVolumes } from './lib/usbHealthScan';
 import { normalizeForComparison, stringSimilarity, looseTrackKey, normalizeLoose } from './lib/stringUtils';
 import { initJobQueue, getJobManager } from './lib/jobQueue';
@@ -228,6 +230,12 @@ app.whenReady().then(async () => {
   initDatabase();
   mainLog.info('Database initialized');
 
+  // Append-only journal of destructive file operations (for recovery tracing)
+  initWriteJournal(app.getPath('userData'));
+  // Route user-audio deletes through the OS Trash (recoverable) instead of a
+  // permanent unlink. The lib layer stays Electron-free; we inject the handler.
+  setTrashHandler((filePath) => shell.trashItem(filePath));
+
   // One-shot migration of legacy scan-cache.json data into SQLite
   migrateFromJsonCacheIfNeeded(app.getPath('userData'));
 
@@ -264,11 +272,14 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
 });
 
-app.on('will-quit', () => {
+app.on('will-quit', (event) => {
   mainLog.info('App will quit, cleaning up...');
   closeStorePanel();
   stopBackgroundRefresh();
   closeDatabase();
+  // Ensure in-flight write-journal appends (the recovery trail) land before exit.
+  event.preventDefault();
+  flushWriteJournal().finally(() => app.exit(0));
 });
 
 // ========== Store Panel (Embedded WebContentsView) ==========
@@ -1004,9 +1015,14 @@ ipcMain.handle('rekordbox-resync', async (): Promise<RekordboxImportSummary> => 
   const libraryRoot = config.libraryRoot || DEFAULT_LIBRARY_ROOT;
   if (!xmlPath) throw new Error('Rekordbox XML path is not set. Configure it in Settings.');
   try {
-    mainLog.info(`Resync: wiping library_tracks/issues/duplicates/scan_runs for root=${libraryRoot}`);
-    clearLibraryRoot(libraryRoot);
+    // Parse & validate the XML BEFORE wiping the DB — a failed/empty parse must
+    // never leave the library index emptied with nothing to import.
     const tracks = await parseRekordboxXml(xmlPath);
+    if (!tracks.length) {
+      throw new Error('Rekordbox XML parsed to zero tracks; refusing to wipe the library index.');
+    }
+    mainLog.info(`Resync: parsed ${tracks.length} tracks; wiping library_tracks/issues/duplicates/scan_runs for root=${libraryRoot}`);
+    clearLibraryRoot(libraryRoot);
     return await importRekordboxToLibrary(tracks, libraryRoot);
   } catch (error) {
     mainLog.error('IPC rekordbox-resync failed:', error);
@@ -2867,12 +2883,15 @@ ipcMain.handle(
   ): Promise<{ success: boolean; error?: string }> => {
     try {
       if (keep === 'incoming') {
-        await fs.promises.unlink(existingPath);
-        // Move incoming to target (which is where existing was)
-        await safeMove(incomingPath, targetPath);
+        // Stage incoming beside the target FIRST so a mid-operation failure can
+        // never destroy the existing file before its replacement is in place.
+        const stagingPath = `${targetPath}.incoming-${Date.now()}`;
+        await safeMove(incomingPath, stagingPath, 'organize-conflict:stage');
+        await safeDelete(existingPath, { context: 'organize-conflict:keep-incoming' });
+        await safeMove(stagingPath, targetPath, 'organize-conflict:finalize');
       } else {
-        // Keep existing, delete the incoming file
-        await fs.promises.unlink(incomingPath);
+        // Keep existing, discard the incoming file (recoverable via Trash).
+        await safeDelete(incomingPath, { context: 'organize-conflict:keep-existing' });
       }
       return { success: true };
     } catch (error) {
@@ -2995,8 +3014,8 @@ ipcMain.handle(
     const log = createLogger(event.sender, runId);
     try {
       log(`Deleting: ${path.basename(filePath)}\n`);
-      await fs.promises.unlink(filePath);
-      log(`Deleted: ${path.basename(filePath)}\n`, 'status');
+      await safeDelete(filePath, { context: 'delete-track-file' });
+      log(`Moved to Trash: ${path.basename(filePath)}\n`, 'status');
       return { success: true };
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to delete file';
@@ -3021,10 +3040,10 @@ ipcMain.handle(
 
     if (result.success) {
       log(`Fixed: ${path.basename(result.outputPath!)}\n`, 'status');
-      if (deleteOriginal && result.outputPath) {
+      if (deleteOriginal && result.outputPath && path.resolve(result.outputPath) !== path.resolve(filePath)) {
         try {
-          await fs.promises.unlink(filePath);
-          log(`Removed original: ${path.basename(filePath)}\n`);
+          await safeDelete(filePath, { context: 'fix-track:delete-original', detail: { convertedTo: result.outputPath } });
+          log(`Moved original to Trash: ${path.basename(filePath)}\n`);
         } catch (error) {
           mainLog.debug('Failed to delete original after fix-track:', filePath, error);
           log(`Failed to remove original ${path.basename(filePath)}\n`, 'stderr');
@@ -3050,10 +3069,10 @@ ipcMain.handle(
 
     if (result.success) {
       log(`Re-encoded: ${path.basename(result.outputPath!)}\n`, 'status');
-      if (deleteOriginal && result.outputPath) {
+      if (deleteOriginal && result.outputPath && path.resolve(result.outputPath) !== path.resolve(filePath)) {
         try {
-          await fs.promises.unlink(filePath);
-          log(`Removed original: ${path.basename(filePath)}\n`);
+          await safeDelete(filePath, { context: 'reencode:delete-original', detail: { convertedTo: result.outputPath } });
+          log(`Moved original to Trash: ${path.basename(filePath)}\n`);
         } catch (error) {
           mainLog.debug('Failed to delete original after reencode:', filePath, error);
           log(`Failed to remove original ${path.basename(filePath)}\n`, 'stderr');
@@ -3211,7 +3230,7 @@ ipcMain.handle(
         await fs.promises.mkdir(path.dirname(dest), { recursive: true });
 
         // Move file (handles cross-filesystem moves)
-        await safeMove(src, dest);
+        await safeMove(src, dest, 'migrate-archive');
 
         // Send progress
         event.sender.send('migrate-progress', {

@@ -11,6 +11,7 @@
 
 import fs from 'fs/promises';
 import { createScopedLogger } from './logger';
+import { recordWrite } from './writeJournal';
 
 const log = createScopedLogger('AiffRepair');
 
@@ -107,5 +108,9 @@ export async function repairAiffHeader(filePath: string): Promise<boolean> {
   } finally {
     await handle.close();
   }
+  recordWrite({
+    op: 'header-repair', src: filePath, outcome: 'ok',
+    detail: { offset: diag.compressionTypeOffset, was: diag.currentCompressionType },
+  });
   return true;
 }

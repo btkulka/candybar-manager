@@ -1,5 +1,5 @@
 import path from 'path';
-import { stringSimilarity, normalizeForComparison, makeTrackKey } from './stringUtils';
+import { stringSimilarity, normalizeForComparison, normalizeTrackKey } from './stringUtils';
 import type { DuplicatePair } from '../types';
 export type { DuplicatePair };
 
@@ -28,13 +28,23 @@ function calculateTrackSimilarity(
   track1: TrackForDuplicateCheck,
   track2: TrackForDuplicateCheck
 ): { similarity: number; reason: string } {
+  // Version-STRIPPED keys ("(Original Mix)", "(... Remix)", feat. tags removed) —
+  // used for fuzzy "same song?" scoring.
   const artist1 = normalizeForComparison(track1.artist);
   const artist2 = normalizeForComparison(track2.artist);
   const title1 = normalizeForComparison(track1.title);
   const title2 = normalizeForComparison(track2.title);
 
-  // Exact normalized match
-  if (artist1 === artist2 && title1 === title2) {
+  // Version-PRESERVING keys — used to tell an original apart from a remix/edit so
+  // two genuinely different versions are never collapsed into a 1.0 exact match
+  // (which the health UI would then invite the user to permanently delete).
+  const vArtist1 = normalizeTrackKey(track1.artist);
+  const vArtist2 = normalizeTrackKey(track2.artist);
+  const vTitle1 = normalizeTrackKey(track1.title);
+  const vTitle2 = normalizeTrackKey(track2.title);
+
+  // True exact match: the version-preserving keys agree (and are non-empty).
+  if (vArtist1 === vArtist2 && vTitle1 === vTitle2 && vArtist1 !== '' && vTitle1 !== '') {
     return { similarity: 1.0, reason: 'Exact match (artist + title)' };
   }
 
@@ -46,14 +56,33 @@ function calculateTrackSimilarity(
   const weightedSim = titleSim * 0.6 + artistSim * 0.4;
 
   // Duration check - if durations are very close, boost confidence
+  const durationDiff = (track1.duration && track2.duration)
+    ? Math.abs(track1.duration - track2.duration)
+    : null;
   let durationBonus = 0;
-  if (track1.duration && track2.duration) {
-    const durationDiff = Math.abs(track1.duration - track2.duration);
+  if (durationDiff !== null) {
     if (durationDiff < 1) {
       durationBonus = 0.1; // Very close duration
     } else if (durationDiff < 5) {
       durationBonus = 0.05; // Close duration
     }
+  }
+
+  // Version mismatch: the version-stripped titles match but the version-preserving
+  // ones differ → these are DIFFERENT versions (original vs remix/edit). Keep them
+  // below the duplicate threshold unless the durations match closely (in which case
+  // it's likely the same recording tagged differently — surface for review, but
+  // never as a definitive exact match).
+  const versionMismatch = title1 === title2 && vTitle1 !== vTitle2;
+  if (versionMismatch) {
+    const sameLength = durationDiff !== null && durationDiff < 2;
+    const capped = sameLength ? 0.9 : 0.8;
+    return {
+      similarity: Math.min(weightedSim, capped),
+      reason: sameLength
+        ? 'Likely same recording (version tag differs, matching length)'
+        : 'Different version (original vs remix/edit)',
+    };
   }
 
   const finalSim = Math.min(1, weightedSim + durationBonus);

@@ -371,11 +371,25 @@ async function keepTrack(pair: DuplicatePair, keep: 'track1' | 'track2') {
   const toDelete = keep === 'track1' ? pair.track2 : pair.track1;
   const toKeep = keep === 'track1' ? pair.track1 : pair.track2;
 
+  // Confirm before a destructive delete — show exactly which file goes to Trash.
+  const confirmed = window.confirm(
+    `Resolve duplicate — move one file to Trash?\n\n` +
+    `KEEP:   ${toKeep.filePath}\n` +
+    `DELETE: ${toDelete.filePath}\n\n` +
+    `The deleted file is moved to the macOS Trash (recoverable).`
+  );
+  if (!confirmed) return;
+
   try {
     const result = await window.candybar.deleteTrackFile(toDelete.filePath);
     if (result.success) {
-      showToast('success', 'Duplicate Resolved', `Kept "${toKeep.fileName}", deleted "${toDelete.fileName}".`);
+      showToast('success', 'Duplicate Resolved', `Kept "${toKeep.fileName}", moved "${toDelete.fileName}" to Trash.`);
       removeDuplicatePair(pair);
+      // Keep the health model in sync so KPIs/lists don't retain the deleted file.
+      if (healthResult) {
+        healthResult.tracks = healthResult.tracks.filter((t) => t.filePath !== toDelete.filePath);
+        syncHealthState();
+      }
     } else {
       showToast('error', 'Delete Failed', result.error || 'Unknown error deleting file.');
     }
@@ -632,6 +646,9 @@ async function handleHealthScan() {
 // ========== Track Actions ==========
 
 function showFixModal(track: LibraryHealthTrack) {
+  // Exactly one pending action may be set — the shared modal's confirm handler
+  // dispatches on pendingReencodeTrack, so a stale value would run the wrong action.
+  pendingReencodeTrack = null;
   pendingFixTrack = track;
 
   fixFileName.textContent = track.fileName;
@@ -647,7 +664,9 @@ function showFixModal(track: LibraryHealthTrack) {
 
 function hideFixModal() {
   fixModal.style.display = 'none';
+  // Clear BOTH pending actions — the fix and reencode flows share this modal.
   pendingFixTrack = null;
+  pendingReencodeTrack = null;
 }
 
 async function handleFixConfirm() {
@@ -675,6 +694,7 @@ async function handleFixConfirm() {
 }
 
 function showReencodeModal(track: LibraryHealthTrack) {
+  pendingFixTrack = null;
   pendingReencodeTrack = track;
 
   fixFileName.textContent = track.fileName;
