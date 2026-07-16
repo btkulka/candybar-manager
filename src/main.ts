@@ -74,7 +74,7 @@ import { safeDelete, setTrashHandler } from './lib/safeDelete';
 import { listUsbVolumes } from './lib/usbHealthScan';
 import { normalizeForComparison, stringSimilarity, looseTrackKey, normalizeLoose } from './lib/stringUtils';
 import { initJobQueue, getJobManager } from './lib/jobQueue';
-import { AUTOPOPULATE_CONCURRENCY } from './lib/constants';
+import { AUTOPOPULATE_CONCURRENCY, AUDIO_EXTENSIONS } from './lib/constants';
 import { initDatabase, closeDatabase, ignoreTrack, unignoreTrack, getIgnoredTracks, getIgnoredTrackKeys, dismissDuplicate, getDismissedDuplicateKeys, makeDuplicatePairKey, dismissHealthIssue, undismissHealthIssue, getDismissedIssues, markTrackAutopopulated, getAutopopulatedPaths } from './lib/db';
 import { parseRekordboxXml, findMissingFiles, importRekordboxToLibrary, type MissingFile, type RekordboxImportSummary } from './lib/rekordbox';
 
@@ -99,6 +99,19 @@ setSecretsPath(SECRETS_PATH);
 async function getLibraryRoot(): Promise<string> {
   const config = await readConfig(CONFIG_PATH, CONFIG_DEFAULTS_PATH);
   return config.libraryRoot || DEFAULT_LIBRARY_ROOT;
+}
+
+/**
+ * Write a captured/probe/debug artifact to a private scratch dir under userData
+ * (0700) with 0600 perms. These captures can contain auth tokens/cookies, so they
+ * must NOT land in world-readable /tmp. Returns the absolute path written.
+ */
+async function writeScratchFile(name: string, contents: string): Promise<string> {
+  const dir = path.join(app.getPath('userData'), 'scratch');
+  await fs.promises.mkdir(dir, { recursive: true, mode: 0o700 });
+  const outPath = path.join(dir, name);
+  await fs.promises.writeFile(outPath, contents, { mode: 0o600 });
+  return outPath;
 }
 
 function resolveIconPath() {
@@ -213,6 +226,12 @@ app.whenReady().then(async () => {
       // Strip scheme+authority prefix directly to avoid URL parser quirks with custom schemes
       const encoded = request.url.replace(/^media:\/\/localhost/, '');
       const filePath = decodeURIComponent(encoded);
+      // The media:// protocol exists only to preview audio. Refuse anything that
+      // isn't a known audio file so it can't be used to read arbitrary local files.
+      if (!AUDIO_EXTENSIONS.has(path.extname(filePath).toLowerCase())) {
+        mainLog.warn(`Media protocol: refusing non-audio path "${filePath}"`);
+        return new Response('Forbidden', { status: 403 });
+      }
       if (/\.aiff?$/i.test(filePath)) {
         mainLog.info(`Media protocol: transcoding "${filePath}" to MP3`);
         return await createMp3PreviewResponse(filePath, request.headers.get('range'));
@@ -2302,9 +2321,8 @@ ipcMain.handle('sniff-beatport-headers', async () => {
   try {
     await win.loadURL('https://www.beatport.com/');
     await new Promise(r => setTimeout(r, 90000)); // 90s — user navigates to library + clicks Download
-    const outPath = '/tmp/beatport_captured_requests.json';
-    await fs.promises.writeFile(outPath, JSON.stringify(captured, null, 2));
-    await fs.promises.writeFile('/tmp/beatport_all_urls.txt', allUrls.join('\n'));
+    const outPath = await writeScratchFile('beatport_captured_requests.json', JSON.stringify(captured, null, 2));
+    await writeScratchFile('beatport_all_urls.txt', allUrls.join('\n'));
     win.close();
     return { success: true, capturedCount: captured.length, totalUrls: allUrls.length, outPath };
   } catch (error) {
@@ -2343,9 +2361,8 @@ ipcMain.handle('sniff-qobuz-headers', async () => {
   try {
     await win.loadURL('https://play.qobuz.com/');
     await new Promise(r => setTimeout(r, 120000)); // 2 min — user logs into play.qobuz.com, navigates to purchases, clicks Download
-    const outPath = '/tmp/qobuz_captured_requests.json';
-    await fs.promises.writeFile(outPath, JSON.stringify(captured, null, 2));
-    await fs.promises.writeFile('/tmp/qobuz_all_urls.txt', allUrls.join('\n'));
+    const outPath = await writeScratchFile('qobuz_captured_requests.json', JSON.stringify(captured, null, 2));
+    await writeScratchFile('qobuz_all_urls.txt', allUrls.join('\n'));
     await new Promise(r => setTimeout(r, 1500));
     win.close();
     return { success: true, capturedCount: captured.length, totalUrls: allUrls.length, outPath, sample: captured.slice(0, 5), urlSample: allUrls.slice(0, 20) };
@@ -2363,8 +2380,7 @@ ipcMain.handle('probe-beatport-purchases', async () => {
     if (!account) return { success: false, error: 'No Beatport account configured' };
     await loginBeatport(account.id);
     const results = await probeBeatportPurchases(account.id);
-    const outPath = '/tmp/beatport_probe.json';
-    await fs.promises.writeFile(outPath, JSON.stringify(results, null, 2));
+    const outPath = await writeScratchFile('beatport_probe.json', JSON.stringify(results, null, 2));
     mainLog.info(`Wrote Beatport probe to ${outPath}`);
     return { success: true, results, outPath };
   } catch (error) {
@@ -2419,8 +2435,7 @@ ipcMain.handle('probe-qobuz-purchases', async () => {
     if (!account) return { success: false, error: 'No Qobuz account configured' };
     await loginQobuz(account.id);
     const results = await probeQobuzPurchases(account.id);
-    const outPath = '/tmp/qobuz_probe.json';
-    await fs.promises.writeFile(outPath, JSON.stringify(results, null, 2));
+    const outPath = await writeScratchFile('qobuz_probe.json', JSON.stringify(results, null, 2));
     mainLog.info(`Wrote Qobuz probe to ${outPath}`);
     return { success: true, results, outPath };
   } catch (error) {
@@ -2485,8 +2500,7 @@ ipcMain.handle('fetch-store-purchases', async (_event, { source }: { source: 'qo
     } else {
       owned = await fetchAllQobuzPurchases(config.qobuzAccounts);
     }
-    const outPath = `/tmp/owned_${source}.json`;
-    await fs.promises.writeFile(outPath, JSON.stringify(owned, null, 2));
+    const outPath = await writeScratchFile(`owned_${source}.json`, JSON.stringify(owned, null, 2));
     mainLog.info(`Wrote ${owned.length} ${source} purchases to ${outPath}`);
     return { success: true, owned, outPath, count: owned.length };
   } catch (error) {

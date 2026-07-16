@@ -56,44 +56,43 @@ const DEFAULTS: AppConfig = {
   rekordboxXmlPath: ''
 };
 
-/** Migrate legacy config values (tab renames + legacy single-account credentials) */
+/** Migrate legacy config values (tab renames + legacy single-account credentials).
+ *  Returns a fresh object and never mutates its input — callers pass in the shared
+ *  module-level DEFAULTS (and shallow-spread copies that alias its arrays), so
+ *  in-place mutation here would corrupt every later config read. */
 function migrateConfig(config: AppConfig): AppConfig {
+  const out: AppConfig = {
+    ...config,
+    // Fresh, deep-copied account arrays so a push/delete below can't reach a
+    // shared array (e.g. DEFAULTS.qobuzAccounts) aliased in via `{...DEFAULTS}`.
+    qobuzAccounts: Array.isArray(config.qobuzAccounts) ? config.qobuzAccounts.map((a) => ({ ...a })) : [],
+    beatportAccounts: Array.isArray(config.beatportAccounts) ? config.beatportAccounts.map((a) => ({ ...a })) : [],
+  };
+
   // health, polish, and browse tabs were merged into 'library'
-  if (config.activeTab === 'health' || config.activeTab === 'polish' || config.activeTab === 'browse') {
-    config.activeTab = 'library';
+  if (out.activeTab === 'health' || out.activeTab === 'polish' || out.activeTab === 'browse') {
+    out.activeTab = 'library';
   }
 
   // Migrate legacy single-account credentials into account arrays.
   // The 'legacy' id is preserved so the existing electron session partition (persist:qobuz /
   // persist:beatport) continues to be used — the user does not need to re-login.
-  if (!config.qobuzAccounts) config.qobuzAccounts = [];
-  if (!config.beatportAccounts) config.beatportAccounts = [];
-
-  if (config.qobuzEmail && config.qobuzAccounts.length === 0) {
-    config.qobuzAccounts.push({
-      id: 'legacy',
-      email: config.qobuzEmail,
-      label: 'Default',
-    });
+  if (out.qobuzEmail && out.qobuzAccounts.length === 0) {
+    out.qobuzAccounts.push({ id: 'legacy', email: out.qobuzEmail, label: 'Default' });
   }
-  if (config.beatportEmail && config.beatportAccounts.length === 0) {
-    config.beatportAccounts.push({
-      id: 'legacy',
-      email: config.beatportEmail,
-      label: 'Default',
-    });
+  if (out.beatportEmail && out.beatportAccounts.length === 0) {
+    out.beatportAccounts.push({ id: 'legacy', email: out.beatportEmail, label: 'Default' });
   }
-  delete config.qobuzEmail;
-  delete config.qobuzPassword;
-  delete config.beatportEmail;
-  delete config.beatportPassword;
+  delete out.qobuzEmail;
+  delete out.qobuzPassword;
+  delete out.beatportEmail;
+  delete out.beatportPassword;
 
   // Drop any stored passwords from existing accounts (auth is browser-session only now).
-  // We don't ask the user — `password` is just silently removed on next read/write.
-  for (const acct of config.qobuzAccounts) delete (acct as Record<string, unknown>).password;
-  for (const acct of config.beatportAccounts) delete (acct as Record<string, unknown>).password;
+  for (const acct of out.qobuzAccounts) delete (acct as Record<string, unknown>).password;
+  for (const acct of out.beatportAccounts) delete (acct as Record<string, unknown>).password;
 
-  return config;
+  return out;
 }
 
 async function readFileConfig(configPath: string): Promise<AppConfig | null> {
@@ -172,11 +171,37 @@ export async function writeConfig(configPath: string, config: AppConfig) {
   log.debug('Writing config to:', configPath);
   try {
     // Run through migration so legacy fields passed in don't get persisted.
-    const safeConfig: AppConfig = migrateConfig({ ...DEFAULTS, ...config });
+    const merged: AppConfig = migrateConfig({ ...DEFAULTS, ...config });
+
+    // Separate credentials from general config: secrets are persisted ONLY to the
+    // untracked secrets.json (0600), and stripped from the primary/shareable config
+    // so they never land in a committable config file. Without a secrets path
+    // configured we fall back to writing everything to the primary file (legacy).
+    const primaryOut = { ...merged } as Record<string, unknown>;
+    if (secretsPath) {
+      // Read the existing secrets RAW (not via readFileConfig, which would inject
+      // DEFAULTS and bloat secrets.json with non-secret fields), preserving any
+      // unmanaged keys already present.
+      let existingSecrets: Record<string, unknown> = {};
+      try {
+        existingSecrets = JSON.parse(await fs.readFile(secretsPath, 'utf8')) as Record<string, unknown>;
+      } catch { /* no existing secrets file */ }
+      const secretsOut: Record<string, unknown> = { ...existingSecrets };
+      for (const key of SECRET_STRING_KEYS) {
+        if (merged[key]) secretsOut[key] = merged[key];
+        delete primaryOut[key];
+      }
+      for (const key of SECRET_ARRAY_KEYS) {
+        if (merged[key]?.length) secretsOut[key] = merged[key];
+        delete primaryOut[key];
+      }
+      await fs.mkdir(path.dirname(secretsPath), { recursive: true });
+      await fs.writeFile(secretsPath, JSON.stringify(secretsOut, null, 2), { mode: 0o600 });
+    }
 
     await fs.mkdir(path.dirname(configPath), { recursive: true });
-    await fs.writeFile(configPath, JSON.stringify(safeConfig, null, 2));
-    return safeConfig;
+    await fs.writeFile(configPath, JSON.stringify(primaryOut, null, 2));
+    return merged;
   } catch (error) {
     log.error('Failed to write config:', configPath, error);
     throw error;

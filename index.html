@@ -2,6 +2,11 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
+    <!-- Defense-in-depth CSP. script-src 'self' (no inline/remote script) neutralizes
+         injected inline handlers; the renderer loads a single self-hosted module and
+         uses no inline <script>. img-src allows https: for remote store cover art and
+         media: for the media:// preview protocol. -->
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https: media:; media-src 'self' blob: data: media:; font-src 'self' data:; connect-src 'self' https:;" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="color-scheme" content="dark" />
     <title>Track Lab</title>

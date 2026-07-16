@@ -748,6 +748,13 @@ export async function addToQobuzCart(
       phase: 'adding', message: `Adding: ${label}`
     });
 
+    // Enforce the lossless-only invariant server-side: never add a lossy match
+    // to the cart, no matter what the caller passed in.
+    if (match.lossless === false) {
+      failed.push({ match, error: 'Excluded: lossy match (lossless only)' });
+      continue;
+    }
+
     try {
       let cartLink = match.cartLink;
 
@@ -1806,12 +1813,8 @@ export async function sniffQobuzCredentials(accountId: string, displayName?: str
             }))()
           `, true);
           log.info(`Qobuz[${accountId}] sniff state: visible=${visible} minimized=${minimized} focused=${focused} bounds=${JSON.stringify(bounds)} page=${JSON.stringify(snapshot)}`);
-          // Snapshot the sniff window so we can see what the user (should) see.
-          try {
-            const img = await win.webContents.capturePage();
-            const { promises: fsp } = await import('fs');
-            await fsp.writeFile(`/tmp/qobuz-sniff-${accountId}.png`, img.toPNG());
-          } catch { /* ignore screenshot failures */ }
+          // (Removed debug screenshot of the logged-in session — it wrote a PNG of
+          // an authenticated Qobuz page to world-readable /tmp.)
         } catch (err) {
           log.warn(`Qobuz[${accountId}] sniff state probe failed: ${err instanceof Error ? err.message : String(err)}`);
         }
@@ -2172,9 +2175,6 @@ export async function fetchBeatportPurchases(accountId: string): Promise<OwnedTr
     }
 
     const rawText = await res.text();
-    if (page === 1) {
-      try { await (await import('fs')).promises.writeFile('/tmp/beatport_page1_raw.json', rawText); } catch {}
-    }
     const data = JSON.parse(rawText) as {
       count?: number;
       next?: string | null;
@@ -2196,7 +2196,6 @@ export async function fetchBeatportPurchases(accountId: string): Promise<OwnedTr
       log.info(`Beatport: fetching ${total} purchases across ${totalPages} page(s)`);
       if (results.length > 0) {
         log.info(`Beatport DEBUG first result keys: ${Object.keys(results[0] || {}).join(',')}`);
-        try { await (await import('fs')).promises.writeFile('/tmp/beatport_first_result.json', JSON.stringify(results[0], null, 2)); } catch {}
       }
     }
 
