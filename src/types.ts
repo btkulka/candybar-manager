@@ -416,6 +416,19 @@ export type LibraryProbableRow = {
   confidence: number;
 };
 
+/** Playlist metadata surfaced to the renderer as soon as a Spotify playlist is
+ *  fetched, so the source flow can show the cover art / name / track count while
+ *  the (slower) library scan runs. Emitted on `library-sourcing:playlist-info`. */
+export type SourcePlaylistInfo = {
+  name: string;
+  imageUrl: string | null;
+  /** Total tracks in the playlist (Spotify's count). */
+  trackCount: number;
+  /** Playable tracks actually fetched (excludes local/unavailable). */
+  fetchedCount: number;
+  owner: string;
+};
+
 /** The combined response from `library-sourcing:run`: phase 1's library match
  *  (split into `matched` vs `probable`) plus phase 2's store-search results.
  *  The renderer joins by looking up each `storeMatch.trackInput.key` and

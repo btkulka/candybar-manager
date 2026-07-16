@@ -233,6 +233,7 @@ declare global {
       onLibrarySourcingPhase1Progress: (callback: (payload: { phase?: string; current: number; total: number; message?: string }) => void) => void;
       onLibrarySourcingPhase2Progress: (callback: (payload: { current: number; total: number; currentTrack: string }) => void) => void;
       onLibrarySourcingPhase2Match: (callback: (match: import('../lib/qobuzCart').QobuzCartMatch) => void) => void;
+      onLibrarySourcingPlaylistInfo: (callback: (info: import('../types').SourcePlaylistInfo) => void) => void;
 
       // Qobuz cart integration
       qobuzCartSearch: (tracks: Array<{ key: string; artist: string; title: string; album?: string; duration?: number }>) =>

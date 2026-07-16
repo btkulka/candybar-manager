@@ -233,6 +233,8 @@ contextBridge.exposeInMainWorld('candybar', {
     ipcRenderer.on('library-sourcing:phase2-progress', (_event, payload) => callback(payload)),
   onLibrarySourcingPhase2Match: (callback: (match: unknown) => void) =>
     ipcRenderer.on('library-sourcing:phase2-match', (_event, match) => callback(match)),
+  onLibrarySourcingPlaylistInfo: (callback: (info: import('./types').SourcePlaylistInfo) => void) =>
+    ipcRenderer.on('library-sourcing:playlist-info', (_event, info) => callback(info)),
 
   // Qobuz cart integration
   qobuzCartSearch: (tracks: Array<{ key: string; artist: string; title: string; album?: string; duration?: number }>) =>

@@ -353,44 +353,31 @@
                 </div>
                 <div class="lane-content">
                   <section id="source-results-section" class="wizard-results" style="display: none;">
-                    <div class="source-summary">
-                      <div class="summary-stat">
-                        <span class="stat-value" id="source-stat-total">0</span>
-                        <span class="stat-label">Total</span>
-                      </div>
-                      <div class="summary-stat">
-                        <span class="stat-value" id="source-stat-qobuz">0</span>
-                        <span class="stat-label">Qobuz</span>
-                      </div>
-                      <div class="summary-stat">
-                        <span class="stat-value" id="source-stat-beatport">0</span>
-                        <span class="stat-label">Beatport</span>
-                      </div>
-                      <div class="summary-stat">
-                        <span class="stat-value" id="source-stat-notfound">0</span>
-                        <span class="stat-label">Not Found</span>
-                      </div>
-                    </div>
+                    <!-- #source-playlist-card (the imported-playlist chip) is injected here on import -->
+                    <div class="source-scan-summary" id="source-scan-summary" style="display: none;"></div>
 
-                    <div class="source-tabs">
-                      <button class="source-tab active" data-source-tab="all" data-tooltip="Show all sourced tracks">All <span class="tab-count" id="source-tab-count-all">0</span></button>
-                      <button class="source-tab" data-source-tab="qobuz" data-tooltip="Show Qobuz matches">Qobuz <span class="tab-count" id="source-tab-count-qobuz">0</span></button>
-                      <button class="source-tab" data-source-tab="beatport" data-tooltip="Show Beatport matches">Beatport <span class="tab-count" id="source-tab-count-beatport">0</span></button>
-                      <button class="source-tab" data-source-tab="notfound" data-tooltip="Show tracks with no matches found">Not Found <span class="tab-count" id="source-tab-count-notfound">0</span></button>
-                    </div>
-
-                    <div class="source-filter-bar">
-                      <div class="search-input-wrapper">
+                    <div class="source-segbar">
+                      <div class="source-segments" id="source-segments">
+                        <button class="source-seg active" data-seg="new" data-tooltip="Tracks not in your library — the ones to buy">
+                          <span class="source-seg-n" id="seg-count-new">0</span><span class="source-seg-l">New to buy</span>
+                        </button>
+                        <button class="source-seg" data-seg="maybe" data-tooltip="A related version is already in your library">
+                          <span class="source-seg-n" id="seg-count-maybe">0</span><span class="source-seg-l">Maybe owned</span>
+                        </button>
+                        <button class="source-seg" data-seg="owned" data-tooltip="Confirmed duplicates already in your library">
+                          <span class="source-seg-n" id="seg-count-owned">0</span><span class="source-seg-l">Owned</span>
+                        </button>
+                        <button class="source-seg" data-seg="notfound" data-tooltip="Tracks with no lossless store match">
+                          <span class="source-seg-n" id="seg-count-notfound">0</span><span class="source-seg-l">Not found</span>
+                        </button>
+                      </div>
+                      <div class="source-filter">
                         <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                           <circle cx="11" cy="11" r="8"/>
                           <line x1="21" y1="21" x2="16.65" y2="16.65"/>
                         </svg>
-                        <input type="text" id="source-search" placeholder="Search results..." title="Filter results by artist or title" />
+                        <input type="text" id="source-search" placeholder="Filter these tracks…" title="Filter by artist or title" />
                       </div>
-                      <button class="btn-ghost btn-sm" id="source-add-more" data-tooltip="Import another playlist or CSV and merge its tracks into these results">+ Add More Tracks</button>
-                      <button class="btn-primary btn-sm" id="source-add-to-cart" data-tooltip="Add selected tracks to store cart">Add Selected to Cart</button>
-                      <button class="btn-secondary btn-sm" id="source-export-csv" data-tooltip="Export results to a CSV file">Export CSV</button>
-                      <button class="btn-ghost btn-sm" id="clear-source-results" data-tooltip="Clear source search results">Clear</button>
                     </div>
 
                     <div id="source-cart-add-progress" class="cart-add-progress" style="display: none;">
@@ -404,69 +391,90 @@
                       <div class="cart-add-progress-message" id="source-cart-add-message">Authenticating…</div>
                     </div>
 
-                    <div class="source-results-list" id="source-results-list"></div>
+                    <div class="source-groups" id="source-groups"></div>
                     <div class="empty-state" id="source-empty" style="display: none;">
-                      <p>No results in this tab.</p>
+                      <p>No tracks in this group.</p>
                     </div>
                   </section>
                 </div>
               </div>
             </section>
 
-            <!-- Lane 4: Cart -->
-            <section class="wizard-lane" data-lane="cart" data-state="locked">
-              <div class="lane-body">
-                <div class="lane-header">
-                  <h3>Review your cart</h3>
-                  <p class="lane-hint">Confirm what each store has queued, then check out.</p>
-                </div>
-                <div class="lane-content">
-                  <section id="source-cart-section" class="wizard-cart-review" style="display: none;">
-                    <div class="cart-store-block" id="source-cart-qobuz" style="display: none;">
-                      <button type="button" class="cart-store-header" data-accordion-toggle aria-expanded="true">
-                        <span class="accordion-chevron" aria-hidden="true">▾</span>
-                        <h4><span class="source-badge qobuz">Qobuz</span></h4>
-                        <div class="cart-store-meta">
-                          <span id="source-cart-qobuz-count">0 tracks</span>
-                          <span class="progress-separator">·</span>
-                          <strong id="source-cart-qobuz-total">$0.00</strong>
-                        </div>
-                      </button>
-                      <div class="cart-store-body">
-                        <div class="cart-store-list" id="source-cart-qobuz-list"></div>
-                        <div class="cart-store-actions">
-                          <button class="btn-secondary btn-sm" id="source-open-qobuz-cart" data-tooltip="Open your Qobuz cart in the embedded panel">Open Cart</button>
-                          <button class="btn-primary btn-sm" id="source-auto-checkout-qobuz" data-tooltip="Drive the Qobuz cart to the Place Order page and ask before committing">Auto-Checkout Qobuz</button>
-                        </div>
-                      </div>
-                    </div>
-                    <div class="cart-store-block" id="source-cart-beatport" style="display: none;">
-                      <button type="button" class="cart-store-header" data-accordion-toggle aria-expanded="true">
-                        <span class="accordion-chevron" aria-hidden="true">▾</span>
-                        <h4><span class="source-badge beatport">Beatport</span></h4>
-                        <div class="cart-store-meta">
-                          <span id="source-cart-beatport-count">0 tracks</span>
-                          <span class="progress-separator">·</span>
-                          <strong id="source-cart-beatport-total">$0.00</strong>
-                        </div>
-                      </button>
-                      <div class="cart-store-body">
-                        <div class="cart-store-list" id="source-cart-beatport-list"></div>
-                        <div class="cart-store-actions">
-                          <button class="btn-secondary btn-sm" id="source-open-beatport-cart" data-tooltip="Open your Beatport cart in the embedded panel">Open Cart</button>
-                          <button class="btn-primary btn-sm" id="source-auto-checkout-beatport" data-tooltip="Drive the Beatport cart to the Place Order page and ask before committing">Auto-Checkout Beatport</button>
-                        </div>
-                      </div>
-                    </div>
-                    <div class="cart-actions-bar">
-                      <button class="btn-primary btn-sm" id="source-download-purchases" style="display: none;" data-tooltip="Download the tracks you just purchased">Download Purchases</button>
-                    </div>
-                  </section>
-                </div>
-              </div>
-            </section>
+            <!-- Cart review moved out of the wizard into the buy-bar + slide-over below -->
 
           </div>
+
+          <!-- Sticky buy-bar: appears once tracks are selected -->
+          <div class="source-buybar" id="source-buybar" style="display: none;">
+            <div class="source-buybar-inner">
+              <div class="source-buybar-sel">
+                <span class="source-buybar-count"><b id="source-buybar-n">0</b> selected</span>
+                <span class="source-buybar-split">
+                  <span class="source-buybar-store q" id="source-buybar-qobuz">Qobuz 0 · $0.00</span>
+                  <span class="source-buybar-store b" id="source-buybar-beatport">Beatport 0 · $0.00</span>
+                </span>
+              </div>
+              <div class="source-buybar-actions">
+                <button class="btn-ghost btn-sm" id="source-add-more" data-tooltip="Import another playlist or CSV and merge its tracks into these results">+ Add list</button>
+                <button class="btn-ghost btn-sm" id="source-export-csv" data-tooltip="Export the current results to CSV">Export</button>
+                <button class="btn-ghost btn-sm" id="clear-source-results" data-tooltip="Clear these results">Clear</button>
+                <button class="btn-secondary btn-sm" id="source-review-cart" style="display: none;" data-tooltip="Review what's queued in your carts">Review carts</button>
+                <button class="btn-primary" id="source-add-to-cart" data-tooltip="Add the selected tracks to your store carts">Add to carts</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Cart slide-over -->
+          <div class="source-drawer-scrim" id="source-cart-scrim" style="display: none;"></div>
+          <aside class="source-cart-drawer" id="source-cart-drawer" style="display: none;" aria-label="Cart review">
+            <div class="source-cart-drawer-head">
+              <h3>Your carts</h3>
+              <button class="btn-icon" id="source-cart-close" data-tooltip="Close cart review">✕</button>
+            </div>
+            <div class="source-cart-drawer-body">
+              <section id="source-cart-section" class="wizard-cart-review" style="display: none;">
+                <div class="cart-store-block" id="source-cart-qobuz" style="display: none;">
+                  <button type="button" class="cart-store-header" data-accordion-toggle aria-expanded="true">
+                    <span class="accordion-chevron" aria-hidden="true">▾</span>
+                    <h4><span class="source-badge qobuz">Qobuz</span></h4>
+                    <div class="cart-store-meta">
+                      <span id="source-cart-qobuz-count">0 tracks</span>
+                      <span class="progress-separator">·</span>
+                      <strong id="source-cart-qobuz-total">$0.00</strong>
+                    </div>
+                  </button>
+                  <div class="cart-store-body">
+                    <div class="cart-store-list" id="source-cart-qobuz-list"></div>
+                    <div class="cart-store-actions">
+                      <button class="btn-secondary btn-sm" id="source-open-qobuz-cart" data-tooltip="Open your Qobuz cart in the embedded panel">Open Cart</button>
+                      <button class="btn-primary btn-sm" id="source-auto-checkout-qobuz" data-tooltip="Drive the Qobuz cart to the Place Order page and ask before committing">Auto-Checkout Qobuz</button>
+                    </div>
+                  </div>
+                </div>
+                <div class="cart-store-block" id="source-cart-beatport" style="display: none;">
+                  <button type="button" class="cart-store-header" data-accordion-toggle aria-expanded="true">
+                    <span class="accordion-chevron" aria-hidden="true">▾</span>
+                    <h4><span class="source-badge beatport">Beatport</span></h4>
+                    <div class="cart-store-meta">
+                      <span id="source-cart-beatport-count">0 tracks</span>
+                      <span class="progress-separator">·</span>
+                      <strong id="source-cart-beatport-total">$0.00</strong>
+                    </div>
+                  </button>
+                  <div class="cart-store-body">
+                    <div class="cart-store-list" id="source-cart-beatport-list"></div>
+                    <div class="cart-store-actions">
+                      <button class="btn-secondary btn-sm" id="source-open-beatport-cart" data-tooltip="Open your Beatport cart in the embedded panel">Open Cart</button>
+                      <button class="btn-primary btn-sm" id="source-auto-checkout-beatport" data-tooltip="Drive the Beatport cart to the Place Order page and ask before committing">Auto-Checkout Beatport</button>
+                    </div>
+                  </div>
+                </div>
+                <div class="cart-actions-bar">
+                  <button class="btn-primary btn-sm" id="source-download-purchases" style="display: none;" data-tooltip="Download the tracks you just purchased">Download Purchases</button>
+                </div>
+              </section>
+            </div>
+          </aside>
         </div>
 
         <div class="page" id="page-usb-health">

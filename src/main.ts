@@ -2023,6 +2023,15 @@ ipcMain.handle(
         if (spotifyTracks.length === 0) {
           return { success: false, error: `Playlist "${playlist.name}" contains no fetchable tracks.` };
         }
+        // Surface the playlist's cover art / name / track count now so the UI can
+        // show it while the library scan (the slow phase) runs.
+        event.sender.send('library-sourcing:playlist-info', {
+          name: playlist.name,
+          imageUrl: playlist.imageUrl,
+          trackCount: playlist.trackCount,
+          fetchedCount: spotifyTracks.length,
+          owner: playlist.owner
+        } satisfies import('./types').SourcePlaylistInfo);
         phase1Tracks = spotifyTracksToTrackRecords(spotifyTracks);
       } else if (csvPath) {
         // We let checkLibrary() parse the CSV directly below, but we also need
