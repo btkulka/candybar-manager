@@ -123,4 +123,44 @@ describe('findDuplicates', () => {
     const dupes = findDuplicates(tracks, 0.85);
     expect(dupes).toHaveLength(1);
   });
+
+  // --- Version-aware dedupe (guards against deleting a distinct remix) ---
+
+  it('does NOT collapse an original and a differently-lengthed remix into a duplicate', () => {
+    const tracks = [
+      makeTrack({ filePath: '/music/a.aif', artist: 'RUFUS DU SOL', title: 'Innerbloom (Original Mix)', duration: 431 }),
+      makeTrack({ filePath: '/music/b.aif', artist: 'RUFUS DU SOL', title: 'Innerbloom (Ship Wrek Remix)', duration: 210 }),
+    ];
+    // Different versions with clearly different lengths must not surface as a duplicate.
+    expect(findDuplicates(tracks, 0.85)).toHaveLength(0);
+  });
+
+  it('flags a version-tag difference as "likely same", never a 1.0 exact match', () => {
+    const tracks = [
+      makeTrack({ filePath: '/music/a.aif', artist: 'Eric Prydz', title: 'Opus', duration: 540 }),
+      makeTrack({ filePath: '/music/b.aif', artist: 'Eric Prydz', title: 'Opus (Extended Mix)', duration: 540 }),
+    ];
+    const dupes = findDuplicates(tracks, 0.85);
+    expect(dupes).toHaveLength(1);
+    expect(dupes[0].similarity).toBeLessThan(1.0);
+    expect(dupes[0].reason).not.toContain('Exact match');
+  });
+
+  it('does not treat two different non-Latin titles as a duplicate (empty-normalization guard)', () => {
+    const tracks = [
+      makeTrack({ filePath: '/music/a.aif', artist: '未来', title: '夜明け' }),
+      makeTrack({ filePath: '/music/b.aif', artist: '未来', title: '星空' }),
+    ];
+    expect(findDuplicates(tracks, 0.85)).toHaveLength(0);
+  });
+
+  it('still treats an accented and unaccented spelling as the same (diacritic folding)', () => {
+    const tracks = [
+      makeTrack({ filePath: '/music/a.aif', artist: 'Tiësto', title: 'Adagio for Strings' }),
+      makeTrack({ filePath: '/music/b.aif', artist: 'Tiesto', title: 'Adagio for Strings' }),
+    ];
+    const dupes = findDuplicates(tracks, 0.85);
+    expect(dupes).toHaveLength(1);
+    expect(dupes[0].similarity).toBe(1.0);
+  });
 });

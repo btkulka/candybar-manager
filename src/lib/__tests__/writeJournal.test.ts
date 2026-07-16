@@ -64,8 +64,10 @@ describe('writeJournal', () => {
   });
 
   it('journals the already-moved no-op case', async () => {
-    const src = path.join(tmp, 'track.aif'); // gone — moved by previous test
-    const dest = path.join(tmp, 'moved.aif'); // still present
+    // Self-contained: source never existed, destination already present.
+    const src = path.join(tmp, 'noop-src.aif');
+    const dest = path.join(tmp, 'noop-dest.aif');
+    await fs.writeFile(dest, 'audio-bytes');
 
     await safeMove(src, dest, 'organize');
     await flushWriteJournal();
