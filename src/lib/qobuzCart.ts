@@ -81,10 +81,12 @@ export type CartResult = {
 
 // ========== Batch Search ==========
 
-/** Parse quality string like "24bit/96kHz" into a comparable numeric score (bit_depth * sampling_rate). */
+/** Parse a quality string into a comparable numeric score (bit_depth * sampling_rate).
+ *  Handles both "24/96" (search results: bitDepth/samplingRate) and "24bit/96kHz"
+ *  (album API) — the search path feeds the former, so the bit/kHz-only regex never matched. */
 function parseQualityScore(quality: string | null): number {
   if (!quality) return 0;
-  const match = quality.match(/(\d+)\s*bit\s*\/\s*([\d.]+)\s*kHz/i);
+  const match = quality.match(/(\d+)\s*(?:bit)?\s*\/\s*([\d.]+)\s*(?:khz)?/i);
   if (!match) return 0;
   return Number(match[1]) * Number(match[2]);
 }

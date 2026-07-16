@@ -470,7 +470,11 @@ server.tool(
         }
       }
       for (const qobuzAccount of config.qobuzAccounts) {
-        const __q_qobuzAccount = legacyCreds(qobuzAccount); if (!__q_qobuzAccount) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Qobuz auth no longer available to the MCP server — use the desktop app' }) }] }; const token = await loginQobuzStandalone(__q_qobuzAccount.email, __q_qobuzAccount.password);
+        // Skip credential-less accounts (session-only auth) instead of aborting
+        // the whole aggregation on the first one.
+        const __q_qobuzAccount = legacyCreds(qobuzAccount);
+        if (!__q_qobuzAccount) continue;
+        const token = await loginQobuzStandalone(__q_qobuzAccount.email, __q_qobuzAccount.password);
         if (!token) continue;
 
         let offset = 0;
@@ -507,8 +511,10 @@ server.tool(
               : undefined;
 
             if (t && a) {
-              if (cutoff && item.purchased_at) {
-                if (item.purchased_at * 1000 < cutoff) continue;
+              if (cutoff) {
+                // With a time window requested, exclude purchases we can't confirm
+                // fall inside it (missing timestamp) rather than silently including them.
+                if (!item.purchased_at || item.purchased_at * 1000 < cutoff) continue;
               }
               seenQobuzTracks.add(trackId);
               allPurchases.push({ source: 'qobuz', artist: a, title: t, trackId, album, purchasedAt, sourceAccount: qobuzAccount.label || qobuzAccount.email });
@@ -529,7 +535,11 @@ server.tool(
         }
       }
       for (const beatportAccount of config.beatportAccounts) {
-        const __b_beatportAccount = legacyCreds(beatportAccount); if (!__b_beatportAccount) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Beatport auth no longer available to the MCP server — use the desktop app' }) }] }; const cookies = await loginBeatportStandalone(__b_beatportAccount.email, __b_beatportAccount.password);
+        // Skip credential-less accounts (session-only auth) instead of aborting
+        // the whole aggregation on the first one.
+        const __b_beatportAccount = legacyCreds(beatportAccount);
+        if (!__b_beatportAccount) continue;
+        const cookies = await loginBeatportStandalone(__b_beatportAccount.email, __b_beatportAccount.password);
         if (!cookies) continue;
 
         const res = await fetchBeatport(cookies, 'https://www.beatport.com/library/tracks', {
@@ -555,9 +565,10 @@ server.tool(
               const dateStr = (item.purchased_at || item.created_at || '') as string;
 
               if (t && a) {
-                if (cutoff && dateStr) {
-                  const purchaseTime = new Date(dateStr).getTime();
-                  if (purchaseTime && purchaseTime < cutoff) continue;
+                if (cutoff) {
+                  // Exclude purchases without a valid timestamp when a window is requested.
+                  const purchaseTime = dateStr ? new Date(dateStr).getTime() : NaN;
+                  if (!Number.isFinite(purchaseTime) || purchaseTime < cutoff) continue;
                 }
                 seenBeatportTracks.add(trackId);
                 allPurchases.push({ source: 'beatport', artist: a, title: t, trackId, album, purchasedAt: dateStr || undefined, sourceAccount: beatportAccount.label || beatportAccount.email });
@@ -631,7 +642,10 @@ server.tool(
       const loginFailures: string[] = [];
       // Try each configured account until one owns the track.
       for (const qobuzAccount of config.qobuzAccounts) {
-        const __q_qobuzAccount = legacyCreds(qobuzAccount); if (!__q_qobuzAccount) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Qobuz auth no longer available to the MCP server — use the desktop app' }) }] }; const token = await loginQobuzStandalone(__q_qobuzAccount.email, __q_qobuzAccount.password);
+        // Skip credential-less accounts (session-only auth) and keep trying the rest.
+        const __q_qobuzAccount = legacyCreds(qobuzAccount);
+        if (!__q_qobuzAccount) { loginFailures.push(qobuzAccount.label || qobuzAccount.email || qobuzAccount.id); continue; }
+        const token = await loginQobuzStandalone(__q_qobuzAccount.email, __q_qobuzAccount.password);
         if (!token) { loginFailures.push(__q_qobuzAccount.email); continue; }
 
         if (!trackInfo) {
@@ -747,7 +761,10 @@ server.tool(
     let dlUrl: string | null = null;
     const beatportLoginFailures: string[] = [];
     for (const beatportAccount of config.beatportAccounts) {
-      const __b_beatportAccount = legacyCreds(beatportAccount); if (!__b_beatportAccount) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Beatport auth no longer available to the MCP server — use the desktop app' }) }] }; const cookies = await loginBeatportStandalone(__b_beatportAccount.email, __b_beatportAccount.password);
+      // Skip credential-less accounts (session-only auth) and keep trying the rest.
+      const __b_beatportAccount = legacyCreds(beatportAccount);
+      if (!__b_beatportAccount) { beatportLoginFailures.push(beatportAccount.label || beatportAccount.email || beatportAccount.id); continue; }
+      const cookies = await loginBeatportStandalone(__b_beatportAccount.email, __b_beatportAccount.password);
       if (!cookies) { beatportLoginFailures.push(__b_beatportAccount.email); continue; }
       beatportCookies = cookies;
 

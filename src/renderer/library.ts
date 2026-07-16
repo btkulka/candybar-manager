@@ -288,7 +288,7 @@ function removeTrackFromHealthResult(track: LibraryHealthTrack) {
   // Rebuild browse view model
   rebuildBrowseTracks();
   renderCompactList();
-  renderKpiDashboard(healthResult);
+  renderKpiDashboard(healthResult)(); // invoke the returned thunk so the Fix Flow button renders
 
   if (selectedTrackPath === track.filePath) closeInspector();
 }
@@ -1633,7 +1633,7 @@ function exitFixFlow(): void {
   }
 
   hideDrawer();
-  renderKpiDashboard(healthResult!);
+  renderKpiDashboard(healthResult!)(); // invoke the returned thunk (Fix Flow button)
 }
 
 function skipToNextExisting(direction: 1 | -1): boolean {
@@ -1795,7 +1795,9 @@ export function initLibrary(): void {
   // Browse: Search
   const searchInput = document.getElementById('browse-search') as HTMLInputElement | null;
   searchInput?.addEventListener('input', () => {
-    searchQuery = searchInput.value.trim().toLowerCase();
+    // The compact-list filter reads browseSearchQuery — writing searchQuery here
+    // (a dead variable) made the browse search box do nothing.
+    browseSearchQuery = searchInput.value.trim().toLowerCase();
     renderCompactList();
   });
 

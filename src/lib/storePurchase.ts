@@ -1145,12 +1145,13 @@ export async function addToBeatportCart(
   }
 
   // Add each track. Iterate known (item_type_id, audio_format_id) permutations
-  // per track — stop at the first 2xx.
+  // per track — stop at the first 2xx. NOTE: only track adds (item_type_id: 1) are
+  // attempted; a release add (item_type_id: 2) would need a RELEASE id, and reusing
+  // match.trackId there added an unrelated release, so it's intentionally omitted.
   const attempts: Array<{ item_type_id: number; audio_format_id: number }> = [
     { item_type_id: 1, audio_format_id: 14 }, // track + WAV
     { item_type_id: 1, audio_format_id: 5 },  // track + AIFF
     { item_type_id: 1, audio_format_id: 4 },  // track + FLAC
-    { item_type_id: 2, audio_format_id: 14 }, // release + WAV
   ];
   const added: StoreMatch[] = [];
   const failed: Array<{ match: StoreMatch; error: string }> = [];

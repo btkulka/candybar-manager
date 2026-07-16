@@ -66,8 +66,14 @@ contextBridge.exposeInMainWorld('candybar', {
   },
   autopopulateTracks: (tracks: Array<{ filePath: string; title: string; artist: string; album: string; year: string; genre: string; label: string; key: string; bpm: string; remixer: string; hasAlbumArt: boolean }>, force = false): Promise<Array<{ filePath: string; updated: boolean; fieldsPopulated: string[]; error?: string }>> =>
     ipcRenderer.invoke('autopopulate-tracks', { tracks, force }),
-  onAutopopulateProgress: (callback: (payload: { current: number; total: number; filePath: string }) => void) =>
-    ipcRenderer.on('autopopulate-progress', (_event, payload) => callback(payload)),
+  onAutopopulateProgress: (callback: (payload: { current: number; total: number; filePath: string }) => void) => {
+    // Registered once per scan (organize + bulk-populate flows). Remove any prior
+    // listener so repeated scans replace rather than accumulate leaked listeners.
+    ipcRenderer.removeAllListeners('autopopulate-progress');
+    const listener = (_e: unknown, payload: { current: number; total: number; filePath: string }) => callback(payload);
+    ipcRenderer.on('autopopulate-progress', listener);
+    return () => ipcRenderer.off('autopopulate-progress', listener);
+  },
   scanMissingAlbumArt: (): Promise<{ id: string; tracks: AlbumArtMissingTrack[] }> =>
     ipcRenderer.invoke('scan-missing-album-art'),
   onPolishScanProgress: (callback: (payload: AlbumArtScanProgress) => void) =>

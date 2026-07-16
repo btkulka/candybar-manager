@@ -246,10 +246,13 @@ function collectAccounts(service: StoreService): StoreAccount[] {
   for (const row of container.querySelectorAll<HTMLDivElement>('.account-row')) {
     const email = (row.querySelector<HTMLInputElement>('.account-email')?.value || '').trim();
     const label = (row.querySelector<HTMLInputElement>('.account-label')?.value || '').trim();
-    // Keep a row if it has *any* identifying data; empty rows are dropped.
-    if (!email && !label) continue;
+    const existingId = row.dataset.accountId;
+    // Drop only truly-empty NEW rows. A row with an existing account id is a real
+    // (session-authenticated) connection even when email/label are blank — keeping
+    // it preserves the store session partition binding.
+    if (!email && !label && !existingId) continue;
     accounts.push({
-      id: row.dataset.accountId || newAccountId(),
+      id: existingId || newAccountId(),
       ...(email ? { email } : {}),
       ...(label ? { label } : {}),
     });

@@ -646,9 +646,14 @@ function startBeatportTokenPoll(): void {
 
 function startQobuzAuthPoll(): void {
   stopStorePanelAuthPoll();
+  const accountId = storePanelAccountId;
   // Check if already logged in
   detectQobuzLoginFromPanel().then(loggedIn => {
     if (loggedIn) return;
+    // The panel may have been closed while this initial probe was in flight —
+    // stopStorePanelAuthPoll() already ran, so installing the interval now would
+    // leak it. Only start polling if the same Qobuz panel is still open.
+    if (storePanelStore !== 'qobuz' || storePanelAccountId !== accountId) return;
     storePanelTokenPollTimer = setInterval(async () => {
       const got = await detectQobuzLoginFromPanel();
       if (got) stopStorePanelAuthPoll();
@@ -2549,12 +2554,22 @@ ipcMain.handle('store-search-all', async (event, { tracks }: { tracks: StoreTrac
 
     // Log in + fetch purchases for every configured account
     event.sender.send('store-search-progress', { current: 0, total: tracks.length, currentTrack: 'Checking past purchases...', source: 'qobuz' as const });
+    const purchaseCheckWarnings: string[] = [];
     const [qobuzOwned, beatportOwned] = await Promise.all([
-      fetchAllQobuzPurchases(config.qobuzAccounts).catch(() => []),
-      fetchAllBeatportPurchases(config.beatportAccounts).catch(() => []),
+      fetchAllQobuzPurchases(config.qobuzAccounts).catch((e) => {
+        purchaseCheckWarnings.push(`Qobuz past-purchase check failed: ${e instanceof Error ? e.message : String(e)}`);
+        return null;
+      }),
+      fetchAllBeatportPurchases(config.beatportAccounts).catch((e) => {
+        purchaseCheckWarnings.push(`Beatport past-purchase check failed: ${e instanceof Error ? e.message : String(e)}`);
+        return null;
+      }),
     ]);
-    const allOwned = [...qobuzOwned, ...beatportOwned];
-    mainLog.info(`Found ${qobuzOwned.length} Qobuz + ${beatportOwned.length} Beatport past purchases`);
+    // A failed fetch (null) is NOT the same as "owns nothing" ([]). When it fails
+    // we can't confirm ownership, so the owned short-circuit is skipped for that
+    // source and the caller is warned rather than silently re-routing owned tracks.
+    const allOwned = [...(qobuzOwned ?? []), ...(beatportOwned ?? [])];
+    mainLog.info(`Found ${qobuzOwned?.length ?? 0} Qobuz + ${beatportOwned?.length ?? 0} Beatport past purchases${purchaseCheckWarnings.length ? ` (${purchaseCheckWarnings.length} check(s) failed)` : ''}`);
 
     // Separate tracks into already-owned vs needs-purchase
     const tracksToSearch: StoreTrackInput[] = [];
@@ -2611,7 +2626,11 @@ ipcMain.handle('store-search-all', async (event, { tracks }: { tracks: StoreTrac
       trackCount: tracks.length
     }), 'utf-8');
 
-    return { success: true, matchCount: allMatches.length };
+    return {
+      success: true,
+      matchCount: allMatches.length,
+      purchaseCheckWarning: purchaseCheckWarnings.length ? purchaseCheckWarnings.join('; ') : undefined,
+    };
   } catch (error) {
     mainLog.error('IPC store-search-all failed:', error);
     return { success: false, error: error instanceof Error ? error.message : 'Search failed' };
