@@ -16,6 +16,11 @@ import { SharedResultStore } from './sharedResultStore';
 
 const log = createScopedLogger('JobManager');
 
+// Safety-net timeout for jobs that don't declare their own `timeoutMs`, so one
+// stuck job can't block the (single-slot) queue forever. Generous enough not to
+// abort a legitimate large-library scan; a definition can set timeoutMs: 0 to opt out.
+const DEFAULT_JOB_TIMEOUT_MS = 45 * 60 * 1000;
+
 export class JobManager extends EventEmitter {
   private jobs = new Map<JobId, JobRecord>();
   private definitions = new Map<JobType, JobDefinition>();
@@ -81,6 +86,9 @@ export class JobManager extends EventEmitter {
       this.queue = this.queue.filter(id => id !== jobId);
       record.status = 'cancelled';
       record.completedAt = Date.now();
+      // Settle the enqueue() promise — otherwise any IPC handler awaiting it
+      // hangs until the app restarts (a running job settles via runJob's catch).
+      record.reject(new Error('Job cancelled'));
       this.emit('job-cancelled', this.toJobInfo(record));
     }
     return true;
@@ -143,11 +151,14 @@ export class JobManager extends EventEmitter {
       },
     };
 
+    // A definition can opt out of the safety-net timeout with timeoutMs: 0.
+    const effectiveTimeout = def.timeoutMs === undefined ? DEFAULT_JOB_TIMEOUT_MS : def.timeoutMs;
     let timeout: ReturnType<typeof setTimeout> | null = null;
-    if (def.timeoutMs) {
+    if (effectiveTimeout && effectiveTimeout > 0) {
       timeout = setTimeout(() => {
+        log.warn(`Job ${record.type} (${record.id}) exceeded ${effectiveTimeout}ms — aborting`);
         record.abortController.abort();
-      }, def.timeoutMs);
+      }, effectiveTimeout);
     }
 
     try {

@@ -52,7 +52,7 @@ server.tool(
 // ---------------------------------------------------------------------------
 server.tool(
   'convert_to_aiff',
-  'Convert an audio file to AIFF format (PCM 24-bit, 44.1kHz stereo). Uses bundled ffmpeg. Output is written alongside the original file as <name>.aiff.',
+  'Convert an audio file to AIFF (PCM 24-bit, 44.1kHz stereo) using bundled ffmpeg. Output is written alongside the original as <name>.aif; an AIFF-family input is converted in place under the same name. Refuses to overwrite a different existing file.',
   { filePath: z.string().describe('Absolute path to the audio file to convert') },
   async ({ filePath }) => {
     const result = await convertToAiff(filePath);
@@ -67,7 +67,7 @@ server.tool(
 // ---------------------------------------------------------------------------
 server.tool(
   'reencode_mp3',
-  'Re-encode an audio file to 320kbps MP3 with preserved metadata. Uses bundled ffmpeg. Output is written as <name>_fixed.mp3 alongside the original.',
+  'Re-encode an audio file to 320kbps MP3 with preserved metadata using bundled ffmpeg. Output is written alongside the original as <name>.mp3; an .mp3 input is re-encoded in place. Refuses to overwrite a different existing file.',
   { filePath: z.string().describe('Absolute path to the audio file to re-encode') },
   async ({ filePath }) => {
     const result = await reencodeToMp3(filePath);

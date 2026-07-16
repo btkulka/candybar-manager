@@ -30,25 +30,36 @@ export async function checkAiffIntegrity(filePath: string): Promise<IntegrityRes
     if (formType !== 'AIFF' && formType !== 'AIFC') return { status: 'unknown', reason: `unexpected FORM type ${formType}` };
 
     // Walk top-level chunks to locate COMM (format info) and SSND (audio data).
+    // Read each 8-byte chunk header directly from the file (not just the first
+    // 64KB buffer) so SSND is found even behind large leading metadata chunks.
+    const fileSize = (await fd.stat()).size;
     let compressionType: string | null = null;
     let bitDepth = 0;
     let ssndOffset = -1;
     let ssndSize = 0;
     let pos = 12;
-    while (pos + 8 <= bytesRead) {
-      const chunkId = header.toString('ascii', pos, pos + 4);
-      const chunkSize = header.readUInt32BE(pos + 4);
+    const chunkHeader = Buffer.alloc(8);
+    while (pos + 8 <= fileSize) {
+      const hr = await fd.read(chunkHeader, 0, 8, pos);
+      if (hr.bytesRead < 8) break;
+      const chunkId = chunkHeader.toString('ascii', 0, 4);
+      const chunkSize = chunkHeader.readUInt32BE(4);
       const dataStart = pos + 8;
       if (chunkId === 'COMM') {
         // channels(2) numSampleFrames(4) sampleSize(2) sampleRate(10 IEEE ext) [compressionType(4) in AIFC]
-        bitDepth = header.readUInt16BE(dataStart + 6);
+        const commLen = Math.min(Math.max(chunkSize, 8), 64);
+        const comm = Buffer.alloc(commLen);
+        await fd.read(comm, 0, commLen, dataStart);
+        bitDepth = comm.readUInt16BE(6);
         if (formType === 'AIFC' && chunkSize >= 22) {
-          compressionType = header.toString('ascii', dataStart + 18, dataStart + 22);
+          compressionType = comm.toString('ascii', 18, 22);
         } else {
           compressionType = 'NONE';
         }
       } else if (chunkId === 'SSND') {
-        const dataOffset = header.readUInt32BE(dataStart);
+        const ssndHead = Buffer.alloc(8);
+        await fd.read(ssndHead, 0, 8, dataStart);
+        const dataOffset = ssndHead.readUInt32BE(0);
         ssndOffset = dataStart + 8 + dataOffset;
         ssndSize = chunkSize - 8 - dataOffset;
         break;
@@ -57,7 +68,7 @@ export async function checkAiffIntegrity(filePath: string): Promise<IntegrityRes
       pos = dataStart + chunkSize + (chunkSize % 2);
     }
 
-    if (ssndOffset < 0) return { status: 'unknown', reason: 'SSND chunk not found in first 64KB' };
+    if (ssndOffset < 0) return { status: 'unknown', reason: 'SSND chunk not found' };
     if (bitDepth !== 16 && bitDepth !== 24 && bitDepth !== 32) {
       return { status: 'unknown', reason: `unsupported bit depth ${bitDepth}` };
     }

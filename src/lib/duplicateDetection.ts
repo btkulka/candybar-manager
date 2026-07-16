@@ -48,9 +48,11 @@ function calculateTrackSimilarity(
     return { similarity: 1.0, reason: 'Exact match (artist + title)' };
   }
 
-  // Calculate fuzzy similarity
-  const artistSim = stringSimilarity(artist1, artist2);
-  const titleSim = stringSimilarity(title1, title2);
+  // Calculate fuzzy similarity. Guard empty normalized strings: non-Latin/symbol-only
+  // titles normalize to '' and stringSimilarity('','') is 1.0, which would otherwise
+  // score two unrelated tracks as a perfect match and invite a destructive delete.
+  const artistSim = (artist1 === '' || artist2 === '') ? 0 : stringSimilarity(artist1, artist2);
+  const titleSim = (title1 === '' || title2 === '') ? 0 : stringSimilarity(title1, title2);
 
   // Title is more important for matching
   const weightedSim = titleSim * 0.6 + artistSim * 0.4;

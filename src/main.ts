@@ -1647,17 +1647,14 @@ async function processOneAutopopulateTrack(
             }
           }
 
-          // Album art: grab the top-returned result's art even when the overall
-          // match doesn't clear MIN_MATCH_SCORE. A visually-similar cover is
-          // still better than no art at all.
-          if (needsAlbumArt && tagUpdates.albumArt === undefined) {
-            const topArt = spotifyTracks.find(st => st.album_image_url)?.album_image_url;
-            if (topArt) {
-              const dataUrl = await fetchImageAsBase64(topArt);
-              if (dataUrl) {
-                tagUpdates.albumArt = dataUrl;
-                fieldsPopulated.push('album_art');
-              }
+          // Album art from the BEST Spotify match, gated on the match threshold so
+          // we never embed an unrelated cover into an irreplaceable file.
+          if (needsAlbumArt && tagUpdates.albumArt === undefined &&
+              bestSt && bestScore >= MIN_MATCH_SCORE && bestSt.album_image_url) {
+            const dataUrl = await fetchImageAsBase64(bestSt.album_image_url);
+            if (dataUrl) {
+              tagUpdates.albumArt = dataUrl;
+              fieldsPopulated.push('album_art');
             }
           }
         }
@@ -1668,10 +1665,20 @@ async function processOneAutopopulateTrack(
         // embedded cover is actually usable on a DJ controller screen.
         if (needsAlbumArt && tagUpdates.albumArt === undefined &&
             soundcloudResult.status === 'fulfilled' && soundcloudResult.value) {
-          const topArt = soundcloudResult.value.tracks.find(t => t.artwork_url)?.artwork_url;
-          if (topArt) {
-            const hiRes = topArt.replace('-large.', '-t500x500.');
-            const dataUrl = await fetchImageAsBase64(hiRes) || await fetchImageAsBase64(topArt);
+          // Only use art from a SoundCloud track whose title/artist reasonably
+          // matches, so an unrelated cover isn't embedded into the file.
+          let bestSc: (typeof soundcloudResult.value.tracks)[number] | null = null;
+          let bestScScore = 0;
+          for (const sc of soundcloudResult.value.tracks) {
+            if (!sc.artwork_url) continue;
+            const titleSim = stringSimilarity(normalizeForComparison(existing.title), normalizeForComparison(sc.title));
+            const artistSim = stringSimilarity(normalizeForComparison(existing.artist), normalizeForComparison(sc.user || ''));
+            const score = titleSim * 0.7 + artistSim * 0.3;
+            if (score > bestScScore) { bestScScore = score; bestSc = sc; }
+          }
+          if (bestSc?.artwork_url && bestScScore >= MIN_MATCH_SCORE) {
+            const hiRes = bestSc.artwork_url.replace('-large.', '-t500x500.');
+            const dataUrl = await fetchImageAsBase64(hiRes) || await fetchImageAsBase64(bestSc.artwork_url);
             if (dataUrl) {
               tagUpdates.albumArt = dataUrl;
               fieldsPopulated.push('album_art');
@@ -1747,9 +1754,11 @@ ipcMain.handle(
         })
       );
       for (const r of batchResults) {
-        // Mark every processed track (even no-match/error) so we don't
-        // re-query it on the next scan.
-        markTrackAutopopulated(r.filePath);
+        // Mark as processed only when the run completed WITHOUT a hard error, so a
+        // transient failure (offline file, network error, failed tag write) is
+        // retried on the next scan rather than permanently skipped. A successful
+        // search that simply found no match is still marked done (no re-query).
+        if (!r.error) markTrackAutopopulated(r.filePath);
       }
       results.push(...batchResults);
     }

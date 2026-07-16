@@ -47,6 +47,10 @@ export function stringSimilarity(a: string, b: string): number {
 export function normalizeForComparison(str: string): string {
   return str
     .toLowerCase()
+    // Fold diacritics (é→e, ï→i, ö→o) so accented Latin titles match their plain
+    // forms instead of having the accented letters deleted by the [^\w\s] strip.
+    .normalize('NFKD')
+    .replace(/[̀-ͯ]/g, '')
     .replace(/\s*[\(\[].*(feat|ft|featuring|remix|edit|mix|version|original|extended|radio|club|instrumental|dub|vip|bootleg|remaster).*[\)\]]/gi, '')
     .replace(/\b(feat\.?|ft\.?|featuring)\b.*?(?=\s*[-–—]|$)/gi, '')
     .replace(/&/g, 'and')
@@ -62,6 +66,9 @@ export function normalizeForComparison(str: string): string {
 export function normalizeBasic(str: string): string {
   return str
     .toLowerCase()
+    // Fold diacritics so accented letters survive the [^\w\s] strip as their base letter.
+    .normalize('NFKD')
+    .replace(/[̀-ͯ]/g, '')
     .replace(/[^\w\s]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();

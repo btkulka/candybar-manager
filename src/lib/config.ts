@@ -167,7 +167,24 @@ export async function readConfig(
   return mergeSecretsInto(mPrimary, mSecrets, mFallback);
 }
 
-export async function writeConfig(configPath: string, config: AppConfig) {
+/** Write a file atomically (temp + rename) so a crash mid-write can't truncate it. */
+async function atomicWriteFile(filePath: string, data: string, mode?: number): Promise<void> {
+  const tmp = `${filePath}.tmp-${process.pid}-${Date.now()}`;
+  await fs.writeFile(tmp, data, mode !== undefined ? { mode } : {});
+  await fs.rename(tmp, filePath);
+}
+
+// Serialize config writes so concurrent read-modify-write cycles can't clobber
+// each other (last-writer-wins truncation / lost updates).
+let writeChain: Promise<unknown> = Promise.resolve();
+
+export function writeConfig(configPath: string, config: AppConfig): Promise<AppConfig> {
+  const result = writeChain.then(() => doWriteConfig(configPath, config));
+  writeChain = result.catch(() => {}); // keep the chain alive across failures
+  return result;
+}
+
+async function doWriteConfig(configPath: string, config: AppConfig): Promise<AppConfig> {
   log.debug('Writing config to:', configPath);
   try {
     // Run through migration so legacy fields passed in don't get persisted.
@@ -196,11 +213,11 @@ export async function writeConfig(configPath: string, config: AppConfig) {
         delete primaryOut[key];
       }
       await fs.mkdir(path.dirname(secretsPath), { recursive: true });
-      await fs.writeFile(secretsPath, JSON.stringify(secretsOut, null, 2), { mode: 0o600 });
+      await atomicWriteFile(secretsPath, JSON.stringify(secretsOut, null, 2), 0o600);
     }
 
     await fs.mkdir(path.dirname(configPath), { recursive: true });
-    await fs.writeFile(configPath, JSON.stringify(primaryOut, null, 2));
+    await atomicWriteFile(configPath, JSON.stringify(primaryOut, null, 2));
     return merged;
   } catch (error) {
     log.error('Failed to write config:', configPath, error);
