@@ -232,38 +232,6 @@ export async function searchQobuz(query: string): Promise<QobuzSearchResult> {
 }
 
 // Fallback HTML parsers
-function parseTracksFromHtml(html: string): QobuzTrack[] {
-  const tracks: QobuzTrack[] = [];
-  // Match track links with various patterns
-  const patterns = [
-    /href="([^"]*\/track\/[^"]+)"[^>]*>([^<]+)/g,
-    /data-track-id="(\d+)"[^>]*>.*?<[^>]*class="[^"]*title[^"]*"[^>]*>([^<]+)/gs
-  ];
-
-  for (const pattern of patterns) {
-    let match;
-    while ((match = pattern.exec(html)) !== null) {
-      const [, urlOrId, name] = match;
-      const id = urlOrId.match(/\d+/)?.[0] ?? urlOrId;
-      if (!tracks.some(t => t.id === id)) {
-        tracks.push({
-          id,
-          name: decodeHtmlEntities(name.trim()),
-          artists: [],
-          album: '',
-          duration_seconds: null,
-          quality: null,
-          price: null,
-          url: urlOrId.startsWith('/') ? `${BASE_URL}${urlOrId}` : urlOrId,
-          image: null,
-        });
-      }
-    }
-  }
-
-  return tracks.slice(0, 20);
-}
-
 function parseArtistsFromHtml(html: string): QobuzArtist[] {
   const artists: QobuzArtist[] = [];
   const pattern = /href="([^"]*\/interpreter\/[^"]+)"[^>]*>([^<]+)/g;

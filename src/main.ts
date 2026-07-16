@@ -2330,16 +2330,22 @@ ipcMain.handle('sniff-beatport-headers', async () => {
     } catch {}
     cb({ requestHeaders: details.requestHeaders });
   };
-  win.webContents.session.webRequest.onBeforeSendHeaders(onBeforeSend);
+  const beatportSession = win.webContents.session;
+  beatportSession.webRequest.onBeforeSendHeaders(onBeforeSend);
+  // The 'persist:beatport' session outlives the window, so the listener must be
+  // explicitly removed or it accumulates and keeps intercepting every request.
+  const detach = () => { try { beatportSession.webRequest.onBeforeSendHeaders(null); } catch { /* ignore */ } };
 
   try {
     await win.loadURL('https://www.beatport.com/');
     await new Promise(r => setTimeout(r, 90000)); // 90s — user navigates to library + clicks Download
     const outPath = await writeScratchFile('beatport_captured_requests.json', JSON.stringify(captured, null, 2));
     await writeScratchFile('beatport_all_urls.txt', allUrls.join('\n'));
+    detach();
     win.close();
     return { success: true, capturedCount: captured.length, totalUrls: allUrls.length, outPath };
   } catch (error) {
+    detach();
     try { win.close(); } catch {}
     mainLog.error('IPC sniff-beatport-headers failed:', error);
     return { success: false, error: error instanceof Error ? error.message : 'Sniff failed' };
@@ -2370,7 +2376,10 @@ ipcMain.handle('sniff-qobuz-headers', async () => {
     } catch {}
     cb({ requestHeaders: details.requestHeaders });
   };
-  win.webContents.session.webRequest.onBeforeSendHeaders(onBeforeSend);
+  const qobuzSession = win.webContents.session;
+  qobuzSession.webRequest.onBeforeSendHeaders(onBeforeSend);
+  // 'persist:qobuz' outlives the window — remove the listener explicitly.
+  const detach = () => { try { qobuzSession.webRequest.onBeforeSendHeaders(null); } catch { /* ignore */ } };
 
   try {
     await win.loadURL('https://play.qobuz.com/');
@@ -2378,9 +2387,11 @@ ipcMain.handle('sniff-qobuz-headers', async () => {
     const outPath = await writeScratchFile('qobuz_captured_requests.json', JSON.stringify(captured, null, 2));
     await writeScratchFile('qobuz_all_urls.txt', allUrls.join('\n'));
     await new Promise(r => setTimeout(r, 1500));
+    detach();
     win.close();
     return { success: true, capturedCount: captured.length, totalUrls: allUrls.length, outPath, sample: captured.slice(0, 5), urlSample: allUrls.slice(0, 20) };
   } catch (error) {
+    detach();
     try { win.close(); } catch {}
     mainLog.error('IPC sniff-qobuz-headers failed:', error);
     return { success: false, error: error instanceof Error ? error.message : 'Sniff failed' };
