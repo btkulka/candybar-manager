@@ -86,3 +86,28 @@ describe('calculateMatchConfidence — unrelated tracks stay "missing"', () => {
     expect(bucket(c)).toBe('missing');
   });
 });
+
+describe('calculateMatchConfidence — title floor keeps unrelated songs out of "maybe owned"', () => {
+  it('routes a different song by the SAME artist to missing, not uncertain', () => {
+    // Same exact artist, unrelated titles: the artist score alone used to clear
+    // the 0.60 bar (uncertain / "maybe owned"). The title floor pushes it to new.
+    const c = calculateMatchConfidence(
+      track('Starjunk 95', 'Bubblegum Trash'),
+      track('Starjunk 95', "Beat Keep Rockin' (Original Mix)"),
+    );
+    expect(bucket(c)).toBe('missing');
+  });
+
+  it('does NOT demote a genuine version variant to missing (stays uncertain via the version cap)', () => {
+    // "(Extended Mix)" shares the base title, so its normalized title score is
+    // high — above the floor — and it routes through the version cap instead.
+    const c = calculateMatchConfidence(track('Fisher', 'Losing It (Extended Mix)'), track('Fisher', 'Losing It'));
+    expect(bucket(c)).toBe('uncertain');
+    expect(c).toBeLessThan(UNCERTAIN_THRESHOLD);
+  });
+
+  it('still matches a true duplicate through the floor', () => {
+    const c = calculateMatchConfidence(track('Boris Brejcha', 'Gravity (Original Mix)'), track('Boris Brejcha', 'Gravity'));
+    expect(bucket(c)).toBe('matched');
+  });
+});

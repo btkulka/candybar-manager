@@ -19,6 +19,12 @@ export const UNCERTAIN_THRESHOLD = 0.90; // Below this but above MATCH_THRESHOLD
 // When two titles are the same song but different versions, cap confidence just
 // below UNCERTAIN_THRESHOLD so it surfaces for review instead of being hidden.
 const VERSION_MISMATCH_CAP = UNCERTAIN_THRESHOLD - 0.01; // 0.89
+// Minimum title similarity for a match to count as the same song at all. Below
+// this the titles are unrelated, so a strong artist match cannot pull it into
+// the "maybe owned" bucket — it's a different track the DJ still needs. Chosen
+// below the ~0.45 similarity a remix/edit variant scores so those still route
+// through the version cap (uncertain) rather than being demoted to brand-new.
+export const TITLE_MATCH_FLOOR = 0.40;
 
 /**
  * Build a normalized key for matching, stripping remix tags, feat info, etc.
@@ -89,14 +95,26 @@ export function calculateMatchConfidence(csvTrack: TrackRecord, libraryTrack: Tr
   if (csvArtistNorm === libArtistNorm && csvArtistNorm.length > 0) bonus += 0.1;
   if (csvTitleNorm === libTitleNorm && csvTitleNorm.length > 0) bonus += 0.15;
 
-  const confidence = Math.min(1, weightedScore + bonus);
+  let confidence = Math.min(1, weightedScore + bonus);
+
+  // Title floor: if the titles are essentially unrelated, it's a different song
+  // no matter how well the artist matches — otherwise a same-artist track ending
+  // in "(Original Mix)" soaks up unrelated songs by that artist into the
+  // "maybe owned" bucket on the 0.6-weighted artist score alone. Uses the better
+  // of raw/normalized title similarity, so version variants (which share the base
+  // title, hence a high normalized title score) stay above the floor and fall to
+  // the version cap below instead of being force-classified as brand new.
+  const bestTitleSim = Math.max(titleSim, normTitleSim);
+  if (bestTitleSim < TITLE_MATCH_FLOOR) {
+    confidence = Math.min(confidence, MATCH_THRESHOLD - 0.01);
+  }
 
   // Same song, different version → cap below the "already in library" bar. The
   // fuzzy score above matches on version-STRIPPED fields (so an owned remix and
   // this remix still read as the same song), but a version mismatch means it's a
   // distinct track to source, not a duplicate to hide.
   if (!sameTitleVersion(csvTrack.title, libraryTrack.title)) {
-    return Math.min(confidence, VERSION_MISMATCH_CAP);
+    confidence = Math.min(confidence, VERSION_MISMATCH_CAP);
   }
   return confidence;
 }
