@@ -399,12 +399,13 @@ function clearPlaylistCard() {
   document.getElementById('source-playlist-card')?.remove();
 }
 
-// ---------- Sources state persistence (survives HMR / renderer reloads) ----------
-// A Vite HMR update in dev does a full renderer reload, which wipes all the
-// module state above and re-renders the DOM from scratch — losing an entire
-// search you were mid-review on. We snapshot the reviewable state into
-// sessionStorage (per-window, cleared on app quit) and rehydrate it on init so a
-// code edit doesn't cost you the whole run. Cheap enough to leave on always.
+// ---------- Sources state persistence (survives HMR + app restarts) ----------
+// The sourcing scan (library check + Qobuz/Beatport search) is the expensive
+// step, so we snapshot the whole reviewable state — results, library buckets,
+// selections, and the tracks already pushed to a cart — into localStorage and
+// rehydrate it on init. That way a code edit (HMR reload) OR quitting and
+// reopening the app drops you back into your cart instead of forcing another
+// full scan. "Clear" wipes it. Cheap enough to save on every mutation.
 const SOURCES_STATE_KEY = 'candybar:sources-state:v1';
 
 function saveSourcesState() {
@@ -416,6 +417,8 @@ function saveSourcesState() {
       playlistInfo: currentPlaylistInfo,
       selectedQobuz: [...selectedQobuzIds],
       selectedBeatport: [...selectedBeatportIds],
+      lastAddedQobuz,
+      lastAddedBeatport,
       sourceType,
       spotifyPlaylistUrl,
       csvPath,
@@ -423,16 +426,16 @@ function saveSourcesState() {
       searchQuery,
       resultsShown: resultsSection.style.display === 'block'
     };
-    sessionStorage.setItem(SOURCES_STATE_KEY, JSON.stringify(snapshot));
+    localStorage.setItem(SOURCES_STATE_KEY, JSON.stringify(snapshot));
   } catch {
-    // sessionStorage unavailable or over quota — non-fatal, just skip persistence.
+    // localStorage unavailable or over quota (huge scan) — non-fatal, skip persistence.
   }
 }
 
 function restoreSourcesState() {
   let snapshot: ReturnType<typeof JSON.parse> | null = null;
   try {
-    const raw = sessionStorage.getItem(SOURCES_STATE_KEY);
+    const raw = localStorage.getItem(SOURCES_STATE_KEY);
     if (!raw) return;
     snapshot = JSON.parse(raw);
   } catch {
@@ -446,6 +449,8 @@ function restoreSourcesState() {
   currentPlaylistInfo = snapshot.playlistInfo ?? null;
   selectedQobuzIds = new Set(snapshot.selectedQobuz ?? []);
   selectedBeatportIds = new Set(snapshot.selectedBeatport ?? []);
+  lastAddedQobuz = snapshot.lastAddedQobuz ?? [];
+  lastAddedBeatport = snapshot.lastAddedBeatport ?? [];
   activeSegment = snapshot.segment ?? 'new';
   searchQuery = snapshot.searchQuery ?? '';
 
@@ -475,6 +480,10 @@ function restoreSourcesState() {
   setActiveSegment(activeSegment);
   updateBuyBar();
   inputBar.style.display = 'none';
+  // If a prior session already pushed tracks to a cart, keep the download path live.
+  if (lastAddedQobuz.length + lastAddedBeatport.length > 0) {
+    downloadPurchasesBtn.style.display = 'inline-flex';
+  }
 }
 
 /**
