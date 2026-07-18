@@ -17,6 +17,7 @@ import { initPlayer } from './renderer/player';
 import { initUsbHealth } from './renderer/usbHealth';
 import { initRestore } from './renderer/restore';
 import { initRightDrawer } from './renderer/rightDrawer';
+import { initStorePanel } from './renderer/storePanel';
 
 // Re-export types that were previously exported from this file
 export type { SuggestedAction, HealthIssue } from './renderer/shared';
@@ -139,6 +140,7 @@ function initApp() {
   safeInit('initUsbHealth', initUsbHealth);
   safeInit('initRestore', initRestore);
   safeInit('initRightDrawer', initRightDrawer);
+  safeInit('initStorePanel', initStorePanel);
 
   loadConfig().catch((err) => console.error('[Renderer] loadConfig failed:', err));
   checkSpotifyConnection(false).catch((err) => console.error('[Renderer] checkSpotifyConnection failed:', err));

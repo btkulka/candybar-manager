@@ -4527,52 +4527,7 @@ button:focus-visible {
 .sidebar-player.muted .icon-volume { display: none; }
 .sidebar-player.muted .icon-volume-muted { display: block; }
 
-.store-panel-label {
-  font-size: var(--fs-small);
-  font-weight: 500;
-  color: var(--text-secondary);
-  margin-left: 8px;
-}
-
-/* ========== Store Panel ========== */
-
-/* Draggable resize handle at the right edge of the app content */
-.store-panel-resize-handle {
-  position: fixed;
-  top: 0;
-  right: 0;
-  width: 5px;
-  height: 100vh;
-  cursor: col-resize;
-  z-index: 10001;
-  background: transparent;
-  transition: background 0.15s;
-}
-
-.store-panel-resize-handle:hover,
-body.store-panel-resizing .store-panel-resize-handle {
-  background: var(--accent);
-  opacity: 0.6;
-}
-
-body.store-panel-resizing {
-  cursor: col-resize !important;
-  user-select: none;
-}
-
-/* Toolbar spanning the top of the app content area, right-aligned */
-.store-panel-toolbar {
-  position: fixed;
-  top: 0;
-  right: 5px;
-  height: 36px;
-  background: var(--bg-elevated);
-  z-index: 10;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 0 12px;
-}
+/* Store-panel chrome lives in one block further down (search "Store Panel"). */
 .duplicate-header-actions {
   margin-left: auto;
   display: flex;
@@ -5398,23 +5353,36 @@ body.store-panel-resizing {
 
 /* ========== Store Panel ========== */
 
-/* Draggable resize handle at the right edge of the app content */
+/* Draggable handle at the app↔panel seam. The app content view is sized to the
+ * visible column, so the renderer's right edge (`right: 0`) is exactly where the
+ * embedded panel begins. Wide hit area (8px) with a thin visible line flush to
+ * the seam. */
 .store-panel-resize-handle {
   position: fixed;
   top: 0;
   right: 0;
-  width: 5px;
+  width: 8px;
   height: 100vh;
   cursor: col-resize;
   z-index: 10001;
   background: transparent;
+  touch-action: none;
+}
+
+.store-panel-resize-handle::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 2px;
+  height: 100%;
+  background: var(--border-subtle);
   transition: background 0.15s;
 }
 
-.store-panel-resize-handle:hover,
-body.store-panel-resizing .store-panel-resize-handle {
+.store-panel-resize-handle:hover::after,
+body.store-panel-resizing .store-panel-resize-handle::after {
   background: var(--accent);
-  opacity: 0.6;
 }
 
 body.store-panel-resizing {
@@ -5422,25 +5390,27 @@ body.store-panel-resizing {
   user-select: none;
 }
 
-/* Toolbar spanning the full width of the store-panel column, flush with the
- * top of the embedded web view so users always have an obvious close button.
- * `--store-panel-width` is set by the renderer's onStorePanelState handler. */
+/* Floating control cluster tabbed onto the top-left corner of the panel (the
+ * renderer's right edge), giving the cart an always-visible close/zoom/nav bar
+ * that the embedded site can't cover. Content-sized so it never eats more of the
+ * app column than it needs. */
 .store-panel-toolbar {
   position: fixed;
   top: 0;
   right: 0;
-  width: var(--store-panel-width, 360px);
   height: 40px;
   background: var(--bg-elevated);
   border-bottom: 1px solid var(--border-subtle);
   border-left: 1px solid var(--border-subtle);
+  border-radius: 0 0 0 var(--radius-md);
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  padding: 0 8px 0 8px;
-  z-index: 10000;
-  gap: 6px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+  padding: 0 6px;
+  /* Above the resize handle (10001) so the toolbar's buttons win in the top
+   * strip they share with the handle's full-height hit area. */
+  z-index: 10002;
+  gap: 10px;
+  box-shadow: -2px 2px 10px rgba(0, 0, 0, 0.35);
 }
 
 .store-panel-toolbar-left {
@@ -5448,7 +5418,7 @@ body.store-panel-resizing {
   align-items: center;
   gap: 4px;
   min-width: 0;
-  flex: 1 1 auto;
+  flex: 0 0 auto;
 }
 
 .store-panel-label {
@@ -5461,9 +5431,43 @@ body.store-panel-resizing {
   white-space: nowrap;
 }
 
+.store-panel-toolbar-right {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: 0 0 auto;
+}
+
+.store-panel-toolbar .btn-icon {
+  width: 28px;
+  height: 28px;
+  cursor: pointer;
+  border: none;
+}
+
+/* Zoom percentage doubles as the reset button. */
+.store-panel-zoom-level {
+  min-width: 44px;
+  height: 28px;
+  padding: 0 6px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: var(--fs-small);
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+.store-panel-zoom-level:hover {
+  background: var(--bg-surface);
+  color: var(--text-primary);
+}
+
 #store-panel-close {
   flex: 0 0 auto;
   color: var(--text-secondary);
+  margin-left: 4px;
 }
 #store-panel-close:hover {
   color: #e74c3c;
@@ -9231,4 +9235,17 @@ a:focus-visible, button:focus-visible, [role="button"]:focus-visible,
 
 @media (prefers-reduced-motion: reduce) {
   .source-group, .source-drawer-scrim, .source-cart-drawer { animation: none; }
+}
+
+/* Sources page is a flat single workspace (no numbered wizard rail) */
+.source-workspace {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap-section);
+}
+.source-input-bar {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  padding: var(--space-lg) var(--space-xl);
 }

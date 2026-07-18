@@ -181,14 +181,17 @@ export async function batchSearchQobuz(
         }
       }
 
-      // Prefer whichever source has the higher confidence match. Tie-breaker:
-      // Beatport wins when scores are within 0.03 of each other — DJ tracks
-      // (Extended Mixes, proper remix credits, catalog releases) are more
-      // reliably matched on Beatport than on Qobuz's broader library.
+      // Take whichever source has the strictly higher confidence match. We
+      // always search both stores (above) so that an imperfect hit on one
+      // source can't lock out a better hit on the other — e.g. a 100% Qobuz
+      // match must never be overridden by a lower Beatport score. Beatport
+      // only wins an exact tie (both stores lossless; Beatport's WAV is
+      // RX3-compatible without conversion, so it's the better default when
+      // confidence is genuinely equal).
       const qobuzOk = bestQobuzMatch && bestQobuzScore >= 0.50;
       const beatportOk = bestBeatportMatch && bestBeatportScore >= 0.50;
       const preferBeatport =
-        beatportOk && (!qobuzOk || bestBeatportScore + 0.03 >= bestQobuzScore);
+        beatportOk && (!qobuzOk || bestBeatportScore >= bestQobuzScore);
       const preferQobuz =
         qobuzOk && !preferBeatport;
 

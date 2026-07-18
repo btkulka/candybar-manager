@@ -276,28 +276,15 @@
             </div>
           </header>
 
-          <div class="wizard" id="source-wizard">
+          <div class="source-workspace" id="source-workspace">
 
-            <!-- Lane 1: Source -->
-            <section class="wizard-lane" data-lane="source" data-state="active">
-              <div class="lane-body">
-                <div class="lane-header">
-                  <h3>Pick a track list</h3>
-                  <p class="lane-hint">CSV file with artist and title, or a Spotify playlist.</p>
-                </div>
-                <div class="lane-content" id="source-source-slot"></div>
-              </div>
-            </section>
+            <!-- CSV / Spotify picker — collapses to the playlist chip after a search -->
+            <div class="source-input-bar" id="source-input-bar">
+              <div id="source-source-slot"></div>
+            </div>
 
-            <!-- Lane 2: Search -->
-            <section class="wizard-lane" data-lane="search" data-state="locked">
-              <div class="lane-body">
-                <div class="lane-header">
-                  <h3>Search stores</h3>
-                  <p class="lane-hint">Find each track on Qobuz and Beatport.</p>
-                </div>
-                <div class="lane-content">
-                  <div id="source-progress-section" class="wizard-progress" style="display: none;">
+            <!-- Search progress (shown while sourcing) -->
+            <div id="source-progress-section" class="wizard-progress" style="display: none;">
                     <div class="progress-hero">
                       <div class="progress-hero-main">
                         <div class="progress-phase-row">
@@ -340,19 +327,9 @@
                       <div class="progress-recent" id="source-progress-recent"></div>
                     </div>
                   </div>
-                </div>
-              </div>
-            </section>
 
-            <!-- Lane 3: Review -->
-            <section class="wizard-lane" data-lane="review" data-state="locked">
-              <div class="lane-body">
-                <div class="lane-header">
-                  <h3>Review matches</h3>
-                  <p class="lane-hint">Select tracks to add to your store carts or export.</p>
-                </div>
-                <div class="lane-content">
-                  <section id="source-results-section" class="wizard-results" style="display: none;">
+            <!-- Results workspace (shown after a search) -->
+            <section id="source-results-section" class="wizard-results" style="display: none;">
                     <!-- #source-playlist-card (the imported-playlist chip) is injected here on import -->
                     <div class="source-scan-summary" id="source-scan-summary" style="display: none;"></div>
 
@@ -395,12 +372,7 @@
                     <div class="empty-state" id="source-empty" style="display: none;">
                       <p>No tracks in this group.</p>
                     </div>
-                  </section>
-                </div>
-              </div>
             </section>
-
-            <!-- Cart review moved out of the wizard into the buy-bar + slide-over below -->
 
           </div>
 

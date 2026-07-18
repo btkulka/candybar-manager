@@ -339,6 +339,12 @@ contextBridge.exposeInMainWorld('candybar', {
     ipcRenderer.invoke('store-panel-forward'),
   storePanelResize: (width: number): Promise<{ success: boolean }> =>
     ipcRenderer.invoke('store-panel-resize', { width }),
+  storePanelResizeBegin: (): Promise<{ success: boolean }> =>
+    ipcRenderer.invoke('store-panel-resize-begin'),
+  storePanelResizeEnd: (): Promise<{ success: boolean }> =>
+    ipcRenderer.invoke('store-panel-resize-end'),
+  storePanelZoom: (direction: 'in' | 'out' | 'reset'): Promise<{ zoom: number }> =>
+    ipcRenderer.invoke('store-panel-zoom', { direction }),
   storePanelStatus: (): Promise<{ open: boolean; store: string | null; url: string | null }> =>
     ipcRenderer.invoke('store-panel-status'),
   storePanelCheckoutAdvance: (store: 'qobuz' | 'beatport'): Promise<{
@@ -351,7 +357,7 @@ contextBridge.exposeInMainWorld('candybar', {
     ipcRenderer.invoke('store-panel-checkout-advance', { store }),
   storePanelPlaceOrder: (store: 'qobuz' | 'beatport'): Promise<{ success: boolean; clickedText?: string; error?: string }> =>
     ipcRenderer.invoke('store-panel-place-order', { store }),
-  onStorePanelState: (callback: (state: { open: boolean; store: string | null; panelWidth: number }) => void) =>
+  onStorePanelState: (callback: (state: { open: boolean; store: string | null; panelWidth: number; zoom: number; resizing: boolean }) => void) =>
     ipcRenderer.on('store-panel-state', (_event, state) => callback(state)),
   onStorePanelAuth: (callback: (auth: { store: string; loggedIn: boolean }) => void) =>
     ipcRenderer.on('store-panel-auth', (_event, auth) => callback(auth)),

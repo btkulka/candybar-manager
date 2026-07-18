@@ -1,5 +1,5 @@
 import log, { createScopedLogger } from './lib/logger';
-import { app, BrowserWindow, View, WebContentsView, ipcMain, dialog, nativeImage, Tray, Menu, protocol, net, shell, session, type OpenDialogOptions } from 'electron';
+import { app, BrowserWindow, View, WebContentsView, ipcMain, dialog, nativeImage, Tray, Menu, protocol, net, shell, session, screen, type OpenDialogOptions } from 'electron';
 import fs from 'fs';
 import path from 'path';
 import { pathToFileURL } from 'url';
@@ -312,6 +312,9 @@ let storePanelStore: 'qobuz' | 'beatport' | null = null;
 let storePanelAccountId: string | null = null;
 let storePanelTokenPollTimer: NodeJS.Timeout | null = null;
 let storePanelWidth = 0; // current panel width in px
+let storePanelZoom = 1; // current embedded-view zoom factor (persists across opens this session)
+let storePanelResizing = false; // true while the user is dragging the resize handle
+let storePanelResizeTimer: NodeJS.Timeout | null = null; // cursor-poll timer during a resize drag
 let storePanelContainer: View | null = null; // container that holds app + panel side by side
 let appContentView: View | null = null; // reference to the original BrowserWindow content view
 
@@ -331,6 +334,9 @@ function storePanelPartition(store: 'qobuz' | 'beatport', accountId: string): st
 const STORE_PANEL_MIN_WIDTH = 360;
 const STORE_PANEL_MAX_RATIO = 0.65;
 const STORE_PANEL_DEFAULT_RATIO = 0.45;
+const STORE_PANEL_ZOOM_MIN = 0.5;
+const STORE_PANEL_ZOOM_MAX = 3.0;
+const STORE_PANEL_ZOOM_STEP = 0.1;
 
 function getMainWindow(): BrowserWindow | null {
   return BrowserWindow.getAllWindows()[0] ?? null;
@@ -403,8 +409,61 @@ async function openStorePanel(store: 'qobuz' | 'beatport', url: string): Promise
     win.webContents.send('store-panel-navigated', { url: navUrl });
   });
 
+  // Re-apply the user's chosen zoom after every load. Chromium tracks zoom
+  // per-origin, so a fresh page (e.g. first checkout redirect) can otherwise
+  // reset to 100%.
+  storePanel.webContents.on('did-finish-load', applyStorePanelZoom);
+
   // Listen for window resize to keep layout correct
   win.on('resize', layoutStorePanel);
+}
+
+/** During a shrink-drag the cursor crosses onto the native panel, which then
+ *  swallows the mouse events so the renderer never sees the pointerup. We watch
+ *  the panel's own input stream for the release instead — but only while a drag
+ *  is active, since `input-event` fires for every mouse move over the view. */
+function onStorePanelResizeInput(_evt: Electron.Event, input: Electron.InputEvent): void {
+  if (input.type === 'mouseUp') stopStorePanelResize();
+}
+
+/** Apply the current zoom factor to the embedded panel, if open. */
+function applyStorePanelZoom(): void {
+  if (storePanel) storePanel.webContents.setZoomFactor(storePanelZoom);
+}
+
+/** Begin a resize drag: poll the OS cursor position and re-layout the panel to
+ *  follow it. Polling (rather than renderer pointermove events) keeps the drag
+ *  alive even when the cursor is over the native panel view, which does not
+ *  forward events to the renderer. */
+function startStorePanelResize(): void {
+  if (storePanelResizeTimer || !storePanel) return;
+  storePanelResizing = true;
+  storePanel.webContents.on('input-event', onStorePanelResizeInput);
+  storePanelResizeTimer = setInterval(() => {
+    const win = getMainWindow();
+    if (!win || !storePanel) { stopStorePanelResize(); return; }
+    const cursor = screen.getCursorScreenPoint();
+    const contentBounds = win.getContentBounds();
+    const [totalWidth] = win.getContentSize();
+    const contentX = cursor.x - contentBounds.x;
+    // layoutStorePanel clamps to [MIN_WIDTH, MAX_RATIO]; just feed it the raw
+    // width implied by the cursor's distance from the right edge.
+    storePanelWidth = totalWidth - contentX;
+    layoutStorePanel();
+  }, 16);
+}
+
+/** End a resize drag and notify the renderer (via a final non-resizing state). */
+function stopStorePanelResize(): void {
+  if (storePanelResizeTimer) {
+    clearInterval(storePanelResizeTimer);
+    storePanelResizeTimer = null;
+  }
+  storePanel?.webContents.off('input-event', onStorePanelResizeInput);
+  if (storePanelResizing) {
+    storePanelResizing = false;
+    layoutStorePanel(); // pushes a state event with resizing:false
+  }
 }
 
 function layoutStorePanel(): void {
@@ -422,18 +481,19 @@ function layoutStorePanel(): void {
   // Size the container itself to fill the window
   storePanelContainer.setBounds({ x: 0, y: 0, width, height });
 
-  // Left side: app content
+  // App content occupies the visible left column; it reflows into `appWidth` so
+  // its right-anchored UI (toasts, the cart slide-over, the right drawer) stays
+  // on-screen beside the panel rather than hidden behind it. Because the
+  // renderer's viewport ends exactly at the seam, the panel's chrome (resize
+  // handle + floating toolbar) can anchor to the renderer's own right edge.
   appContentView.setBounds({ x: 0, y: 0, width: appWidth, height });
 
-  // Right side: store panel. Leave a 40px strip at the top for the app's
-  // toolbar (close button + title) which is rendered as a fixed-position
-  // element in the renderer — the embedded web view starts below it.
-  const toolbarHeight = 40;
+  // Right side: the embedded store panel fills the column, full height.
   storePanel.setBounds({
     x: appWidth,
-    y: toolbarHeight,
+    y: 0,
     width: storePanelWidth,
-    height: Math.max(0, height - toolbarHeight),
+    height,
   });
 
   // Notify renderer
@@ -441,6 +501,8 @@ function layoutStorePanel(): void {
     open: true,
     store: storePanelStore,
     panelWidth: storePanelWidth,
+    zoom: storePanelZoom,
+    resizing: storePanelResizing,
   });
 }
 
@@ -448,6 +510,9 @@ function closeStorePanel(): void {
   const win = getMainWindow();
 
   stopStorePanelAuthPoll();
+  // Kill any in-flight resize poll so it can't fire against a torn-down panel.
+  if (storePanelResizeTimer) { clearInterval(storePanelResizeTimer); storePanelResizeTimer = null; }
+  storePanelResizing = false;
 
   if (storePanel && win && storePanelContainer && appContentView) {
     // Remove children from container before reparenting
@@ -470,7 +535,7 @@ function closeStorePanel(): void {
 
   const mainWin = getMainWindow();
   if (mainWin) {
-    mainWin.webContents.send('store-panel-state', { open: false, store: null, panelWidth: 0 });
+    mainWin.webContents.send('store-panel-state', { open: false, store: null, panelWidth: 0, zoom: storePanelZoom, resizing: false });
   }
 }
 
@@ -796,6 +861,32 @@ ipcMain.handle('store-panel-resize', (_event, { width: screenX }: { width: numbe
     layoutStorePanel();
   }
   return { success: true };
+});
+
+// Resize drag lifecycle. The renderer signals grab/release on the handle; the
+// main process drives the actual width by polling the cursor (see
+// startStorePanelResize) so the drag survives the cursor crossing the panel.
+ipcMain.handle('store-panel-resize-begin', () => {
+  startStorePanelResize();
+  return { success: true };
+});
+ipcMain.handle('store-panel-resize-end', () => {
+  stopStorePanelResize();
+  return { success: true };
+});
+
+// Zoom the embedded web view. Zoom is remembered for the session and re-applied
+// after each navigation (see did-finish-load in openStorePanel).
+ipcMain.handle('store-panel-zoom', (_event, { direction }: { direction: 'in' | 'out' | 'reset' }) => {
+  if (direction === 'in') {
+    storePanelZoom = Math.min(STORE_PANEL_ZOOM_MAX, +(storePanelZoom + STORE_PANEL_ZOOM_STEP).toFixed(2));
+  } else if (direction === 'out') {
+    storePanelZoom = Math.max(STORE_PANEL_ZOOM_MIN, +(storePanelZoom - STORE_PANEL_ZOOM_STEP).toFixed(2));
+  } else {
+    storePanelZoom = 1;
+  }
+  applyStorePanelZoom();
+  return { zoom: storePanelZoom };
 });
 
 ipcMain.handle('select-path', async (_event, { type }: { type: 'file' | 'dir' }) => {

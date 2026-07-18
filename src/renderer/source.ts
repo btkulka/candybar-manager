@@ -1,16 +1,18 @@
 import type { QobuzCartMatch } from '../lib/qobuzCart';
 import type { CsvPreview, StoreMatch, LibraryMatchedRow, LibraryProbableRow, SourcePlaylistInfo } from '../types';
 import { showToast, setStatus, escapeHtml, setValue, getErrorMessage } from './shared';
-import { Wizard } from './wizard';
 import { renderSourceInput } from './sourceInputTemplate';
 import { exportM3u8, exportRekordbox, exportCsv } from './libraryExport';
 
 // ========== DOM Elements ==========
 // Late-bound refs live inside the source lane (injected at init).
 
-let wizard: Wizard;
 let runSearchBtn: HTMLButtonElement;
 
+// The Sources page is a single workspace (no wizard): the input bar collapses
+// away once a search runs, the progress strip shows while sourcing, and the
+// results section takes over. These three drive that flow.
+const inputBar = document.getElementById('source-input-bar') as HTMLElement;
 const progressSection = document.getElementById('source-progress-section') as HTMLElement;
 const progressBar = document.getElementById('source-progress-bar') as HTMLDivElement;
 const progressMessage = document.getElementById('source-progress-message') as HTMLSpanElement;
@@ -116,16 +118,6 @@ let lastAddedBeatport: StoreMatch[] = [];
 let downloadFiredQobuz = false;
 let downloadFiredBeatport = false;
 
-function sourceLaneSummary(): { text: string; detail?: string } {
-  if (sourceType === 'spotify' && spotifyPlaylistUrl) {
-    return { text: 'Spotify playlist', detail: spotifyPlaylistUrl };
-  }
-  if (csvPath) {
-    return { text: csvPath.split('/').pop() || csvPath };
-  }
-  return { text: '—' };
-}
-
 /** Parse a display price like "$2.99", "€1.29", "1.79 USD" into a number.
  *  Anything unparseable returns 0 so a missing price doesn't break the total. */
 function parsePriceDollars(raw: string | null | undefined): number {
@@ -164,18 +156,6 @@ function renderCartLines(container: HTMLDivElement, tracks: StoreMatch[]) {
   }
 }
 
-function cartLaneSummary(): { text: string; detail?: string } {
-  const q = lastAddedQobuz.length;
-  const b = lastAddedBeatport.length;
-  const qTotal = lastAddedQobuz.reduce((s, t) => s + parsePriceDollars(t.price), 0);
-  const bTotal = lastAddedBeatport.reduce((s, t) => s + parsePriceDollars(t.price), 0);
-  const parts: string[] = [];
-  if (q) parts.push(`${q} Qobuz`);
-  if (b) parts.push(`${b} Beatport`);
-  const total = qTotal + bTotal;
-  return { text: parts.join(' + ') || 'no tracks', detail: total > 0 ? `$${total.toFixed(2)}` : undefined };
-}
-
 function renderCartStage() {
   const qTracks = lastAddedQobuz;
   const bTracks = lastAddedBeatport;
@@ -201,17 +181,6 @@ function renderCartStage() {
   }
 
   cartSection.style.display = (qTracks.length + bTracks.length) > 0 ? 'flex' : 'none';
-}
-
-function searchLaneSummary(list: QobuzCartMatch[]): { text: string; detail?: string } {
-  const qobuzCount = list.filter(m => m.source === 'qobuz').length;
-  const beatportCount = list.filter(m => m.source === 'beatport').length;
-  const notFoundCount = list.filter(m => m.status !== 'matched').length;
-  const parts: string[] = [];
-  if (qobuzCount) parts.push(`${qobuzCount} Qobuz`);
-  if (beatportCount) parts.push(`${beatportCount} Beatport`);
-  if (notFoundCount) parts.push(`${notFoundCount} not found`);
-  return { text: parts.join(' · ') || 'no matches', detail: `${list.length} tracks` };
 }
 
 // ========== Source Type Toggle ==========
@@ -505,9 +474,7 @@ function restoreSourcesState() {
   updateSegmentCounts();
   setActiveSegment(activeSegment);
   updateBuyBar();
-  wizard.setDone('source', sourceLaneSummary());
-  wizard.setDone('search', searchLaneSummary(matches));
-  wizard.setActive('review');
+  inputBar.style.display = 'none';
 }
 
 /**
@@ -850,9 +817,8 @@ async function runSearch() {
   progressCount.textContent = '';
   (progressSection as HTMLElement & { _resetStats?: () => void })._resetStats?.();
 
-  // Collapse source lane, activate search lane with progress
-  wizard.setDone('source', sourceLaneSummary());
-  wizard.setActive('search');
+  // Collapse the input bar; the progress strip is now the focus.
+  inputBar.style.display = 'none';
 
   try {
     const result = sourceType === 'spotify'
@@ -861,7 +827,7 @@ async function runSearch() {
 
     if (!result.success || !result.result) {
       showToast('error', 'Search Failed', result.error || 'Unknown error');
-      wizard.setActive('source');
+      inputBar.style.display = '';
       return;
     }
 
@@ -913,18 +879,17 @@ async function runSearch() {
     appendMode = false;
 
     resultsSection.style.display = 'block';
+    inputBar.style.display = 'none';
     movePlaylistCardToResults();
     updateSegmentCounts();
     setActiveSegment('new');
     updateBuyBar();
-    wizard.setDone('search', searchLaneSummary(matches));
-    wizard.setActive('review');
     setStatus('Idle');
     saveSourcesState();
   } catch (err) {
     const message = getErrorMessage(err);
     showToast('error', 'Search Failed', message);
-    wizard.setActive('source');
+    inputBar.style.display = '';
     setStatus('Error');
   } finally {
     updateRunButton();
@@ -1288,14 +1253,6 @@ export function initSource() {
   spotifyUrlInput = document.getElementById('source-spotify-playlist-url') as HTMLInputElement;
   spotifyUrlStatus = document.getElementById('source-spotify-url-status') as HTMLSpanElement;
 
-  // Wizard: Edit on source/search/review jumps back to source; Edit on cart
-  // goes back to review so the user can revise selections without re-running
-  // the search.
-  wizard = new Wizard('source-wizard');
-  wizard.configure('source', { onEdit: () => wizard.setActive('source') });
-  wizard.configure('search', { onEdit: () => wizard.setActive('source') });
-  wizard.configure('review', { onEdit: () => wizard.setActive('source') });
-
   // Run search
   runSearchBtn.addEventListener('click', () => runSearch());
 
@@ -1387,7 +1344,10 @@ export function initSource() {
       spotifyUrlInput.value = '';
       validateSpotifyUrl('');
     }
-    wizard.setActive('source');
+    // Reveal the input bar again above the current results so the next run
+    // merges into them.
+    inputBar.style.display = '';
+    inputBar.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   });
 
   // Open cart in embedded store panel
@@ -1504,8 +1464,8 @@ export function initSource() {
     cartSection.style.display = 'none';
     buyBar.style.display = 'none';
     downloadPurchasesBtn.style.display = 'none';
+    inputBar.style.display = '';
     saveSourcesState();
-    wizard.setActive('source');
   });
 
   // Progress UX — elapsed, ETA, live counts, last-found preview.
