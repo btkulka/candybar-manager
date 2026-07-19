@@ -5357,16 +5357,33 @@ button:focus-visible {
  * visible column, so the renderer's right edge (`right: 0`) is exactly where the
  * embedded panel begins. Wide hit area (8px) with a thin visible line flush to
  * the seam. */
+/* When the native store-cart panel is open, the main web-contents still fills
+   the whole window (Electron can't clip it from the main process), so the panel
+   would overlay — and hide input to — the app's right edge. Reflow the entire
+   app into the visible left column; the empty right strip is what the panel
+   covers, and nothing interactive renders behind it. */
+html.store-panel-open .app {
+  width: calc(100vw - var(--store-panel-width, 0px));
+  overflow: hidden;
+}
+
 .store-panel-resize-handle {
   position: fixed;
-  top: 0;
-  right: 0;
-  width: 8px;
-  height: 100vh;
+  /* Start below the app topbar: that 56px strip is a `-webkit-app-region: drag`
+   * window-drag region, and an un-flagged element over it has its pointerdown
+   * swallowed by the OS (grabbing there moves the window instead of resizing). */
+  top: var(--topbar-height);
+  /* Anchor to the app↔panel seam (position:fixed is viewport-relative, so the
+   * main web-contents spanning the full window would otherwise put this behind
+   * the panel at the true right edge). */
+  right: var(--store-panel-width, 0px);
+  width: 12px;
+  height: calc(100vh - var(--topbar-height));
   cursor: col-resize;
   z-index: 10001;
   background: transparent;
   touch-action: none;
+  -webkit-app-region: no-drag;
 }
 
 .store-panel-resize-handle::after {
@@ -5396,21 +5413,26 @@ body.store-panel-resizing {
  * app column than it needs. */
 .store-panel-toolbar {
   position: fixed;
-  top: 0;
-  right: 0;
+  /* Sit inline with the main content, below the app topbar. That 56px strip is
+   * a `-webkit-app-region: drag` region; anchoring at top:0 both jammed the bar
+   * against the window edge and let the drag region swallow its button clicks. */
+  top: var(--topbar-height);
+  /* Anchor to the seam, not the true window edge (which is behind the panel). */
+  right: var(--store-panel-width, 0px);
   height: 40px;
   background: var(--bg-elevated);
-  border-bottom: 1px solid var(--border-subtle);
-  border-left: 1px solid var(--border-subtle);
-  border-radius: 0 0 0 var(--radius-md);
+  border: 1px solid var(--border-subtle);
+  border-right: none;
+  border-radius: var(--radius-md) 0 0 var(--radius-md);
   display: flex;
   align-items: center;
   padding: 0 6px;
   /* Above the resize handle (10001) so the toolbar's buttons win in the top
-   * strip they share with the handle's full-height hit area. */
+   * strip they share with the handle's hit area. */
   z-index: 10002;
   gap: 10px;
   box-shadow: -2px 2px 10px rgba(0, 0, 0, 0.35);
+  -webkit-app-region: no-drag;
 }
 
 .store-panel-toolbar-left {

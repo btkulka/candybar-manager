@@ -1377,26 +1377,8 @@
       <div class="floating-console-body" id="floating-console-body"></div>
     </div>
 
-    <!-- Store Panel: resize handle (draggable border between app and panel) -->
-    <div id="store-panel-resize-handle" class="store-panel-resize-handle" style="display: none;"></div>
-
-    <!-- Store Panel: toolbar (sits at the top-right, above the WebContentsView) -->
-    <div id="store-panel-toolbar" class="store-panel-toolbar" style="display: none;">
-      <div class="store-panel-toolbar-left">
-        <button class="btn-icon btn-sm" id="store-panel-back" data-tooltip="Back">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 18 9 12 15 6"/></svg>
-        </button>
-        <button class="btn-icon btn-sm" id="store-panel-forward" data-tooltip="Forward">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 6 15 12 9 18"/></svg>
-        </button>
-        <span class="store-panel-label" id="store-panel-label">Beatport</span>
-      </div>
-      <button class="btn-icon btn-sm" id="store-panel-close" data-tooltip="Close panel">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
-        </svg>
-      </button>
-    </div>
+    <!-- Store Panel chrome (resize handle + toolbar) is built dynamically in
+         storePanel.ts — no static markup here, to avoid duplicate ids. -->
 
     <!-- Right drawer (generic, content set programmatically) -->
     <div id="right-drawer" class="right-drawer right-drawer--hidden">

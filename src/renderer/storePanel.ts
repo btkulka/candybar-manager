@@ -104,14 +104,25 @@ export function initStorePanel(): void {
 
   window.candybar.onStorePanelState((state) => {
     panelOpen = state.open;
+    const root = document.documentElement;
 
     if (!state.open) {
       if (toolbarEl) toolbarEl.style.display = 'none';
       if (handleEl) handleEl.style.display = 'none';
+      // Release the left-column reflow so the app fills the window again.
+      root.classList.remove('store-panel-open');
+      root.style.removeProperty('--store-panel-width');
       // A close mid-drag ends the drag from the main side; clear local state.
       if (dragging) { dragging = false; document.body.classList.remove('store-panel-resizing'); }
       return;
     }
+
+    // The native panel overlays the right edge and the main web-contents can't
+    // be clipped from the main process, so reflow the whole app into the visible
+    // left column: `--store-panel-width` shifts app content + the chrome (which
+    // is position:fixed) off the panel so both stay reachable.
+    root.style.setProperty('--store-panel-width', `${state.panelWidth ?? 0}px`);
+    root.classList.add('store-panel-open');
 
     if (labelEl) labelEl.textContent = STORE_LABELS[state.store ?? ''] ?? 'Store';
     setZoomLabel(state.zoom);

@@ -1359,11 +1359,15 @@ export function initSource() {
     inputBar.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   });
 
-  // Open cart in embedded store panel
+  // Open cart in embedded store panel. Close the review drawer first — its
+  // full-window scrim would otherwise sit over the app (and the drawer itself
+  // hides behind the panel); the native cart panel replaces it.
   openQobuzCartBtn.addEventListener('click', () => {
+    closeCartDrawer();
     window.candybar.storePanelOpen('qobuz', 'https://www.qobuz.com/us-en/shopping-cart');
   });
   openBeatportCartBtn.addEventListener('click', () => {
+    closeCartDrawer();
     window.candybar.storePanelOpen('beatport', 'https://www.beatport.com/cart');
   });
 

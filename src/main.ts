@@ -317,6 +317,12 @@ let storePanelResizing = false; // true while the user is dragging the resize ha
 let storePanelResizeTimer: NodeJS.Timeout | null = null; // cursor-poll timer during a resize drag
 let storePanelContainer: View | null = null; // container that holds app + panel side by side
 let appContentView: View | null = null; // reference to the original BrowserWindow content view
+// The window that owns the panel, captured when it opens. layoutStorePanel and
+// closeStorePanel must target THIS window's web-contents: getMainWindow()
+// (= getAllWindows()[0]) can transiently return a login/helper window, and the
+// store-panel-state event would then be delivered to the wrong renderer (so the
+// app never reflows or shows the panel chrome).
+let storePanelWin: BrowserWindow | null = null;
 
 /** Resolve the account id whose partition the store panel should bind to.
  *  Mirrors the choice made by `store-cart-add` (first configured account, or
@@ -345,6 +351,7 @@ function getMainWindow(): BrowserWindow | null {
 async function openStorePanel(store: 'qobuz' | 'beatport', url: string): Promise<void> {
   const win = getMainWindow();
   if (!win) return;
+  storePanelWin = win; // canonical owner window for all subsequent state sends
 
   // Close existing panel if different store
   if (storePanel && storePanelStore !== store) {
@@ -411,8 +418,12 @@ async function openStorePanel(store: 'qobuz' | 'beatport', url: string): Promise
 
   // Re-apply the user's chosen zoom after every load. Chromium tracks zoom
   // per-origin, so a fresh page (e.g. first checkout redirect) can otherwise
-  // reset to 100%.
-  storePanel.webContents.on('did-finish-load', applyStorePanelZoom);
+  // reset to 100%. Also give the panel input focus so keyboard + first-click
+  // land on it rather than the app web-contents underneath.
+  storePanel.webContents.on('did-finish-load', () => {
+    applyStorePanelZoom();
+    storePanel?.webContents.focus();
+  });
 
   // Listen for window resize to keep layout correct
   win.on('resize', layoutStorePanel);
@@ -440,7 +451,7 @@ function startStorePanelResize(): void {
   storePanelResizing = true;
   storePanel.webContents.on('input-event', onStorePanelResizeInput);
   storePanelResizeTimer = setInterval(() => {
-    const win = getMainWindow();
+    const win = storePanelWin ?? getMainWindow();
     if (!win || !storePanel) { stopStorePanelResize(); return; }
     const cursor = screen.getCursorScreenPoint();
     const contentBounds = win.getContentBounds();
@@ -467,7 +478,7 @@ function stopStorePanelResize(): void {
 }
 
 function layoutStorePanel(): void {
-  const win = getMainWindow();
+  const win = storePanelWin ?? getMainWindow();
   if (!win || !storePanel || !storePanelContainer || !appContentView) return;
 
   const [width, height] = win.getContentSize();
@@ -507,7 +518,7 @@ function layoutStorePanel(): void {
 }
 
 function closeStorePanel(): void {
-  const win = getMainWindow();
+  const win = storePanelWin ?? getMainWindow();
 
   stopStorePanelAuthPoll();
   // Kill any in-flight resize poll so it can't fire against a torn-down panel.
@@ -533,10 +544,11 @@ function closeStorePanel(): void {
   storePanelContainer = null;
   appContentView = null;
 
-  const mainWin = getMainWindow();
-  if (mainWin) {
-    mainWin.webContents.send('store-panel-state', { open: false, store: null, panelWidth: 0, zoom: storePanelZoom, resizing: false });
+  // Tell the owning renderer to release the reflow, then forget the window.
+  if (win) {
+    win.webContents.send('store-panel-state', { open: false, store: null, panelWidth: 0, zoom: storePanelZoom, resizing: false });
   }
+  storePanelWin = null;
 }
 
 // ========== Auth Detection ==========
