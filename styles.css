@@ -5359,13 +5359,55 @@ button:focus-visible {
  * the seam. */
 /* When the native store-cart panel is open, the main web-contents still fills
    the whole window (Electron can't clip it from the main process), so the panel
-   would overlay — and hide input to — the app's right edge. Reflow the entire
-   app into the visible left column; the empty right strip is what the panel
-   covers, and nothing interactive renders behind it. */
-html.store-panel-open .app {
-  width: calc(100vw - var(--store-panel-width, 0px));
-  overflow: hidden;
+   would overlay — and hide input to — the app's right edge. The panel docks
+   BELOW the topbar, so keep the topbar full-width (its right end holds the panel
+   controls) and reflow only the content area into the visible left column; the
+   empty right strip below the topbar is what the panel covers. */
+html.store-panel-open .content {
+  margin-right: var(--store-panel-width, 0px);
 }
+
+/* Right-anchored fixed overlays (toasts, side drawers) would otherwise render
+   under the panel, off-screen. Push them in by the panel width so they land at
+   the app↔panel seam and stay visible while the cart is open. */
+html.store-panel-open .toast-container {
+  right: calc(var(--store-panel-width, 0px) + var(--space-xl));
+}
+html.store-panel-open .right-drawer,
+html.store-panel-open .source-cart-drawer {
+  right: var(--store-panel-width, 0px);
+}
+
+/* Store-panel controls live in the app topbar, shown only while the cart panel
+   is open. */
+.store-panel-controls {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+.store-panel-controls .store-panel-label {
+  font-size: var(--fs-small);
+  font-weight: 600;
+  color: var(--text-secondary);
+  padding: 0 6px;
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.store-panel-controls .store-panel-zoom-level {
+  min-width: 44px;
+  font-size: var(--fs-small);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-secondary);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  padding: 4px 4px;
+  border-radius: var(--radius-sm);
+}
+.store-panel-controls .store-panel-zoom-level:hover { background: var(--bg-surface); color: var(--text-primary); }
+.store-panel-controls #store-panel-close:hover { color: var(--danger); }
 
 .store-panel-resize-handle {
   position: fixed;
@@ -5411,91 +5453,6 @@ body.store-panel-resizing {
  * renderer's right edge), giving the cart an always-visible close/zoom/nav bar
  * that the embedded site can't cover. Content-sized so it never eats more of the
  * app column than it needs. */
-.store-panel-toolbar {
-  position: fixed;
-  /* Sit inline with the main content, below the app topbar. That 56px strip is
-   * a `-webkit-app-region: drag` region; anchoring at top:0 both jammed the bar
-   * against the window edge and let the drag region swallow its button clicks. */
-  top: var(--topbar-height);
-  /* Anchor to the seam, not the true window edge (which is behind the panel). */
-  right: var(--store-panel-width, 0px);
-  height: 40px;
-  background: var(--bg-elevated);
-  border: 1px solid var(--border-subtle);
-  border-right: none;
-  border-radius: var(--radius-md) 0 0 var(--radius-md);
-  display: flex;
-  align-items: center;
-  padding: 0 6px;
-  /* Above the resize handle (10001) so the toolbar's buttons win in the top
-   * strip they share with the handle's hit area. */
-  z-index: 10002;
-  gap: 10px;
-  box-shadow: -2px 2px 10px rgba(0, 0, 0, 0.35);
-  -webkit-app-region: no-drag;
-}
-
-.store-panel-toolbar-left {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  min-width: 0;
-  flex: 0 0 auto;
-}
-
-.store-panel-label {
-  font-size: var(--fs-small);
-  font-weight: 600;
-  color: var(--text-primary);
-  margin-left: 8px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.store-panel-toolbar-right {
-  display: flex;
-  align-items: center;
-  gap: 2px;
-  flex: 0 0 auto;
-}
-
-.store-panel-toolbar .btn-icon {
-  width: 28px;
-  height: 28px;
-  cursor: pointer;
-  border: none;
-}
-
-/* Zoom percentage doubles as the reset button. */
-.store-panel-zoom-level {
-  min-width: 44px;
-  height: 28px;
-  padding: 0 6px;
-  border: none;
-  border-radius: var(--radius-sm);
-  background: transparent;
-  color: var(--text-secondary);
-  font-size: var(--fs-small);
-  font-variant-numeric: tabular-nums;
-  cursor: pointer;
-  transition: background 0.12s, color 0.12s;
-}
-.store-panel-zoom-level:hover {
-  background: var(--bg-surface);
-  color: var(--text-primary);
-}
-
-#store-panel-close {
-  flex: 0 0 auto;
-  color: var(--text-secondary);
-  margin-left: 4px;
-}
-#store-panel-close:hover {
-  color: #e74c3c;
-  background: rgba(231, 76, 60, 0.12);
-}
-
 /* ============================================================
    BROWSE PAGE — 5 Library View Prototypes
    ============================================================ */

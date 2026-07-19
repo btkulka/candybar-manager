@@ -338,6 +338,9 @@ function storePanelPartition(store: 'qobuz' | 'beatport', accountId: string): st
 }
 
 const STORE_PANEL_MIN_WIDTH = 360;
+// The panel docks below the app topbar (matches --topbar-height in styles.css),
+// so the full-width topbar — which holds the panel controls — stays visible.
+const STORE_PANEL_TOP_INSET = 56;
 const STORE_PANEL_MAX_RATIO = 0.65;
 const STORE_PANEL_DEFAULT_RATIO = 0.45;
 const STORE_PANEL_ZOOM_MIN = 0.5;
@@ -414,6 +417,10 @@ async function openStorePanel(store: 'qobuz' | 'beatport', url: string): Promise
   });
   storePanel.webContents.on('did-navigate-in-page', (_event, navUrl) => {
     win.webContents.send('store-panel-navigated', { url: navUrl });
+    // Qobuz's cart is a SPA: in-page route changes swap content without a full
+    // load (no did-finish-load), and can re-pin body overflow-x. Re-assert the
+    // horizontal-scroll override so panning keeps working after navigation.
+    enableStorePanelHScroll();
   });
 
   // Re-apply the user's chosen zoom after every load. Chromium tracks zoom
@@ -423,6 +430,7 @@ async function openStorePanel(store: 'qobuz' | 'beatport', url: string): Promise
   storePanel.webContents.on('did-finish-load', () => {
     applyStorePanelZoom();
     storePanel?.webContents.focus();
+    enableStorePanelHScroll();
   });
 
   // Listen for window resize to keep layout correct
@@ -440,6 +448,19 @@ function onStorePanelResizeInput(_evt: Electron.Event, input: Electron.InputEven
 /** Apply the current zoom factor to the embedded panel, if open. */
 function applyStorePanelZoom(): void {
   if (storePanel) storePanel.webContents.setZoomFactor(storePanelZoom);
+}
+
+/** Store pages (Qobuz) pin `overflow-x: hidden` on <body> — often inline and/or
+ *  !important — which clips content wider than the narrow panel (and everything
+ *  once zoomed in) with no way to pan. insertCSS loses to an inline-important
+ *  rule, so force it inline via JS (applied last) and re-apply a couple of times
+ *  to win against the page's own post-load scripts. */
+function enableStorePanelHScroll(): void {
+  if (!storePanel) return;
+  const script = `(() => { const f = () => { for (const el of [document.documentElement, document.body]) {
+      if (el) el.style.setProperty('overflow-x', 'auto', 'important');
+    } }; f(); setTimeout(f, 400); setTimeout(f, 1200); })();`;
+  void storePanel.webContents.executeJavaScript(script).catch(() => { /* page may navigate mid-eval */ });
 }
 
 /** Begin a resize drag: poll the OS cursor position and re-layout the panel to
@@ -492,19 +513,18 @@ function layoutStorePanel(): void {
   // Size the container itself to fill the window
   storePanelContainer.setBounds({ x: 0, y: 0, width, height });
 
-  // App content occupies the visible left column; it reflows into `appWidth` so
-  // its right-anchored UI (toasts, the cart slide-over, the right drawer) stays
-  // on-screen beside the panel rather than hidden behind it. Because the
-  // renderer's viewport ends exactly at the seam, the panel's chrome (resize
-  // handle + floating toolbar) can anchor to the renderer's own right edge.
+  // The container wrapper is empty (the app is the window's own web-contents, so
+  // it can't be clipped here — the renderer reflows its content via CSS instead).
   appContentView.setBounds({ x: 0, y: 0, width: appWidth, height });
 
-  // Right side: the embedded store panel fills the column, full height.
+  // Right side: the embedded store panel occupies the right column BELOW the
+  // topbar, so the full-width topbar (which holds the panel controls) stays
+  // visible above it.
   storePanel.setBounds({
     x: appWidth,
-    y: 0,
+    y: STORE_PANEL_TOP_INSET,
     width: storePanelWidth,
-    height,
+    height: Math.max(0, height - STORE_PANEL_TOP_INSET),
   });
 
   // Notify renderer

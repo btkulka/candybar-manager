@@ -1,11 +1,11 @@
 // ========== Store Panel Chrome (embedded qobuz/beatport cart) ==========
 //
-// The embedded store cart is a native WebContentsView the main process stacks
-// over the right side of the window (see main.ts openStorePanel). The app's own
-// content view is sized to the visible left column, so its right edge lands
-// exactly on the app↔panel seam — which lets this module draw the chrome the
-// renderer owns simply by anchoring to `right: 0`: a floating toolbar (back /
-// forward / zoom / close) and a draggable resize handle at the seam.
+// The embedded store cart is a native WebContentsView the main process docks on
+// the right side of the window, below the app topbar (see main.ts openStorePanel
+// / layoutStorePanel). The controls (back / forward / zoom / close) live in the
+// app's own topbar — the `#store-panel-controls` group in index.html — so they
+// sit outside the panel, within the app chrome. The only thing drawn here is a
+// draggable resize handle at the app↔panel seam.
 //
 // Resize is driven by the MAIN process (cursor polling) — the renderer only
 // signals grab/release. That keeps a shrink-drag alive when the cursor crosses
@@ -13,58 +13,36 @@
 
 const STORE_LABELS: Record<string, string> = { qobuz: 'Qobuz', beatport: 'Beatport' };
 
-let toolbarEl: HTMLElement | null = null;
-let handleEl: HTMLElement | null = null;
-let zoomLabelEl: HTMLButtonElement | null = null;
+let controlsEl: HTMLElement | null = null; // the topbar control group (index.html)
+let handleEl: HTMLElement | null = null;   // the resize handle (built here)
+let zoomLabelEl: HTMLElement | null = null;
 let labelEl: HTMLElement | null = null;
 let panelOpen = false;
 let dragging = false;
 
-function icon(paths: string): string {
-  return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${paths}</svg>`;
-}
-
 function buildChrome(): void {
-  if (toolbarEl) return;
+  if (handleEl) return;
 
-  const toolbar = document.createElement('div');
-  toolbar.className = 'store-panel-toolbar';
-  toolbar.id = 'store-panel-toolbar';
-  toolbar.style.display = 'none';
-  toolbar.innerHTML = `
-    <div class="store-panel-toolbar-left">
-      <button class="btn-icon" id="store-panel-back" title="Back">${icon('<polyline points="15 18 9 12 15 6"/>')}</button>
-      <button class="btn-icon" id="store-panel-forward" title="Forward">${icon('<polyline points="9 18 15 12 9 6"/>')}</button>
-      <span class="store-panel-label" id="store-panel-label">Store</span>
-    </div>
-    <div class="store-panel-toolbar-right">
-      <button class="btn-icon" id="store-panel-zoom-out" title="Zoom out">${icon('<circle cx="11" cy="11" r="7"/><line x1="16.5" y1="16.5" x2="21" y2="21"/><line x1="8" y1="11" x2="14" y2="11"/>')}</button>
-      <button class="store-panel-zoom-level" id="store-panel-zoom-level" title="Reset zoom">100%</button>
-      <button class="btn-icon" id="store-panel-zoom-in" title="Zoom in">${icon('<circle cx="11" cy="11" r="7"/><line x1="16.5" y1="16.5" x2="21" y2="21"/><line x1="8" y1="11" x2="14" y2="11"/><line x1="11" y1="8" x2="11" y2="14"/>')}</button>
-      <button class="btn-icon" id="store-panel-close" title="Close cart">${icon('<line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>')}</button>
-    </div>`;
-  document.body.appendChild(toolbar);
-
+  // The resize handle is an overlay anchored to the seam, so it's built here.
   const handle = document.createElement('div');
   handle.className = 'store-panel-resize-handle';
   handle.id = 'store-panel-resize-handle';
   handle.title = 'Drag to resize the cart panel';
   handle.style.display = 'none';
   document.body.appendChild(handle);
-
-  toolbarEl = toolbar;
   handleEl = handle;
-  labelEl = toolbar.querySelector('#store-panel-label');
-  zoomLabelEl = toolbar.querySelector('#store-panel-zoom-level');
 
-  // Navigation / close
-  toolbar.querySelector('#store-panel-back')?.addEventListener('click', () => window.candybar.storePanelBack());
-  toolbar.querySelector('#store-panel-forward')?.addEventListener('click', () => window.candybar.storePanelForward());
-  toolbar.querySelector('#store-panel-close')?.addEventListener('click', () => window.candybar.storePanelClose());
+  // The toolbar controls are declared in the app topbar (index.html); just wire
+  // them up here so zoom/close/nav land in the app chrome, not a floating bar.
+  controlsEl = document.getElementById('store-panel-controls');
+  labelEl = document.getElementById('store-panel-label');
+  zoomLabelEl = document.getElementById('store-panel-zoom-level');
 
-  // Zoom
-  toolbar.querySelector('#store-panel-zoom-in')?.addEventListener('click', () => zoom('in'));
-  toolbar.querySelector('#store-panel-zoom-out')?.addEventListener('click', () => zoom('out'));
+  document.getElementById('store-panel-back')?.addEventListener('click', () => window.candybar.storePanelBack());
+  document.getElementById('store-panel-forward')?.addEventListener('click', () => window.candybar.storePanelForward());
+  document.getElementById('store-panel-close')?.addEventListener('click', () => window.candybar.storePanelClose());
+  document.getElementById('store-panel-zoom-in')?.addEventListener('click', () => zoom('in'));
+  document.getElementById('store-panel-zoom-out')?.addEventListener('click', () => zoom('out'));
   zoomLabelEl?.addEventListener('click', () => zoom('reset'));
 
   // Resize handle drag. The release is caught at the window level (not on the
@@ -107,9 +85,9 @@ export function initStorePanel(): void {
     const root = document.documentElement;
 
     if (!state.open) {
-      if (toolbarEl) toolbarEl.style.display = 'none';
+      if (controlsEl) controlsEl.style.display = 'none';
       if (handleEl) handleEl.style.display = 'none';
-      // Release the left-column reflow so the app fills the window again.
+      // Release the reflow so the app content fills the window again.
       root.classList.remove('store-panel-open');
       root.style.removeProperty('--store-panel-width');
       // A close mid-drag ends the drag from the main side; clear local state.
@@ -117,16 +95,16 @@ export function initStorePanel(): void {
       return;
     }
 
-    // The native panel overlays the right edge and the main web-contents can't
-    // be clipped from the main process, so reflow the whole app into the visible
-    // left column: `--store-panel-width` shifts app content + the chrome (which
-    // is position:fixed) off the panel so both stay reachable.
+    // The native panel overlays the right column below the topbar and the main
+    // web-contents can't be clipped from the main process, so reflow the app
+    // content into the visible left column. `--store-panel-width` also anchors
+    // the resize handle to the seam and reserves room in the topbar.
     root.style.setProperty('--store-panel-width', `${state.panelWidth ?? 0}px`);
     root.classList.add('store-panel-open');
 
     if (labelEl) labelEl.textContent = STORE_LABELS[state.store ?? ''] ?? 'Store';
     setZoomLabel(state.zoom);
-    if (toolbarEl) toolbarEl.style.display = 'flex';
+    if (controlsEl) controlsEl.style.display = 'flex';
     if (handleEl) handleEl.style.display = 'block';
 
     // `resizing` is the authoritative drag flag from main — it ends the drag
