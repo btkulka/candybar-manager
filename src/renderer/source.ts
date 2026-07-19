@@ -1,4 +1,5 @@
 import type { QobuzCartMatch } from '../lib/qobuzCart';
+import { cartUrl } from '../lib/storeUrls';
 import type { CsvPreview, StoreMatch, LibraryMatchedRow, LibraryProbableRow, SourcePlaylistInfo } from '../types';
 import { showToast, setStatus, escapeHtml, setValue, getErrorMessage } from './shared';
 import { renderSourceInput } from './sourceInputTemplate';
@@ -1122,10 +1123,7 @@ async function runAutoCheckout(store: 'qobuz' | 'beatport') {
 
   try {
     // Make sure the panel is open on the cart URL before we start driving.
-    const cartUrl = store === 'qobuz'
-      ? 'https://www.qobuz.com/us-en/shopping-cart'
-      : 'https://www.beatport.com/cart';
-    await window.candybar.storePanelOpen(store, cartUrl);
+    await window.candybar.storePanelOpen(store, cartUrl(store));
     // Give the page a moment to render after the partition warm-up.
     await new Promise(r => setTimeout(r, 1500));
 
@@ -1364,11 +1362,11 @@ export function initSource() {
   // hides behind the panel); the native cart panel replaces it.
   openQobuzCartBtn.addEventListener('click', () => {
     closeCartDrawer();
-    window.candybar.storePanelOpen('qobuz', 'https://www.qobuz.com/us-en/shopping-cart');
+    window.candybar.storePanelOpen('qobuz', cartUrl('qobuz'));
   });
   openBeatportCartBtn.addEventListener('click', () => {
     closeCartDrawer();
-    window.candybar.storePanelOpen('beatport', 'https://www.beatport.com/cart');
+    window.candybar.storePanelOpen('beatport', cartUrl('beatport'));
   });
 
   // Auto-checkout — drives the panel from cart → Place Order page, asks the

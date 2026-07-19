@@ -1,5 +1,5 @@
 import log, { createScopedLogger } from './lib/logger';
-import { app, BrowserWindow, View, WebContentsView, ipcMain, dialog, nativeImage, Tray, Menu, protocol, net, shell, session, screen, type OpenDialogOptions } from 'electron';
+import { app, BrowserWindow, webContents, ipcMain, dialog, nativeImage, Tray, Menu, protocol, net, shell, session, type OpenDialogOptions } from 'electron';
 import fs from 'fs';
 import path from 'path';
 import { pathToFileURL } from 'url';
@@ -15,6 +15,7 @@ process.on('unhandledRejection', (reason) => {
   log.error('Unhandled rejection:', reason);
 });
 import { organizeTracks, OrganizeResult } from './lib/organizeByArtist';
+import { cartUrl } from './lib/storeUrls';
 import { checkLibrary, checkLibraryFromTracks, spotifyTracksToTrackRecords, CheckResult, ProgressUpdate, previewCsv, CsvPreview } from './lib/musicLibraryCheck';
 import { readConfig, writeConfig, AppConfig, DEFAULT_LIBRARY_ROOT, getDefaultArchivePath, getDefaultRestoreStageDir, setSecretsPath } from './lib/config';
 import { searchSpotify, testSpotifyConnection, SpotifySearchResult, getPlaylistTracks } from './lib/spotify';
@@ -152,10 +153,31 @@ function createWindow() {
       preload: path.join(__dirname, '..', 'preload', 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: true
+      sandbox: true,
+      // Enables the in-DOM <webview> the store cart is embedded in. The guest is
+      // hardened in `will-attach-webview` below (no node, isolated, store-origin
+      // src only) so flipping this on doesn't widen the app's attack surface.
+      webviewTag: true,
     },
     icon: iconPath,
     show: false
+  });
+
+  // Harden every <webview> guest before it attaches: strip any preload, force
+  // an isolated no-node context, and only let it start on a known store origin
+  // (the renderer sets src to the qobuz/beatport cart). Popups from the guest
+  // (3DS/SCA, login) are handled in the app-level `web-contents-created` hook.
+  win.webContents.on('will-attach-webview', (_event, webPreferences, params) => {
+    delete webPreferences.preload;
+    webPreferences.nodeIntegration = false;
+    webPreferences.contextIsolation = true;
+    const src = params.src ?? '';
+    const allowed = src === '' || src === 'about:blank'
+      || /^https:\/\/(www\.)?(qobuz|beatport)\.com\//.test(src);
+    if (!allowed) {
+      mainLog.warn(`Blocked disallowed <webview> src, redirecting to about:blank: ${src}`);
+      params.src = 'about:blank';
+    }
   });
 
   // Maximize and show window when ready
@@ -171,6 +193,23 @@ function createWindow() {
     void win.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'));
   }
 }
+
+// Popups opened by the store-cart <webview> guest (3DS/SCA bank prompts, an
+// interactive login) must open as real windows so the user can complete them —
+// but hardened, and inheriting the guest's session partition (so they stay
+// authenticated). Anything the app's own web-contents opens is not affected.
+app.on('web-contents-created', (_event, contents) => {
+  if (contents.getType() !== 'webview') return;
+  contents.setWindowOpenHandler(({ url }) => {
+    if (!/^https:\/\//.test(url)) return { action: 'deny' };
+    return {
+      action: 'allow',
+      overrideBrowserWindowOptions: {
+        webPreferences: { nodeIntegration: false, contextIsolation: true, sandbox: true },
+      },
+    };
+  });
+});
 
 app.whenReady().then(async () => {
   const iconPath = resolveIconPath();
@@ -301,28 +340,59 @@ app.on('will-quit', (event) => {
   flushWriteJournal().finally(() => app.exit(0));
 });
 
-// ========== Store Panel (Embedded WebContentsView) ==========
-// ========== Store Panel (Embedded WebContentsView) ==========
+// ========== Store Panel (embedded <webview>) ==========
+//
+// The store cart lives in an in-DOM <webview> the renderer owns (see
+// src/renderer/storePanel.ts + index.html). The main process no longer manages a
+// native view, its bounds, resize, or zoom — the renderer does all of that as
+// normal DOM. Main keeps only the parts that must run here: session pre-warm,
+// auth-token polling (session-based), the scripted-checkout injection (needs the
+// guest's webContents), and status. The guest's webContents id is registered by
+// the renderer on attach (`store-panel-attach`).
 
-let storePanel: WebContentsView | null = null;
 let storePanelStore: 'qobuz' | 'beatport' | null = null;
 /** Account id whose session partition the current panel is bound to. Must match
  *  the account used by `store-cart-add` so the cart page shows the cart we just
  *  populated (cookies live in the account-scoped partition, not the legacy one). */
 let storePanelAccountId: string | null = null;
+/** True from open until close — guards the session-based auth polls (which can
+ *  run before the guest webContents has attached). */
+let storePanelOpen = false;
+/** webContents id of the attached <webview> guest, registered by the renderer on
+ *  attach. Used to inject the scripted-checkout flow. Null when detached. */
+let storePanelContentsId: number | null = null;
+/** Latest URL the guest navigated to (reported by the renderer), for status +
+ *  the purchase-success broadcast the app watches to auto-download. */
+let storePanelUrl: string | null = null;
 let storePanelTokenPollTimer: NodeJS.Timeout | null = null;
-let storePanelWidth = 0; // current panel width in px
-let storePanelZoom = 1; // current embedded-view zoom factor (persists across opens this session)
-let storePanelResizing = false; // true while the user is dragging the resize handle
-let storePanelResizeTimer: NodeJS.Timeout | null = null; // cursor-poll timer during a resize drag
-let storePanelContainer: View | null = null; // container that holds app + panel side by side
-let appContentView: View | null = null; // reference to the original BrowserWindow content view
-// The window that owns the panel, captured when it opens. layoutStorePanel and
-// closeStorePanel must target THIS window's web-contents: getMainWindow()
-// (= getAllWindows()[0]) can transiently return a login/helper window, and the
-// store-panel-state event would then be delivered to the wrong renderer (so the
-// app never reflows or shows the panel chrome).
+// The window that owns the panel, captured when it opens. State sends must target
+// THIS window's web-contents: getMainWindow() (= getAllWindows()[0]) can
+// transiently return a login/helper window, and the store-panel-state event would
+// then be delivered to the wrong renderer (so the app never shows the panel).
 let storePanelWin: BrowserWindow | null = null;
+
+/** Resolve the attached store-panel guest's webContents, or null if none is
+ *  attached / it has been destroyed. */
+function getStorePanelContents(): Electron.WebContents | null {
+  if (storePanelContentsId == null) return null;
+  const wc = webContents.fromId(storePanelContentsId);
+  return wc && !wc.isDestroyed() ? wc : null;
+}
+
+/** The <webview> guest only reports its webContents id on `dom-ready`, which
+ *  lands a beat after the panel opens. Scripted checkout must not hard-fail in
+ *  that window (the old native view existed synchronously), so wait briefly for
+ *  the guest to attach. Returns the contents once available, or null if it never
+ *  attaches within the timeout / the panel closes first. */
+async function awaitStorePanelContents(timeoutMs = 8000): Promise<Electron.WebContents | null> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const wc = getStorePanelContents();
+    if (wc) return wc;
+    if (!storePanelOpen || Date.now() >= deadline) return null;
+    await new Promise((r) => setTimeout(r, 100));
+  }
+}
 
 /** Resolve the account id whose partition the store panel should bind to.
  *  Mirrors the choice made by `store-cart-add` (first configured account, or
@@ -337,16 +407,6 @@ function storePanelPartition(store: 'qobuz' | 'beatport', accountId: string): st
   return store === 'qobuz' ? qobuzPartition(accountId) : beatportPartition(accountId);
 }
 
-const STORE_PANEL_MIN_WIDTH = 360;
-// The panel docks below the app topbar (matches --topbar-height in styles.css),
-// so the full-width topbar — which holds the panel controls — stays visible.
-const STORE_PANEL_TOP_INSET = 56;
-const STORE_PANEL_MAX_RATIO = 0.65;
-const STORE_PANEL_DEFAULT_RATIO = 0.45;
-const STORE_PANEL_ZOOM_MIN = 0.5;
-const STORE_PANEL_ZOOM_MAX = 3.0;
-const STORE_PANEL_ZOOM_STEP = 0.1;
-
 function getMainWindow(): BrowserWindow | null {
   return BrowserWindow.getAllWindows()[0] ?? null;
 }
@@ -355,17 +415,6 @@ async function openStorePanel(store: 'qobuz' | 'beatport', url: string): Promise
   const win = getMainWindow();
   if (!win) return;
   storePanelWin = win; // canonical owner window for all subsequent state sends
-
-  // Close existing panel if different store
-  if (storePanel && storePanelStore !== store) {
-    closeStorePanel();
-  }
-
-  if (storePanel) {
-    // Panel already open for this store — just navigate
-    storePanel.webContents.loadURL(url);
-    return;
-  }
 
   // Pre-warm the account's session partition so the panel lands authed.
   // loginQobuz/Beatport are no-ops when the partition already has valid
@@ -378,195 +427,41 @@ async function openStorePanel(store: 'qobuz' | 'beatport', url: string): Promise
     mainLog.warn(`Failed to pre-warm ${store}[${accountId}] session before opening panel:`, err);
   }
 
-  const partition = storePanelPartition(store, accountId);
-  storePanel = new WebContentsView({
-    webPreferences: {
-      partition,
-      nodeIntegration: false,
-      contextIsolation: true,
-    },
-  });
+  // Switching stores rebinds the guest to a different session partition, so the
+  // renderer rebuilds the <webview> and the old contents id is stale.
+  if (storePanelOpen && storePanelStore !== store) storePanelContentsId = null;
+
   storePanelStore = store;
   storePanelAccountId = accountId;
+  storePanelOpen = true;
+  storePanelUrl = url;
+  const partition = storePanelPartition(store, accountId);
 
-  // Calculate initial panel width
-  const [width] = win.getContentSize();
-  storePanelWidth = Math.max(STORE_PANEL_MIN_WIDTH, Math.min(Math.floor(width * STORE_PANEL_DEFAULT_RATIO), Math.floor(width * STORE_PANEL_MAX_RATIO)));
+  // Tell the renderer to mount/point the in-DOM <webview> at this store's cart on
+  // the account's session partition, and reveal the panel. All view mechanics
+  // (bounds, resize, zoom, back/forward, horizontal-scroll) are the renderer's
+  // job now — see src/renderer/storePanel.ts.
+  win.webContents.send('store-panel-state', { open: true, store, url, partition });
 
-  // Reparent into a split container: [appView | storePanel]
-  appContentView = win.contentView;
-  storePanelContainer = new View();
-  storePanelContainer.addChildView(appContentView);
-  storePanelContainer.addChildView(storePanel);
-  win.contentView = storePanelContainer;
-
-  layoutStorePanel();
-
-  storePanel.webContents.loadURL(url);
-
-  // Start polling for auth token
-  if (store === 'beatport') {
-    startBeatportTokenPoll();
-  } else {
-    startQobuzAuthPoll();
-  }
-
-  // Send navigation events to renderer for toolbar URL display
-  storePanel.webContents.on('did-navigate', (_event, navUrl) => {
-    win.webContents.send('store-panel-navigated', { url: navUrl });
-  });
-  storePanel.webContents.on('did-navigate-in-page', (_event, navUrl) => {
-    win.webContents.send('store-panel-navigated', { url: navUrl });
-    // Qobuz's cart is a SPA: in-page route changes swap content without a full
-    // load (no did-finish-load), and can re-pin body overflow-x. Re-assert the
-    // horizontal-scroll override so panning keeps working after navigation.
-    enableStorePanelHScroll();
-  });
-
-  // Re-apply the user's chosen zoom after every load. Chromium tracks zoom
-  // per-origin, so a fresh page (e.g. first checkout redirect) can otherwise
-  // reset to 100%. Also give the panel input focus so keyboard + first-click
-  // land on it rather than the app web-contents underneath.
-  storePanel.webContents.on('did-finish-load', () => {
-    applyStorePanelZoom();
-    storePanel?.webContents.focus();
-    enableStorePanelHScroll();
-  });
-
-  // Listen for window resize to keep layout correct
-  win.on('resize', layoutStorePanel);
-}
-
-/** During a shrink-drag the cursor crosses onto the native panel, which then
- *  swallows the mouse events so the renderer never sees the pointerup. We watch
- *  the panel's own input stream for the release instead — but only while a drag
- *  is active, since `input-event` fires for every mouse move over the view. */
-function onStorePanelResizeInput(_evt: Electron.Event, input: Electron.InputEvent): void {
-  if (input.type === 'mouseUp') stopStorePanelResize();
-}
-
-/** Apply the current zoom factor to the embedded panel, if open. */
-function applyStorePanelZoom(): void {
-  if (storePanel) storePanel.webContents.setZoomFactor(storePanelZoom);
-}
-
-/** Store pages (Qobuz) pin `overflow-x: hidden` on <body> — often inline and/or
- *  !important — which clips content wider than the narrow panel (and everything
- *  once zoomed in) with no way to pan. insertCSS loses to an inline-important
- *  rule, so force it inline via JS (applied last) and re-apply a couple of times
- *  to win against the page's own post-load scripts. */
-function enableStorePanelHScroll(): void {
-  if (!storePanel) return;
-  const script = `(() => { const f = () => { for (const el of [document.documentElement, document.body]) {
-      if (el) el.style.setProperty('overflow-x', 'auto', 'important');
-    } }; f(); setTimeout(f, 400); setTimeout(f, 1200); })();`;
-  void storePanel.webContents.executeJavaScript(script).catch(() => { /* page may navigate mid-eval */ });
-}
-
-/** Begin a resize drag: poll the OS cursor position and re-layout the panel to
- *  follow it. Polling (rather than renderer pointermove events) keeps the drag
- *  alive even when the cursor is over the native panel view, which does not
- *  forward events to the renderer. */
-function startStorePanelResize(): void {
-  if (storePanelResizeTimer || !storePanel) return;
-  storePanelResizing = true;
-  storePanel.webContents.on('input-event', onStorePanelResizeInput);
-  storePanelResizeTimer = setInterval(() => {
-    const win = storePanelWin ?? getMainWindow();
-    if (!win || !storePanel) { stopStorePanelResize(); return; }
-    const cursor = screen.getCursorScreenPoint();
-    const contentBounds = win.getContentBounds();
-    const [totalWidth] = win.getContentSize();
-    const contentX = cursor.x - contentBounds.x;
-    // layoutStorePanel clamps to [MIN_WIDTH, MAX_RATIO]; just feed it the raw
-    // width implied by the cursor's distance from the right edge.
-    storePanelWidth = totalWidth - contentX;
-    layoutStorePanel();
-  }, 16);
-}
-
-/** End a resize drag and notify the renderer (via a final non-resizing state). */
-function stopStorePanelResize(): void {
-  if (storePanelResizeTimer) {
-    clearInterval(storePanelResizeTimer);
-    storePanelResizeTimer = null;
-  }
-  storePanel?.webContents.off('input-event', onStorePanelResizeInput);
-  if (storePanelResizing) {
-    storePanelResizing = false;
-    layoutStorePanel(); // pushes a state event with resizing:false
-  }
-}
-
-function layoutStorePanel(): void {
-  const win = storePanelWin ?? getMainWindow();
-  if (!win || !storePanel || !storePanelContainer || !appContentView) return;
-
-  const [width, height] = win.getContentSize();
-
-  // Clamp panel width
-  const maxPanelWidth = Math.floor(width * STORE_PANEL_MAX_RATIO);
-  storePanelWidth = Math.max(STORE_PANEL_MIN_WIDTH, Math.min(storePanelWidth, maxPanelWidth));
-
-  const appWidth = width - storePanelWidth;
-
-  // Size the container itself to fill the window
-  storePanelContainer.setBounds({ x: 0, y: 0, width, height });
-
-  // The container wrapper is empty (the app is the window's own web-contents, so
-  // it can't be clipped here — the renderer reflows its content via CSS instead).
-  appContentView.setBounds({ x: 0, y: 0, width: appWidth, height });
-
-  // Right side: the embedded store panel occupies the right column BELOW the
-  // topbar, so the full-width topbar (which holds the panel controls) stays
-  // visible above it.
-  storePanel.setBounds({
-    x: appWidth,
-    y: STORE_PANEL_TOP_INSET,
-    width: storePanelWidth,
-    height: Math.max(0, height - STORE_PANEL_TOP_INSET),
-  });
-
-  // Notify renderer
-  win.webContents.send('store-panel-state', {
-    open: true,
-    store: storePanelStore,
-    panelWidth: storePanelWidth,
-    zoom: storePanelZoom,
-    resizing: storePanelResizing,
-  });
+  // Poll the session (not the view) for the auth token so cart-add works.
+  if (store === 'beatport') startBeatportTokenPoll();
+  else startQobuzAuthPoll();
 }
 
 function closeStorePanel(): void {
   const win = storePanelWin ?? getMainWindow();
 
   stopStorePanelAuthPoll();
-  // Kill any in-flight resize poll so it can't fire against a torn-down panel.
-  if (storePanelResizeTimer) { clearInterval(storePanelResizeTimer); storePanelResizeTimer = null; }
-  storePanelResizing = false;
-
-  if (storePanel && win && storePanelContainer && appContentView) {
-    // Remove children from container before reparenting
-    storePanelContainer.removeChildView(storePanel);
-    storePanelContainer.removeChildView(appContentView);
-
-    // Restore the original content view
-    win.contentView = appContentView;
-
-    // Clean up
-    storePanel.webContents.close();
-    win.removeListener('resize', layoutStorePanel);
-  }
-
-  storePanel = null;
+  storePanelOpen = false;
   storePanelStore = null;
   storePanelAccountId = null;
-  storePanelContainer = null;
-  appContentView = null;
+  storePanelContentsId = null;
+  storePanelUrl = null;
 
-  // Tell the owning renderer to release the reflow, then forget the window.
-  if (win) {
-    win.webContents.send('store-panel-state', { open: false, store: null, panelWidth: 0, zoom: storePanelZoom, resizing: false });
+  // Tell the owning renderer to unmount the <webview> and release the reflow,
+  // then forget the window.
+  if (win && !win.isDestroyed()) {
+    win.webContents.send('store-panel-state', { open: false });
   }
   storePanelWin = null;
 }
@@ -662,7 +557,7 @@ async function refreshBeatportTokenFromSession(accountId: string): Promise<boole
 }
 
 async function extractBeatportTokenFromPanel(): Promise<boolean> {
-  if (!storePanel || storePanelStore !== 'beatport' || !storePanelAccountId) return false;
+  if (!storePanelOpen || storePanelStore !== 'beatport' || !storePanelAccountId) return false;
   const accountId = storePanelAccountId;
 
   try {
@@ -708,7 +603,7 @@ async function extractBeatportTokenFromPanel(): Promise<boolean> {
 }
 
 async function detectQobuzLoginFromPanel(): Promise<boolean> {
-  if (!storePanel || storePanelStore !== 'qobuz' || !storePanelAccountId) return false;
+  if (!storePanelOpen || storePanelStore !== 'qobuz' || !storePanelAccountId) return false;
   const accountId = storePanelAccountId;
 
   try {
@@ -776,21 +671,28 @@ ipcMain.handle('store-panel-close', () => {
   return { success: true };
 });
 
-ipcMain.handle('store-panel-back', () => {
-  if (storePanel?.webContents.navigationHistory.canGoBack()) storePanel.webContents.navigationHistory.goBack();
+// The renderer registers the <webview> guest's webContents id once it attaches,
+// so the scripted-checkout injection below can reach the live cart page.
+ipcMain.handle('store-panel-attach', (_event, { contentsId }: { contentsId: number | null }) => {
+  storePanelContentsId = typeof contentsId === 'number' ? contentsId : null;
   return { success: true };
 });
 
-ipcMain.handle('store-panel-forward', () => {
-  if (storePanel?.webContents.navigationHistory.canGoForward()) storePanel.webContents.navigationHistory.goForward();
+// The renderer reports each guest navigation. We remember the URL for status and
+// re-broadcast it as `store-panel-navigated` so the app's purchase-success watcher
+// (auto-download) keeps working now that nav events originate in the renderer.
+ipcMain.handle('store-panel-nav', (_event, { url }: { url: string }) => {
+  if (typeof url === 'string' && url) storePanelUrl = url;
+  const win = storePanelWin ?? getMainWindow();
+  if (win && !win.isDestroyed()) win.webContents.send('store-panel-navigated', { url });
   return { success: true };
 });
 
 ipcMain.handle('store-panel-status', () => {
   return {
-    open: !!storePanel,
+    open: storePanelOpen,
     store: storePanelStore,
-    url: storePanel?.webContents.getURL() ?? null,
+    url: storePanelUrl,
   };
 });
 
@@ -852,11 +754,16 @@ type CheckoutAdvanceResult =
   | { phase: 'unknown' };
 
 ipcMain.handle('store-panel-checkout-advance', async (_event, { store }: { store: 'qobuz' | 'beatport' }) => {
-  if (!storePanel || storePanelStore !== store) {
+  if (!storePanelOpen || storePanelStore !== store) {
     return { success: false, error: `${store} cart panel is not open.` };
   }
+  // Tolerate the brief post-open window before the guest reports its id.
+  const wc = await awaitStorePanelContents();
+  if (!wc) {
+    return { success: false, error: `${store} cart panel is still loading — try again in a moment.` };
+  }
   try {
-    const result = await storePanel.webContents.executeJavaScript(CHECKOUT_ADVANCE_SCRIPT) as CheckoutAdvanceResult;
+    const result = await wc.executeJavaScript(CHECKOUT_ADVANCE_SCRIPT) as CheckoutAdvanceResult;
     return { success: true, result };
   } catch (err) {
     mainLog.error(`checkout-advance[${store}] failed:`, err);
@@ -865,60 +772,20 @@ ipcMain.handle('store-panel-checkout-advance', async (_event, { store }: { store
 });
 
 ipcMain.handle('store-panel-place-order', async (_event, { store }: { store: 'qobuz' | 'beatport' }) => {
-  if (!storePanel || storePanelStore !== store) {
+  if (!storePanelOpen || storePanelStore !== store) {
     return { success: false, error: `${store} cart panel is not open.` };
   }
+  const wc = await awaitStorePanelContents();
+  if (!wc) {
+    return { success: false, error: `${store} cart panel is still loading — try again in a moment.` };
+  }
   try {
-    const result = await storePanel.webContents.executeJavaScript(CHECKOUT_PLACE_ORDER_SCRIPT) as { success: boolean; clickedText?: string; error?: string };
+    const result = await wc.executeJavaScript(CHECKOUT_PLACE_ORDER_SCRIPT) as { success: boolean; clickedText?: string; error?: string };
     return result;
   } catch (err) {
     mainLog.error(`place-order[${store}] failed:`, err);
     return { success: false, error: err instanceof Error ? err.message : 'Script injection failed' };
   }
-});
-
-ipcMain.handle('store-panel-resize', (_event, { width: screenX }: { width: number }) => {
-  const win = getMainWindow();
-  if (!win) return { success: false };
-
-  // screenX is the mouse's screen X position.
-  // Convert to content-relative X by subtracting window's content area screen origin.
-  const contentBounds = win.getContentBounds();
-  const contentX = screenX - contentBounds.x;
-  const [totalWidth] = win.getContentSize();
-  const newPanelWidth = totalWidth - contentX;
-
-  if (newPanelWidth >= STORE_PANEL_MIN_WIDTH && contentX >= 400) {
-    storePanelWidth = newPanelWidth;
-    layoutStorePanel();
-  }
-  return { success: true };
-});
-
-// Resize drag lifecycle. The renderer signals grab/release on the handle; the
-// main process drives the actual width by polling the cursor (see
-// startStorePanelResize) so the drag survives the cursor crossing the panel.
-ipcMain.handle('store-panel-resize-begin', () => {
-  startStorePanelResize();
-  return { success: true };
-});
-ipcMain.handle('store-panel-resize-end', () => {
-  stopStorePanelResize();
-  return { success: true };
-});
-
-// Zoom the embedded web view. Zoom is remembered for the session and re-applied
-// after each navigation (see did-finish-load in openStorePanel).
-ipcMain.handle('store-panel-zoom', (_event, { direction }: { direction: 'in' | 'out' | 'reset' }) => {
-  if (direction === 'in') {
-    storePanelZoom = Math.min(STORE_PANEL_ZOOM_MAX, +(storePanelZoom + STORE_PANEL_ZOOM_STEP).toFixed(2));
-  } else if (direction === 'out') {
-    storePanelZoom = Math.max(STORE_PANEL_ZOOM_MIN, +(storePanelZoom - STORE_PANEL_ZOOM_STEP).toFixed(2));
-  } else {
-    storePanelZoom = 1;
-  }
-  applyStorePanelZoom();
-  return { zoom: storePanelZoom };
 });
 
 ipcMain.handle('select-path', async (_event, { type }: { type: 'file' | 'dir' }) => {
@@ -2840,10 +2707,7 @@ ipcMain.handle('store-cart-add', async (event, { matches, source }: { matches: S
 
 ipcMain.handle('store-open-cart', async (_event, { store }: { store: 'qobuz' | 'beatport' }) => {
   // Open cart in embedded panel instead of separate window
-  const url = store === 'qobuz'
-    ? 'https://www.qobuz.com/us-en/shopping-cart'
-    : 'https://www.beatport.com/cart';
-  await openStorePanel(store, url);
+  await openStorePanel(store, cartUrl(store));
   return { success: true };
 });
 

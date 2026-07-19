@@ -333,18 +333,14 @@ contextBridge.exposeInMainWorld('candybar', {
     ipcRenderer.invoke('store-panel-open', { store, url }),
   storePanelClose: (): Promise<{ success: boolean }> =>
     ipcRenderer.invoke('store-panel-close'),
-  storePanelBack: (): Promise<{ success: boolean }> =>
-    ipcRenderer.invoke('store-panel-back'),
-  storePanelForward: (): Promise<{ success: boolean }> =>
-    ipcRenderer.invoke('store-panel-forward'),
-  storePanelResize: (width: number): Promise<{ success: boolean }> =>
-    ipcRenderer.invoke('store-panel-resize', { width }),
-  storePanelResizeBegin: (): Promise<{ success: boolean }> =>
-    ipcRenderer.invoke('store-panel-resize-begin'),
-  storePanelResizeEnd: (): Promise<{ success: boolean }> =>
-    ipcRenderer.invoke('store-panel-resize-end'),
-  storePanelZoom: (direction: 'in' | 'out' | 'reset'): Promise<{ zoom: number }> =>
-    ipcRenderer.invoke('store-panel-zoom', { direction }),
+  // Registers the in-DOM <webview> guest's webContents id so main can drive the
+  // scripted checkout. Pass null on unmount.
+  storePanelAttach: (contentsId: number | null): Promise<{ success: boolean }> =>
+    ipcRenderer.invoke('store-panel-attach', { contentsId }),
+  // Reports each guest navigation to main, which re-broadcasts it (see
+  // onStorePanelNavigated) for the purchase-success auto-download watcher.
+  storePanelNav: (url: string): Promise<{ success: boolean }> =>
+    ipcRenderer.invoke('store-panel-nav', { url }),
   storePanelStatus: (): Promise<{ open: boolean; store: string | null; url: string | null }> =>
     ipcRenderer.invoke('store-panel-status'),
   storePanelCheckoutAdvance: (store: 'qobuz' | 'beatport'): Promise<{
@@ -357,7 +353,7 @@ contextBridge.exposeInMainWorld('candybar', {
     ipcRenderer.invoke('store-panel-checkout-advance', { store }),
   storePanelPlaceOrder: (store: 'qobuz' | 'beatport'): Promise<{ success: boolean; clickedText?: string; error?: string }> =>
     ipcRenderer.invoke('store-panel-place-order', { store }),
-  onStorePanelState: (callback: (state: { open: boolean; store: string | null; panelWidth: number; zoom: number; resizing: boolean }) => void) =>
+  onStorePanelState: (callback: (state: { open: boolean; store?: string | null; url?: string; partition?: string }) => void) =>
     ipcRenderer.on('store-panel-state', (_event, state) => callback(state)),
   onStorePanelAuth: (callback: (auth: { store: string; loggedIn: boolean }) => void) =>
     ipcRenderer.on('store-panel-auth', (_event, auth) => callback(auth)),

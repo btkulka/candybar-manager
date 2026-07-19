@@ -267,12 +267,8 @@ declare global {
       // Store panel (embedded browser)
       storePanelOpen: (store: 'qobuz' | 'beatport', url: string) => Promise<{ success: boolean }>;
       storePanelClose: () => Promise<{ success: boolean }>;
-      storePanelBack: () => Promise<{ success: boolean }>;
-      storePanelForward: () => Promise<{ success: boolean }>;
-      storePanelResize: (width: number) => Promise<{ success: boolean }>;
-      storePanelResizeBegin: () => Promise<{ success: boolean }>;
-      storePanelResizeEnd: () => Promise<{ success: boolean }>;
-      storePanelZoom: (direction: 'in' | 'out' | 'reset') => Promise<{ zoom: number }>;
+      storePanelAttach: (contentsId: number | null) => Promise<{ success: boolean }>;
+      storePanelNav: (url: string) => Promise<{ success: boolean }>;
       storePanelStatus: () => Promise<{ open: boolean; store: string | null; url: string | null }>;
       storePanelCheckoutAdvance: (store: 'qobuz' | 'beatport') => Promise<{
         success: boolean;
@@ -282,7 +278,7 @@ declare global {
         error?: string;
       }>;
       storePanelPlaceOrder: (store: 'qobuz' | 'beatport') => Promise<{ success: boolean; clickedText?: string; error?: string }>;
-      onStorePanelState: (callback: (state: { open: boolean; store: string | null; panelWidth: number; zoom: number; resizing: boolean }) => void) => void;
+      onStorePanelState: (callback: (state: { open: boolean; store?: string | null; url?: string; partition?: string }) => void) => void;
       onStorePanelAuth: (callback: (auth: { store: string; loggedIn: boolean }) => void) => void;
       onStorePanelNavigated: (callback: (nav: { url: string }) => void) => void;
       // USB Health

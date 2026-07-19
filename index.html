@@ -140,27 +140,6 @@
             </svg>
             <span class="beatport-status-text"></span>
           </div>
-          <!-- Embedded store-cart controls — shown only while the panel is open -->
-          <div class="store-panel-controls" id="store-panel-controls" style="display: none;">
-            <button class="topbar-btn" id="store-panel-back" data-tooltip="Back">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 18 9 12 15 6"/></svg>
-            </button>
-            <button class="topbar-btn" id="store-panel-forward" data-tooltip="Forward">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
-            </button>
-            <span class="store-panel-label" id="store-panel-label">Store</span>
-            <button class="topbar-btn" id="store-panel-zoom-out" data-tooltip="Zoom out">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><line x1="16.5" y1="16.5" x2="21" y2="21"/><line x1="8" y1="11" x2="14" y2="11"/></svg>
-            </button>
-            <button class="topbar-btn store-panel-zoom-level" id="store-panel-zoom-level" data-tooltip="Reset zoom">100%</button>
-            <button class="topbar-btn" id="store-panel-zoom-in" data-tooltip="Zoom in">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><line x1="16.5" y1="16.5" x2="21" y2="21"/><line x1="8" y1="11" x2="14" y2="11"/><line x1="11" y1="8" x2="11" y2="14"/></svg>
-            </button>
-            <button class="topbar-btn" id="store-panel-close" data-tooltip="Close cart">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-            </button>
-          </div>
-
           <div class="topbar-divider"></div>
           <div class="status" id="status" title="App status">
             <span class="status-dot"></span>
@@ -1484,6 +1463,40 @@
     <div class="art-viewer-overlay" id="art-viewer" style="display: none;">
       <img class="art-viewer-image" id="art-viewer-image" alt="Album art" />
     </div>
+
+    <!-- Embedded store-cart panel. The web content is a real in-DOM <webview>
+         (injected by src/renderer/storePanel.ts so each store binds its own
+         session partition), so it's clipped/rounded/bordered by this container —
+         a genuine UX panel, not a native overlay. -->
+    <aside class="store-panel" id="store-panel" aria-label="Store cart" hidden>
+      <div class="store-panel-resize" id="store-panel-resize" title="Drag to resize the cart panel" role="separator" aria-orientation="vertical" aria-label="Resize cart panel"></div>
+      <header class="store-panel-header">
+        <div class="store-panel-nav">
+          <button class="store-panel-btn" id="store-panel-back" data-tooltip="Back" aria-label="Back">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 18 9 12 15 6"/></svg>
+          </button>
+          <button class="store-panel-btn" id="store-panel-forward" data-tooltip="Forward" aria-label="Forward">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
+          </button>
+        </div>
+        <span class="store-panel-title" id="store-panel-title">Store</span>
+        <div class="store-panel-zoom">
+          <button class="store-panel-btn" id="store-panel-zoom-out" data-tooltip="Zoom out" aria-label="Zoom out">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><line x1="16.5" y1="16.5" x2="21" y2="21"/><line x1="8" y1="11" x2="14" y2="11"/></svg>
+          </button>
+          <button class="store-panel-btn store-panel-zoom-level" id="store-panel-zoom-level" data-tooltip="Reset zoom" aria-label="Reset zoom">100%</button>
+          <button class="store-panel-btn" id="store-panel-zoom-in" data-tooltip="Zoom in" aria-label="Zoom in">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><line x1="16.5" y1="16.5" x2="21" y2="21"/><line x1="8" y1="11" x2="14" y2="11"/><line x1="11" y1="8" x2="11" y2="14"/></svg>
+          </button>
+        </div>
+        <button class="store-panel-btn store-panel-close" id="store-panel-close" data-tooltip="Close cart" aria-label="Close cart">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </header>
+      <div class="store-panel-webview-wrap" id="store-panel-webview-wrap">
+        <!-- <webview> is injected here by storePanel.ts on open -->
+      </div>
+    </aside>
 
     <script type="module" src="./src/renderer.ts"></script>
   </body>
