@@ -11,11 +11,12 @@ import { setActiveTab, setValue, initNavigation, initTagEditor, initArtViewer, c
 import { initOrganize, restoreOrganizeState } from './renderer/organize';
 import { initSource, setSourceCsvFile, restoreSourceSpotifyUrl } from './renderer/source';
 import { initLibrary, loadLibraryData, restoreLibraryResults, autoRefreshLibrary, showHealthSkeleton, hideHealthSkeleton } from './renderer/library';
-import { initSettings, setCurrentArchivePath, setFloatingConsoleEnabled, setLibraryRootDisplay, setStoreCredentials } from './renderer/settings';
+import { initSettings, setCurrentArchivePath, setFloatingConsoleEnabled, setLibraryRootDisplay, setStoreCredentials, setRekordboxEnabled } from './renderer/settings';
 import { initActivity } from './renderer/activity';
 import { initPlayer } from './renderer/player';
 import { initUsbHealth } from './renderer/usbHealth';
 import { initRestore } from './renderer/restore';
+import { initSpliceRecovery } from './renderer/spliceRecovery';
 import { initRightDrawer } from './renderer/rightDrawer';
 import { initStorePanel } from './renderer/storePanel';
 
@@ -62,13 +63,17 @@ async function loadConfig() {
   setValue('setting-rekordbox-xml-path', config.rekordboxXmlPath ?? '');
   setLibraryRootDisplay(libraryRoot);
   setFloatingConsoleEnabled(config.floatingConsoleEnabled ?? true);
+  const rekordboxEnabled = config.rekordboxEnabled ?? true;
+  setRekordboxEnabled(rekordboxEnabled);
   await setStoreCredentials(config);
 
   // Restore active tab. `check` was merged into `source` — redirect silently
   // so users whose last session ended on Check land on the merged tab instead
-  // of a 404.
+  // of a 404. If Restore was last active but rekordbox is disabled on this
+  // machine, fall back to organize.
   if (config.activeTab) {
-    const resolvedTab = config.activeTab === 'check' ? 'source' : config.activeTab;
+    let resolvedTab = config.activeTab === 'check' ? 'source' : config.activeTab;
+    if (resolvedTab === 'restore' && !rekordboxEnabled) resolvedTab = 'organize';
     setActiveTab(resolvedTab);
   }
 
@@ -139,6 +144,7 @@ function initApp() {
   safeInit('initPlayer', initPlayer);
   safeInit('initUsbHealth', initUsbHealth);
   safeInit('initRestore', initRestore);
+  safeInit('initSpliceRecovery', initSpliceRecovery);
   safeInit('initRightDrawer', initRightDrawer);
   safeInit('initStorePanel', initStorePanel);
 

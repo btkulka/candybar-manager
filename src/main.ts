@@ -89,12 +89,12 @@ protocol.registerSchemesAsPrivileged([
 ]);
 
 const CONFIG_PATH = path.join(app.getPath('userData'), 'config.json');
-// In dev mode, __dirname is 'dist/main/', so go up two levels to find config.json in project root
-// In production, config.json should be bundled alongside the app
-const CONFIG_DEFAULTS_PATH = path.join(__dirname, '..', '..', 'config.json');
+// `app.getAppPath()` returns the repo root in dev and the unpacked app dir
+// in production — robust to Vite's code-splitting moving main.js around.
+const CONFIG_DEFAULTS_PATH = path.join(app.getAppPath(), 'config.json');
 // Untracked secrets file — kept out of the repo; supplies API keys and account
 // identifiers when the user's own config.json hasn't been written yet.
-const SECRETS_PATH = path.join(__dirname, '..', '..', 'secrets.json');
+const SECRETS_PATH = path.join(app.getAppPath(), 'secrets.json');
 setSecretsPath(SECRETS_PATH);
 
 async function getLibraryRoot(): Promise<string> {
@@ -814,6 +814,8 @@ ipcMain.handle('get-config', async () => {
     throw error;
   }
 });
+
+ipcMain.handle('get-config-path', () => CONFIG_PATH);
 
 ipcMain.handle('get-library-root', async () => {
   try {
@@ -3377,4 +3379,105 @@ ipcMain.handle('restore-run', async (event, { options }: { options: Omit<Restore
 ipcMain.handle('restore-abort', () => {
   restoreAbortController?.abort();
   return { success: true, aborting: restoreAbortController !== null };
+});
+
+// --- Splice recovery (Ableton .als sample re-download) -------------------
+
+ipcMain.handle('splice-login-status', async () => {
+  try {
+    const { getLoginStatus } = await import('./lib/spliceRecovery');
+    return { success: true, status: await getLoginStatus() };
+  } catch (error) {
+    mainLog.error('IPC splice-login-status failed:', error);
+    return { success: false, error: error instanceof Error ? error.message : 'Status check failed' };
+  }
+});
+
+ipcMain.handle('splice-start-login', async () => {
+  try {
+    const { startLogin } = await import('./lib/spliceRecovery');
+    return await startLogin();
+  } catch (error) {
+    mainLog.error('IPC splice-start-login failed:', error);
+    return { ok: false, error: error instanceof Error ? error.message : 'Login launch failed' };
+  }
+});
+
+ipcMain.handle('splice-pick-als', async () => {
+  const result = await dialog.showOpenDialog({
+    title: 'Choose Ableton project (.als)',
+    properties: ['openFile'],
+    filters: [{ name: 'Ableton Live Set', extensions: ['als'] }],
+  });
+  if (result.canceled || !result.filePaths[0]) return { success: true, path: null };
+  return { success: true, path: result.filePaths[0] };
+});
+
+ipcMain.handle('splice-scan', async (_event, { alsPath }: { alsPath: string }) => {
+  try {
+    const { scan } = await import('./lib/spliceRecovery');
+    const result = await scan(alsPath);
+    return { success: true, result };
+  } catch (error) {
+    mainLog.error('IPC splice-scan failed:', error);
+    return { success: false, error: error instanceof Error ? error.message : 'Scan failed' };
+  }
+});
+
+ipcMain.handle('splice-classify', async (event, { missing }: { missing: import('./lib/spliceRecovery').SpliceMissingSample[] }) => {
+  try {
+    const { classify, writeManifest } = await import('./lib/spliceRecovery');
+    const buckets = await classify(missing, (p) => {
+      event.sender.send('splice-progress', p);
+    });
+    // Persist the classification result so it survives app restarts.
+    const scanResult = { alsPath: '', totalRefs: 0, spliceRefs: 0, missing };
+    let manifestPath: string | null = null;
+    try {
+      manifestPath = writeManifest(scanResult, buckets);
+    } catch (err) {
+      mainLog.warn('writeManifest failed (non-fatal):', err);
+    }
+    return { success: true, buckets, manifestPath };
+  } catch (error) {
+    mainLog.error('IPC splice-classify failed:', error);
+    return { success: false, error: error instanceof Error ? error.message : 'Classify failed' };
+  }
+});
+
+ipcMain.handle('splice-download-owned', async (event, { items }: { items: import('./lib/spliceRecovery').SpliceOwnedItem[] }) => {
+  try {
+    const { downloadOwned } = await import('./lib/spliceRecovery');
+    const report = await downloadOwned(items, (p) => {
+      event.sender.send('splice-progress', p);
+    });
+    return { success: true, report };
+  } catch (error) {
+    mainLog.error('IPC splice-download-owned failed:', error);
+    return { success: false, error: error instanceof Error ? error.message : 'Download failed' };
+  }
+});
+
+ipcMain.handle('splice-credits-balance', async () => {
+  try {
+    const { getCreditsBalance } = await import('./lib/spliceRecovery');
+    const balance = await getCreditsBalance();
+    return { success: true, balance };
+  } catch (error) {
+    mainLog.error('IPC splice-credits-balance failed:', error);
+    return { success: false, error: error instanceof Error ? error.message : 'Balance fetch failed' };
+  }
+});
+
+ipcMain.handle('splice-buy-credits', async (event, { items }: { items: import('./lib/spliceRecovery').SpliceCreditsItem[] }) => {
+  try {
+    const { buyCreditsBucket } = await import('./lib/spliceRecovery');
+    const report = await buyCreditsBucket(items, (p) => {
+      event.sender.send('splice-progress', p);
+    });
+    return { success: true, report };
+  } catch (error) {
+    mainLog.error('IPC splice-buy-credits failed:', error);
+    return { success: false, error: error instanceof Error ? error.message : 'Purchase failed' };
+  }
 });

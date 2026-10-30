@@ -131,6 +131,34 @@ export type AlbumArtSuggestion = {
   genre?: string;
 };
 
+// Splice recovery shared types (mirror src/lib/spliceRecovery.ts)
+export type SpliceLoginStatus = { connected: boolean; tokenExpiresAt: number | null; hasProfile: boolean };
+export type SpliceMissingSample = { originalPath: string; basename: string; searchKey: string };
+export type SpliceScanResult = { alsPath: string; totalRefs: number; spliceRefs: number; missing: SpliceMissingSample[] };
+export type SpliceAsset = {
+  uuid: string;
+  filename: string;
+  name: string;
+  coverUrl: string | null;
+  packName: string | null;
+  packSlug: string | null;
+};
+export type SpliceCreditsBalance = { credits: number; state: string; planName: string | null; planTier: string | null };
+export type SpliceOwnedItem = SpliceMissingSample & { asset: SpliceAsset };
+export type SpliceCreditsItem = SpliceMissingSample & { asset: SpliceAsset; spliceUrl: string };
+export type SpliceNotFoundItem = SpliceMissingSample & { error?: string };
+export type SpliceBuckets = { owned: SpliceOwnedItem[]; credits: SpliceCreditsItem[]; notFound: SpliceNotFoundItem[] };
+export type SpliceDownloadReport = {
+  attempted: number;
+  succeeded: number;
+  failed: Array<{ sample: SpliceOwnedItem; error: string }>;
+};
+export type SpliceProgressEvent =
+  | { phase: 'parsing'; alsPath: string }
+  | { phase: 'searching'; index: number; total: number; sample: SpliceMissingSample; result?: 'owned' | 'credits' | 'notFound' }
+  | { phase: 'downloading'; index: number; total: number; sample: SpliceOwnedItem; status?: 'ok' | 'fail'; error?: string }
+  | { phase: 'complete' };
+
 declare global {
   interface Window {
     candybar: {
@@ -141,6 +169,7 @@ declare global {
         cacheOnly?: boolean
       ) => Promise<{ id: string; success: boolean; result?: CheckResultFull; fromCache?: boolean; cacheOnly?: boolean; error?: string }>;
       getConfig: () => Promise<AppConfig>;
+      getConfigPath: () => Promise<string>;
       getLibraryRoot: () => Promise<string>;
       setConfig: (config: AppConfig) => Promise<AppConfig>;
       migrateArchive: (oldPath: string, newPath: string) => Promise<{ success: boolean; error?: string }>;
@@ -335,6 +364,17 @@ declare global {
           log?: { level: 'info' | 'warn' | 'error'; phase: string; message: string; timestamp: number; currentTrack?: string };
         }) => void,
       ) => (() => void);
+
+      // Splice recovery (Ableton .als sample re-download)
+      spliceLoginStatus: () => Promise<{ success: boolean; status?: SpliceLoginStatus; error?: string }>;
+      spliceStartLogin: () => Promise<{ ok: boolean; error?: string }>;
+      splicePickAls: () => Promise<{ success: boolean; path: string | null }>;
+      spliceScan: (alsPath: string) => Promise<{ success: boolean; result?: SpliceScanResult; error?: string }>;
+      spliceClassify: (missing: SpliceMissingSample[]) => Promise<{ success: boolean; buckets?: SpliceBuckets; manifestPath?: string | null; error?: string }>;
+      spliceDownloadOwned: (items: SpliceOwnedItem[]) => Promise<{ success: boolean; report?: SpliceDownloadReport; error?: string }>;
+      spliceCreditsBalance: () => Promise<{ success: boolean; balance?: SpliceCreditsBalance; error?: string }>;
+      spliceBuyCredits: (items: SpliceCreditsItem[]) => Promise<{ success: boolean; report?: SpliceDownloadReport; error?: string }>;
+      onSpliceProgress: (callback: (p: SpliceProgressEvent) => void) => (() => void);
     };
   }
 }
@@ -377,7 +417,27 @@ const toastIcons: Record<ToastType, string> = {
   </svg>`
 };
 
-export function showToast(type: ToastType, title: string, message?: string, duration = 5000) {
+export interface ToastAction {
+  label: string;
+  onClick: () => void;
+}
+
+/**
+ * Ask the settings module to open at a given section. Decoupled via
+ * CustomEvent so `shared.ts` doesn't depend on `settings.ts` (which already
+ * imports from here).
+ */
+export function requestOpenSettings(sectionKey: string): void {
+  document.dispatchEvent(new CustomEvent('candybar:open-settings', { detail: { sectionKey } }));
+}
+
+export function showToast(
+  type: ToastType,
+  title: string,
+  message?: string,
+  duration = 5000,
+  action?: ToastAction
+) {
   const toast = document.createElement('div');
   toast.className = `toast toast-${type}`;
 
@@ -390,6 +450,10 @@ export function showToast(type: ToastType, title: string, message?: string, dura
       </button>`
     : '';
 
+  const actionBtn = action
+    ? `<button class="toast-action">${escapeHtml(action.label)}</button>`
+    : '';
+
   toast.innerHTML = `
     <div class="toast-icon">${toastIcons[type]}</div>
     <div class="toast-content">
@@ -397,6 +461,7 @@ export function showToast(type: ToastType, title: string, message?: string, dura
       ${message ? `<div class="toast-message">${message}</div>` : ''}
     </div>
     <div class="toast-actions">
+      ${actionBtn}
       ${copyBtn}
       <button class="toast-close" data-tooltip="Dismiss">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -426,6 +491,14 @@ export function showToast(type: ToastType, title: string, message?: string, dura
   };
 
   closeBtn.addEventListener('click', removeToast);
+
+  if (action) {
+    const actionEl = toast.querySelector('.toast-action') as HTMLButtonElement;
+    actionEl.addEventListener('click', () => {
+      action.onClick();
+      removeToast();
+    });
+  }
 
   getToastContainer().appendChild(toast);
 
@@ -807,10 +880,13 @@ export async function checkSpotifyConnection(showToasts = false) {
       spotifyStatus.classList.add('disconnected');
       spotifyStatusText.textContent = 'Not configured';
       if (showToasts) {
+        const configPath = await window.candybar.getConfigPath();
         showToast(
           'warning',
           'Spotify Not Configured',
-          'Add your Client ID and Secret to the config file at ~/Library/Application Support/candybar-manager/config.json'
+          `Add your Client ID and Secret to the config file at ${configPath}`,
+          5000,
+          { label: 'Open Settings', onClick: () => requestOpenSettings('spotify') }
         );
       }
     }

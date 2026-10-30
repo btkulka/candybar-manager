@@ -4,6 +4,9 @@ out/
 .DS_Store
 *.log
 
+# stray npm cache that ends up here when npm can't reach its default cache dir
+cachenpm/
+
 # Personal Claude Code settings (allowlists, additionalDirectories) — per-machine,
 # not a shared project setting. Use .claude/settings.shared.json if we ever want one.
 .claude/
@@ -11,8 +14,9 @@ out/
 # Python virtualenv used by the rbx-* scripts (pyrekordbox)
 .venv-rbx/
 
-# Operational run state from rbx-* scripts: rollback logs, merge logs,
-# cluster analyses, relocation candidates. Regenerated per run.
+# Operational run state from scripts/rekordbox/rbx-* scripts: rollback logs,
+# merge logs, cluster analyses, relocation candidates. Regenerated per run.
+# (Globs without a leading / match anywhere in the tree.)
 rbx-rollback-*.json
 rbx-merge-log*.json
 rbx-cluster-analysis.json
@@ -21,3 +25,6 @@ rbx-reloc-candidates.json
 # Untracked local secrets — API keys, account identifiers, anything
 # machine- or user-specific that should never land in the repo.
 secrets.json
+
+# Per-user app config — written to userData at runtime, not shared via git
+/config.json

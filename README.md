@@ -1,19 +1,29 @@
 # Candy Bar Manager
 
-Tiny Electron + TypeScript app that organizes and audits your library.
+Tiny Electron + TypeScript app that organizes and audits your library, plus a few CLI tools for one-off recovery jobs.
 
 ## Setup
 
-```bash
-npm install
-npm start
+```powershell
+# Default: just enough to run the splice-recovery CLI
+powershell scripts/install.ps1
+
+# Full app: also build the Electron renderer
+powershell scripts/install.ps1 -App
+
+# With rekordbox Python tools
+powershell scripts/install.ps1 -Full
 ```
 
-## How it works
+After install, `npm run dev` for development or `npm start` to preview a production build.
 
-- Organize by Artist reads audio metadata and moves files into artist folders.
-- Missing Track Check compares your library against a CSV list and logs gaps.
-- Splice sample recovery — re-download missing Splice samples from an old Ableton project. See [docs/splice-recovery.md](docs/splice-recovery.md).
+## What's in here
+
+- **`src/`** — the Electron app (main, preload, renderer). Organize-by-artist, library health, missing-track check, store purchases, restore-from-rekordbox.
+- **`splice-recover.mjs`** + `lib/` — standalone CLI for re-downloading missing Splice samples from an old `.als` project. See [docs/splice-recovery.md](docs/splice-recovery.md).
+- **XML repair scripts** in repo root (`apply-xml-matches.mjs`, `dedupe-xml.mjs`, `find-missing.mjs`, `match-xml-missing.mjs`, `refine-missing.mjs`, `rename-to-xml.mjs`, `xml-scan-missing.mjs`, `audit-present.mjs`) — work against rekordbox export.xml.
+- **`scripts/`** — installer, rekordbox Python tools, and legacy one-offs. See [scripts/README.md](scripts/README.md).
+- **`tests/e2e/`** — vitest end-to-end suite (`npm run test:e2e`).
 
 ## Defaults
 

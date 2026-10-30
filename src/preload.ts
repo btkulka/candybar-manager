@@ -40,6 +40,7 @@ contextBridge.exposeInMainWorld('candybar', {
   checkLibrary: (source: { csvPath?: string; spotifyPlaylistUrl?: string }, useCache = true, cacheOnly = false) =>
     ipcRenderer.invoke('check-library', { ...source, useCache, cacheOnly }),
   getConfig: () => ipcRenderer.invoke('get-config'),
+  getConfigPath: (): Promise<string> => ipcRenderer.invoke('get-config-path'),
   getLibraryRoot: () => ipcRenderer.invoke('get-library-root'),
   setConfig: (config: AppConfig) => ipcRenderer.invoke('set-config', config),
   migrateArchive: (oldPath: string, newPath: string) =>
@@ -411,5 +412,64 @@ contextBridge.exposeInMainWorld('candybar', {
     const listener = (_e: unknown, p: Parameters<typeof callback>[0]) => callback(p);
     ipcRenderer.on('restore-progress', listener);
     return () => ipcRenderer.off('restore-progress', listener);
+  },
+
+  // Splice recovery (Ableton .als sample re-download)
+  spliceLoginStatus: (): Promise<{ success: boolean; status?: { connected: boolean; tokenExpiresAt: number | null; hasProfile: boolean }; error?: string }> =>
+    ipcRenderer.invoke('splice-login-status'),
+  spliceStartLogin: (): Promise<{ ok: boolean; error?: string }> =>
+    ipcRenderer.invoke('splice-start-login'),
+  splicePickAls: (): Promise<{ success: boolean; path: string | null }> =>
+    ipcRenderer.invoke('splice-pick-als'),
+  spliceScan: (alsPath: string): Promise<{ success: boolean; result?: { alsPath: string; totalRefs: number; spliceRefs: number; missing: Array<{ originalPath: string; basename: string; searchKey: string }> }; error?: string }> =>
+    ipcRenderer.invoke('splice-scan', { alsPath }),
+  spliceClassify: (missing: Array<{ originalPath: string; basename: string; searchKey: string }>): Promise<{
+    success: boolean;
+    buckets?: {
+      owned: Array<{ originalPath: string; basename: string; searchKey: string; asset: { uuid: string; filename: string; name: string; coverUrl: string | null; packName: string | null; packSlug: string | null } }>;
+      credits: Array<{ originalPath: string; basename: string; searchKey: string; asset: { uuid: string; filename: string; name: string; coverUrl: string | null; packName: string | null; packSlug: string | null }; spliceUrl: string }>;
+      notFound: Array<{ originalPath: string; basename: string; searchKey: string; error?: string }>;
+    };
+    manifestPath?: string | null;
+    error?: string;
+  }> =>
+    ipcRenderer.invoke('splice-classify', { missing }),
+  spliceDownloadOwned: (items: Array<{ originalPath: string; basename: string; searchKey: string; asset: { uuid: string; filename: string; name: string; coverUrl: string | null; packName: string | null; packSlug: string | null } }>): Promise<{
+    success: boolean;
+    report?: {
+      attempted: number;
+      succeeded: number;
+      failed: Array<{ sample: { originalPath: string; basename: string }; error: string }>;
+    };
+    error?: string;
+  }> =>
+    ipcRenderer.invoke('splice-download-owned', { items }),
+  spliceCreditsBalance: (): Promise<{
+    success: boolean;
+    balance?: { credits: number; state: string; planName: string | null; planTier: string | null };
+    error?: string;
+  }> =>
+    ipcRenderer.invoke('splice-credits-balance'),
+  spliceBuyCredits: (items: Array<{ originalPath: string; basename: string; searchKey: string; asset: { uuid: string; filename: string; name: string; coverUrl: string | null; packName: string | null; packSlug: string | null }; spliceUrl: string }>): Promise<{
+    success: boolean;
+    report?: {
+      attempted: number;
+      succeeded: number;
+      failed: Array<{ sample: { originalPath: string; basename: string }; error: string }>;
+    };
+    error?: string;
+  }> =>
+    ipcRenderer.invoke('splice-buy-credits', { items }),
+  onSpliceProgress: (
+    callback: (p:
+      | { phase: 'parsing'; alsPath: string }
+      | { phase: 'searching'; index: number; total: number; sample: { originalPath: string; basename: string; searchKey: string }; result?: 'owned' | 'credits' | 'notFound' }
+      | { phase: 'downloading'; index: number; total: number; sample: { originalPath: string; basename: string }; status?: 'ok' | 'fail'; error?: string }
+      | { phase: 'complete' }
+    ) => void,
+  ) => {
+    const listener = (_e: unknown, p: Parameters<typeof callback>[0]) => callback(p);
+    ipcRenderer.on('splice-progress', listener);
+    return () => ipcRenderer.off('splice-progress', listener);
   },
 });

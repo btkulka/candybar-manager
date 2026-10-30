@@ -4,16 +4,18 @@
   "private": true,
   "main": "dist/main/main.js",
   "scripts": {
-    "dev": "electron-vite dev",
-    "build": "electron-vite build",
-    "start": "electron-vite preview",
+    "dev": "node scripts/run-electron-vite.mjs dev",
+    "build": "node scripts/run-electron-vite.mjs build",
+    "start": "node scripts/run-electron-vite.mjs preview",
     "build:ts": "tsc",
     "build:mcp": "tsc -p tsconfig.mcp.json",
     "rebuild": "electron-rebuild -f -w better-sqlite3",
     "postinstall": "electron-rebuild -f -w better-sqlite3",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:e2e": "electron-vite build && vitest run --config vitest.e2e.config.ts"
+    "test:e2e": "electron-vite build && vitest run --config vitest.e2e.config.ts",
+    "web": "node scripts/run-electron-vite.mjs web",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.27.1",
@@ -35,6 +37,8 @@
     "@tootallnate/once": "^3.0.1"
   },
   "devDependencies": {
+    "@btkulka/electron-kit": "file:../packages/electron-kit",
+    "@btkulka/proc-kit": "file:../packages/proc-kit",
     "@electron/rebuild": "^4.0.3",
     "@types/better-sqlite3": "^7.6.13",
     "@types/jsdom": "^28.0.0",

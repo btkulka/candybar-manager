@@ -25,6 +25,7 @@
           <span class="topbar-brand">Track Lab</span>
         </div>
         <nav class="topbar-nav">
+          <div class="nav-section-label" id="nav-section-rekordbox">Rekordbox</div>
           <button class="nav-link active" data-page="library" data-tooltip="Library">
             <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <path d="M9 18V5l12-2v13"/>
@@ -57,12 +58,22 @@
             </svg>
             <span>USB</span>
           </button>
-          <button class="nav-link" data-page="restore" data-tooltip="Restore library from Rekordbox XML">
+          <button class="nav-link" id="nav-restore" data-page="restore" data-tooltip="Restore library from Rekordbox XML">
             <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <path d="M3 12a9 9 0 1 0 3-6.7"/>
               <path d="M3 3v6h6"/>
             </svg>
             <span>Restore</span>
+          </button>
+
+          <div class="nav-section-label">Ableton</div>
+          <button class="nav-link" id="nav-splice-recovery" data-page="splice-recovery" data-tooltip="Recover missing Splice samples in an Ableton project">
+            <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M3 12c2-4 6-4 8 0s6 4 8 0"/>
+              <circle cx="3" cy="12" r="1.5" fill="currentColor"/>
+              <circle cx="21" cy="12" r="1.5" fill="currentColor"/>
+            </svg>
+            <span>Splice Recovery</span>
           </button>
         </nav>
       </aside>
@@ -970,6 +981,138 @@
         </div>
         <!-- ===== END RESTORE PAGE ===== -->
 
+        <!-- ===== SPLICE RECOVERY PAGE ===== -->
+        <div class="page" id="page-splice-recovery">
+          <div class="page-header">
+            <h2>Splice Recovery</h2>
+            <p>Re-download missing Splice samples referenced by an Ableton <code>.als</code> project.</p>
+          </div>
+
+          <nav class="wiz-stepper" id="splice-stepper">
+            <button type="button" class="wiz-step is-active" data-step="configure" disabled><span class="wiz-step-num">1</span> Configure</button>
+            <button type="button" class="wiz-step" data-step="scan" disabled><span class="wiz-step-num">2</span> Scan</button>
+            <button type="button" class="wiz-step" data-step="review" disabled><span class="wiz-step-num">3</span> Review</button>
+            <button type="button" class="wiz-step" data-step="download" disabled><span class="wiz-step-num">4</span> Download</button>
+            <button type="button" class="wiz-step" data-step="report" disabled><span class="wiz-step-num">5</span> Report</button>
+          </nav>
+
+          <!-- Stage 1: CONFIGURE -->
+          <section class="wiz-stage is-active" data-stage="configure" id="splice-stage-configure">
+            <div class="wiz-grid">
+              <div class="wiz-card">
+                <h3>Ableton project</h3>
+                <div class="restore-row">
+                  <input type="text" id="splice-als-path" placeholder="/path/to/project.als" readonly class="restore-input" />
+                  <button class="btn-secondary" id="splice-pick-als" data-tooltip="Choose the .als project to scan">Choose…</button>
+                </div>
+                <p class="wiz-hint">Pick a Live Set with broken Splice sample references.</p>
+              </div>
+
+              <div class="wiz-card">
+                <h3>Splice account</h3>
+                <div class="restore-row">
+                  <span class="splice-status-pill" id="splice-status-pill">
+                    <span class="splice-status-dot"></span>
+                    <span id="splice-status-text">Checking…</span>
+                  </span>
+                  <button class="btn-secondary" id="splice-connect-btn" data-tooltip="Open splice.com to log in" style="display:none;">Connect</button>
+                </div>
+                <p class="wiz-hint">A persistent Chrome profile keeps you logged in between sessions.</p>
+              </div>
+            </div>
+
+            <div class="wiz-actions">
+              <button class="btn-primary" id="splice-to-scan" disabled data-tooltip="Parse the project and search Splice for each missing sample">Scan project →</button>
+            </div>
+          </section>
+
+          <!-- Stage 2: SCAN -->
+          <section class="wiz-stage" data-stage="scan" id="splice-stage-scan" style="display:none;">
+            <div class="wiz-card">
+              <div class="wiz-card-header">
+                <h3 id="splice-scan-title">Scanning…</h3>
+                <span class="wiz-hint" id="splice-scan-counts">—</span>
+              </div>
+              <div class="wiz-progress">
+                <div class="wiz-progress-bar" id="splice-scan-progress" style="width: 0%;"></div>
+              </div>
+              <p class="wiz-hint" id="splice-scan-current">—</p>
+            </div>
+            <div class="wiz-actions">
+              <button class="btn-ghost" id="splice-scan-back">Back</button>
+            </div>
+          </section>
+
+          <!-- Stage 3: REVIEW -->
+          <section class="wiz-stage" data-stage="review" id="splice-stage-review" style="display:none;">
+            <div class="wiz-grid">
+              <div class="wiz-card">
+                <div class="wiz-card-header">
+                  <h3>Owned <span class="wiz-badge wiz-badge-ok" id="splice-owned-count">0</span></h3>
+                  <span class="wiz-hint">Free re-downloads from your subscription.</span>
+                </div>
+                <div id="splice-owned-list" class="splice-bucket-list"></div>
+              </div>
+
+              <div class="wiz-card">
+                <div class="wiz-card-header">
+                  <h3>Credits <span class="wiz-badge wiz-badge-warn" id="splice-credits-count">0</span></h3>
+                  <span class="wiz-hint">Available in catalog — would cost credits. <span id="splice-credits-balance">Balance: …</span></span>
+                </div>
+                <div id="splice-credits-list" class="splice-bucket-list"></div>
+                <div class="wiz-card-footer">
+                  <button class="btn-primary" id="splice-buy-all" disabled data-tooltip="Spend a credit per sample in this bucket and download them">Buy all (0)</button>
+                </div>
+              </div>
+
+              <div class="wiz-card">
+                <div class="wiz-card-header">
+                  <h3>Not found <span class="wiz-badge" id="splice-notfound-count">0</span></h3>
+                  <span class="wiz-hint">Renamed, removed, or never on Splice.</span>
+                </div>
+                <div id="splice-notfound-list" class="splice-bucket-list"></div>
+              </div>
+            </div>
+            <div class="wiz-actions">
+              <button class="btn-ghost" id="splice-review-back">Back</button>
+              <button class="btn-primary" id="splice-download-owned" disabled data-tooltip="Download every sample in the Owned bucket into the original project paths">Download owned →</button>
+            </div>
+          </section>
+
+          <!-- Stage 4: DOWNLOAD -->
+          <section class="wiz-stage" data-stage="download" id="splice-stage-download" style="display:none;">
+            <div class="wiz-card">
+              <div class="wiz-card-header">
+                <h3 id="splice-download-title">Downloading…</h3>
+                <span class="wiz-hint" id="splice-download-counts">—</span>
+              </div>
+              <div class="wiz-progress">
+                <div class="wiz-progress-bar" id="splice-download-progress" style="width: 0%;"></div>
+              </div>
+              <p class="wiz-hint" id="splice-download-current">—</p>
+              <div class="wiz-log-wrap">
+                <button type="button" id="splice-log-copy" class="wiz-log-copy" data-tooltip="Copy log to clipboard" aria-label="Copy log">Copy</button>
+                <div id="splice-download-log" class="wiz-log"></div>
+              </div>
+            </div>
+          </section>
+
+          <!-- Stage 5: REPORT -->
+          <section class="wiz-stage" data-stage="report" id="splice-stage-report" style="display:none;">
+            <div class="wiz-card">
+              <h3 id="splice-report-hero">—</h3>
+              <p class="wiz-hint">Reopen the project in Ableton — recovered samples should resolve automatically.</p>
+              <div id="splice-report-failed-wrap" style="display:none; margin-top:16px;">
+                <h4>Failed</h4>
+                <div id="splice-report-failed" class="splice-bucket-list"></div>
+              </div>
+            </div>
+            <div class="wiz-actions">
+              <button class="btn-ghost" id="splice-report-restart">New recovery</button>
+            </div>
+          </section>
+        </div>
+        <!-- ===== END SPLICE RECOVERY PAGE ===== -->
 
       </main>
       </div>
@@ -1230,7 +1373,7 @@
         <div class="modal-body settings-modal-body">
           <aside class="settings-nav" role="tablist">
             <button type="button" class="settings-nav-item is-active" data-target="library" role="tab" data-tooltip="Library paths and scanning" data-tooltip-pos="right">Library</button>
-            <button type="button" class="settings-nav-item" data-target="rekordbox" role="tab" data-tooltip="Rekordbox XML import settings" data-tooltip-pos="right">Rekordbox</button>
+            <button type="button" class="settings-nav-item" id="settings-nav-rekordbox" data-target="rekordbox" role="tab" data-tooltip="Rekordbox XML import settings" data-tooltip-pos="right">Rekordbox</button>
             <button type="button" class="settings-nav-item" data-target="console" role="tab" data-tooltip="Developer console options" data-tooltip-pos="right">Console</button>
             <button type="button" class="settings-nav-item" data-target="spotify" role="tab" data-tooltip="Spotify API credentials" data-tooltip-pos="right">Spotify</button>
             <button type="button" class="settings-nav-item" data-target="qobuz" role="tab" data-tooltip="Qobuz accounts and credentials" data-tooltip-pos="right">Qobuz</button>
@@ -1254,6 +1397,13 @@
               </div>
               <input type="text" id="setting-archive-path" placeholder="/path/to/archive" title="Folder where processed tracks are moved" />
               <button class="btn-secondary btn-sm" data-browse="setting-archive-path" data-type="dir" data-tooltip="Browse for archive folder">Browse</button>
+            </div>
+            <div class="setting-row">
+              <div class="setting-info">
+                <label for="setting-rekordbox-enabled">Rekordbox features</label>
+                <p class="setting-desc">Show the Rekordbox settings tab and Restore page. Turn off on machines that don't manage a rekordbox library.</p>
+              </div>
+              <input type="checkbox" id="setting-rekordbox-enabled" />
             </div>
           </div>
 

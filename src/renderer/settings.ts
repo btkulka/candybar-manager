@@ -1,6 +1,6 @@
 import type { ScriptOutput } from './shared';
 import type { StoreAccount } from '../types';
-import { showToast, getValue, setValue, getErrorMessage } from './shared';
+import { showToast, getValue, setValue, getErrorMessage, setActiveTab } from './shared';
 import { autoRefreshLibrary } from './library';
 
 type StoreService = 'qobuz' | 'beatport';
@@ -12,6 +12,7 @@ const openSettingsBtn = document.getElementById('open-settings') as HTMLButtonEl
 const closeSettingsBtn = document.getElementById('close-settings') as HTMLButtonElement;
 const saveSettingsBtn = document.getElementById('save-settings') as HTMLButtonElement;
 const floatingConsoleToggle = document.getElementById('setting-floating-console') as HTMLInputElement;
+const rekordboxEnabledToggle = document.getElementById('setting-rekordbox-enabled') as HTMLInputElement | null;
 const libraryRootChooseBtn = document.getElementById('library-root-choose') as HTMLButtonElement | null;
 // ========== State ==========
 
@@ -32,6 +33,38 @@ export function setLibraryRootDisplay(root: string): void {
 export function setFloatingConsoleEnabled(enabled: boolean): void {
   if (floatingConsoleToggle) floatingConsoleToggle.checked = enabled;
   applyFloatingConsoleVisibility();
+}
+
+export function setRekordboxEnabled(enabled: boolean): void {
+  if (rekordboxEnabledToggle) rekordboxEnabledToggle.checked = enabled;
+  applyRekordboxVisibility(enabled);
+}
+
+export function applyRekordboxVisibility(enabled: boolean): void {
+  const restoreNav = document.getElementById('nav-restore');
+  if (restoreNav) restoreNav.style.display = enabled ? '' : 'none';
+
+  const sectionLabel = document.getElementById('nav-section-rekordbox');
+  if (sectionLabel) sectionLabel.style.display = enabled ? '' : 'none';
+
+  const settingsNavItem = document.getElementById('settings-nav-rekordbox');
+  if (settingsNavItem) settingsNavItem.style.display = enabled ? '' : 'none';
+
+  const settingsSection = document.querySelector<HTMLElement>('.settings-section[data-section="rekordbox"]');
+  if (settingsSection) settingsSection.style.display = enabled ? '' : 'none';
+
+  // If the user is currently on the Restore page and rekordbox just got disabled,
+  // bounce them to a safe default so they're not stuck on a hidden page.
+  if (!enabled) {
+    const restorePage = document.getElementById('page-restore');
+    if (restorePage?.classList.contains('active')) setActiveTab('organize');
+  }
+
+  // If the settings modal currently has the rekordbox tab active, switch to library.
+  const rekordboxNavActive = document.getElementById('settings-nav-rekordbox')?.classList.contains('is-active');
+  if (!enabled && rekordboxNavActive) {
+    document.querySelector<HTMLButtonElement>('.settings-nav-item[data-target="library"]')?.click();
+  }
 }
 
 export function openSettingsTo(sectionKey: string): void {
@@ -278,6 +311,11 @@ export function initSettings(): void {
     settingsModal.classList.remove('visible');
   });
 
+  document.addEventListener('candybar:open-settings', (e) => {
+    const sectionKey = (e as CustomEvent<{ sectionKey: string }>).detail?.sectionKey;
+    if (sectionKey) openSettingsTo(sectionKey);
+  });
+
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && settingsModal.classList.contains('visible')) {
       settingsModal.classList.remove('visible');
@@ -308,6 +346,7 @@ export function initSettings(): void {
     try {
       const archivePath = getValue('setting-archive-path');
       const rekordboxXmlPath = getValue('setting-rekordbox-xml-path');
+      const rekordboxEnabled = rekordboxEnabledToggle?.checked ?? true;
       const floatingConsoleEnabled = floatingConsoleToggle?.checked ?? true;
       const qobuzAccounts = collectAccounts('qobuz');
       const beatportAccounts = collectAccounts('beatport');
@@ -319,6 +358,7 @@ export function initSettings(): void {
         ...existing,
         archivePath,
         rekordboxXmlPath,
+        rekordboxEnabled,
         floatingConsoleEnabled,
         qobuzAccounts,
         beatportAccounts,
@@ -327,6 +367,7 @@ export function initSettings(): void {
       });
 
       currentArchivePath = archivePath;
+      applyRekordboxVisibility(rekordboxEnabled);
       settingsModal.classList.remove('visible');
       showToast('success', 'Settings Saved', 'Your settings have been saved.');
       window.dispatchEvent(new CustomEvent('store-account-changed', { detail: { service: 'all' } }));

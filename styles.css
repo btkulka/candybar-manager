@@ -241,6 +241,120 @@ body {
   gap: 2px;
 }
 
+.nav-section-label {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  color: var(--text-muted);
+  padding: 12px 12px 6px 12px;
+  text-transform: uppercase;
+  user-select: none;
+}
+.nav-section-label:first-child { padding-top: 4px; }
+
+/* Splice Recovery page-specific UI */
+.splice-status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-surface);
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.splice-status-pill .splice-status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-muted);
+}
+.splice-status-pill.is-connected { color: var(--success, #4ade80); }
+.splice-status-pill.is-connected .splice-status-dot { background: var(--success, #4ade80); }
+.splice-status-pill.is-disconnected { color: var(--warning, #f59e0b); }
+.splice-status-pill.is-disconnected .splice-status-dot { background: var(--warning, #f59e0b); }
+
+.splice-bucket-list {
+  max-height: 280px;
+  overflow-y: auto;
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.splice-bucket-row {
+  padding: 6px 8px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-surface);
+  font-size: 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  overflow: hidden;
+}
+.splice-bucket-row .splice-bucket-cover {
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-sm);
+  flex-shrink: 0;
+  object-fit: cover;
+  background: var(--bg-elev, rgba(255, 255, 255, 0.05));
+}
+.splice-bucket-row .splice-bucket-cover-empty {
+  background: linear-gradient(135deg, rgba(255,255,255,0.04), rgba(255,255,255,0.02));
+}
+.splice-bucket-row .splice-bucket-name {
+  font-weight: 500;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.splice-bucket-row .splice-bucket-pack {
+  color: var(--text-muted);
+  font-size: 11px;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: var(--bg-elev, rgba(255, 255, 255, 0.04));
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 0 1 auto;
+  max-width: 40%;
+}
+/* Legacy class — still used by report stage. Keep it ellipsis-safe. */
+.splice-bucket-row .splice-bucket-path {
+  color: var(--text-muted);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.splice-bucket-row a {
+  color: var(--accent, #60a5fa);
+  font-size: 11px;
+  text-decoration: none;
+  flex-shrink: 0;
+}
+.splice-bucket-row a:hover { text-decoration: underline; }
+.splice-bucket-row.splice-bucket-row-fail .splice-bucket-name { color: var(--error, #f87171); }
+
+.wiz-card-footer {
+  margin-top: 12px;
+  display: flex;
+  justify-content: flex-end;
+}
+#splice-credits-balance {
+  margin-left: 6px;
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
 .topbar-right {
   display: flex;
   align-items: center;
@@ -6917,6 +7031,20 @@ body.store-panel-resizing .store-panel-webview { pointer-events: none; }
 .toast-close:hover,
 .toast-copy:hover { color: var(--text-primary); background: var(--bg-elevated); }
 
+.toast-action {
+  padding: 4px 10px;
+  font-size: var(--fs-small);
+  font-weight: 500;
+  color: var(--text-primary);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle, var(--bg-elevated));
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s, border-color 0.15s;
+}
+.toast-action:hover { background: var(--accent-muted, var(--bg-elevated)); border-color: var(--accent, var(--text-muted)); }
+
 /* ===== Danger Button ===== */
 .btn-danger {
   padding: 10px 16px;
@@ -9042,6 +9170,33 @@ a:focus-visible, button:focus-visible, [role="button"]:focus-visible,
 }
 .wiz-account-stats .wiz-ok { color: var(--success); }
 .wiz-account-stats .wiz-bad { color: var(--danger); }
+
+.wiz-log-wrap {
+  position: relative;
+}
+.wiz-log-copy {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 1;
+  padding: 4px 10px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-muted);
+  background: var(--bg-surface, rgba(255, 255, 255, 0.06));
+  border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.1));
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: color 120ms ease, background 120ms ease;
+}
+.wiz-log-copy:hover {
+  color: var(--text-primary);
+  background: var(--bg-elev, rgba(255, 255, 255, 0.1));
+}
+.wiz-log-copy.is-copied {
+  color: var(--success, #4ade80);
+  border-color: var(--success, #4ade80);
+}
 
 .wiz-log {
   background: var(--bg-elevated);

@@ -341,6 +341,7 @@ export type AppConfig = {
   soundcloudClientSecret?: string;
   excludedVolumes: string[]; // volume names to hide from the Devices panel
   rekordboxXmlPath: string; // path to rekordbox export.xml (used for backwards repair)
+  rekordboxEnabled?: boolean; // when false, hides rekordbox UI (settings tab, Restore page) for machines that don't manage a rekordbox library
 };
 
 // Store purchase types

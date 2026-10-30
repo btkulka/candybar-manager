@@ -1,4 +1,5 @@
 import fs from 'fs/promises';
+import os from 'os';
 import path from 'path';
 import { createScopedLogger } from './logger';
 import type { AppConfig } from '../types';
@@ -6,8 +7,16 @@ export type { AppConfig };
 
 const log = createScopedLogger('Config');
 
-// Default library root
-export const DEFAULT_LIBRARY_ROOT = '/Volumes/Candy Bar/Music';
+// Default library root — platform-aware. Picks an existing user folder rather
+// than a Mac-specific /Volumes path that won't resolve on Windows/Linux.
+function defaultLibraryRoot(): string {
+  if (process.platform === 'darwin') return '/Volumes/Candy Bar/Music';
+  // Windows + Linux: the user's Music folder. Always exists post-OS-install
+  // and matches the spirit of "a default music root the user can change".
+  return path.join(os.homedir(), 'Music');
+}
+
+export const DEFAULT_LIBRARY_ROOT = defaultLibraryRoot();
 
 // Default archive path is .archive next to the library root
 export function getDefaultArchivePath(libraryRoot = DEFAULT_LIBRARY_ROOT): string {
@@ -53,7 +62,8 @@ const DEFAULTS: AppConfig = {
   qobuzAccounts: [],
   beatportAccounts: [],
   excludedVolumes: DEFAULT_EXCLUDED_VOLUMES,
-  rekordboxXmlPath: ''
+  rekordboxXmlPath: '',
+  rekordboxEnabled: true
 };
 
 /** Migrate legacy config values (tab renames + legacy single-account credentials).
