@@ -2,6 +2,28 @@
 
 Out-of-tree automation that the Electron app does not import at runtime.
 
+## install.sh (Mac)
+
+Full setup on a Mac. It works from a checkout, or standalone, where it clones into
+`$CANDYBAR_DIR` (default `~/source/candybar-manager`) first. In order, it covers:
+
+- the Command Line Tools
+- Node 22 (nvm's if the shell's node is older, else it offers Homebrew)
+- the shared packages: `btkulka/packages` cloned beside this repo, then
+  `npm install` and `npm run build` there under its `.npm-lock`
+- `npm ci`, the app build, and the MCP build
+- optionally, `claude mcp add`
+
+## update.sh (Mac)
+
+A fast-forward pull of `origin/main`. When that brings anything new, it updates
+and rebuilds the shared packages, runs `npm ci` if `package.json` or the lock
+changed, and rebuilds. `--relaunch` starts the app afterwards. The app runs it
+itself, detached, from the **Update & Restart** prompt
+(`--wait-pid <pid> --relaunch`), and the log goes to
+`~/Library/Logs/candybar-manager/update.log`. `_common.sh` holds what the two
+scripts share.
+
 ## install.ps1
 
 Idempotent setup. Default mode installs npm deps + Playwright Chromium (enough for splice recovery). Flags:

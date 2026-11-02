@@ -3,6 +3,7 @@ import { app, BrowserWindow, webContents, ipcMain, dialog, nativeImage, Tray, Me
 import fs from 'fs';
 import path from 'path';
 import { pathToFileURL } from 'url';
+import { spawn } from 'child_process';
 
 const mainLog = createScopedLogger('Main');
 
@@ -79,6 +80,7 @@ import { initJobQueue, getJobManager } from './lib/jobQueue';
 import { AUTOPOPULATE_CONCURRENCY, AUDIO_EXTENSIONS } from './lib/constants';
 import { initDatabase, closeDatabase, ignoreTrack, unignoreTrack, getIgnoredTracks, getIgnoredTrackKeys, dismissDuplicate, getDismissedDuplicateKeys, makeDuplicatePairKey, dismissHealthIssue, undismissHealthIssue, getDismissedIssues, markTrackAutopopulated, getAutopopulatedPaths } from './lib/db';
 import { parseRekordboxXml, findMissingFiles, importRekordboxToLibrary, type MissingFile, type RekordboxImportSummary } from './lib/rekordbox';
+import { checkForUpdate, oneClickBlocker, UPDATE_BRANCH } from './lib/updateCheck';
 
 type ScriptStream = 'stdout' | 'stderr' | 'status';
 
@@ -321,6 +323,9 @@ app.whenReady().then(async () => {
   createWindow();
   mainLog.info('App startup complete');
 
+  // Advisory: never awaited, never blocks startup.
+  void promptForUpdateIfBehind();
+
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
@@ -340,6 +345,55 @@ app.on('will-quit', (event) => {
   event.preventDefault();
   flushWriteJournal().finally(() => app.exit(0));
 });
+
+// ========== Startup update check ==========
+//
+// The app runs from a git checkout (`npm start`), so the repo dir is the app
+// path. If origin/main has commits we don't, offer to pull + rebuild +
+// relaunch via scripts/update.sh, which runs detached after we quit (the
+// rebuild replaces dist/ and native modules this process has loaded).
+
+async function promptForUpdateIfBehind(): Promise<void> {
+  if (process.env.NODE_ENV === 'development' || process.env.CANDYBAR_SKIP_UPDATE_CHECK) return;
+  const repoDir = app.getAppPath();
+  const status = await checkForUpdate(repoDir);
+  if (!status || status.behind === 0) return;
+
+  const win = BrowserWindow.getAllWindows()[0];
+  const n = status.behind;
+  const changes = status.incoming.map((s) => `• ${s}`).join('\n')
+    + (n > status.incoming.length ? `\n…and ${n - status.incoming.length} more` : '');
+  // update.sh is bash; on Windows show the manual steps instead.
+  const blocker = process.platform === 'win32'
+    ? 'One-click update is macOS-only for now.'
+    : oneClickBlocker(status);
+
+  const opts: Electron.MessageBoxOptions = {
+    type: 'info',
+    title: 'Update available',
+    message: `Candy Bar Manager is ${n} update${n === 1 ? '' : 's'} behind GitHub.`,
+    detail: blocker
+      ? `${changes}\n\n${blocker} Update by hand:\n  cd "${repoDir}"\n  git pull origin ${UPDATE_BRANCH} && npm install && npm start`
+      : `${changes}\n\nUpdating pulls the latest code, rebuilds, and restarts the app (about a minute).`,
+    buttons: blocker ? ['OK'] : ['Update & Restart', 'Later'],
+    defaultId: 0,
+    cancelId: blocker ? 0 : 1,
+  };
+  const { response } = win ? await dialog.showMessageBox(win, opts) : await dialog.showMessageBox(opts);
+  if (blocker || response !== 0) return;
+
+  const script = path.join(repoDir, 'scripts', 'update.sh');
+  const logDir = app.getPath('logs');
+  fs.mkdirSync(logDir, { recursive: true });
+  const logFd = fs.openSync(path.join(logDir, 'update.log'), 'a');
+  mainLog.info(`Launching updater: ${script}`);
+  spawn('/bin/bash', [script, '--wait-pid', String(process.pid), '--relaunch'], {
+    cwd: repoDir,
+    detached: true,
+    stdio: ['ignore', logFd, logFd],
+  }).unref();
+  app.quit();
+}
 
 // ========== Store Panel (embedded <webview>) ==========
 //

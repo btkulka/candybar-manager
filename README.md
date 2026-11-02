@@ -4,6 +4,31 @@ Tiny Electron + TypeScript app that organizes and audits your library, plus a fe
 
 ## Setup
 
+### Mac
+
+The repo is private, so you need collaborator access and the GitHub CLI signed in
+(`brew install gh && gh auth login`). The shared packages it links as
+`file:../packages/*` come from the public `btkulka/packages`. Then:
+
+```bash
+gh repo clone btkulka/candybar-manager ~/source/candybar-manager
+~/source/candybar-manager/scripts/install.sh
+```
+
+It checks for the Xcode Command Line Tools, Node 22 (it offers Homebrew), and
+Chrome. It clones and builds the shared packages into `~/source/packages`, builds
+the app and the MCP server, and can register the MCP server with Claude Code.
+Start the app with `npm start`.
+
+On launch the app checks GitHub. When `origin/main` has commits you don't, it
+lists them and offers **Update & Restart**, which runs
+[scripts/update.sh](scripts/update.sh). You get the manual commands instead when
+the checkout has uncommitted edits, local commits, or another branch checked
+out. Set `CANDYBAR_SKIP_UPDATE_CHECK=1` to turn the check off; `npm run dev`
+never checks.
+
+### Windows
+
 ```powershell
 # Default: just enough to run the splice-recovery CLI
 powershell scripts/install.ps1
