@@ -1,4 +1,5 @@
 {
   "__cli_initialized": true,
-  "git.pull": true
+  "git.pull": true,
+  "build": true
 }

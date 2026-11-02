@@ -9,6 +9,7 @@ import { createScopedLogger } from './logger';
 import { safeMove } from './fileUtils';
 import { recordWrite, statBytes } from './writeJournal';
 import { safeDelete } from './safeDelete';
+import { readDjTags } from './djTags';
 import type { TrackHealth, TrackInfo, UpdateTagsParams, ScanProgress } from '../types';
 export type { TrackHealth, TrackInfo, UpdateTagsParams, ScanProgress };
 
@@ -153,9 +154,7 @@ export async function scanTracks(
       year = metadataResult.common.year?.toString() || '';
       genre = metadataResult.common.genre?.[0] || '';
       label = metadataResult.common.label?.[0] || '';
-      key = (metadataResult.common as unknown as Record<string, string>).key || '';
-      bpm = metadataResult.common.bpm?.toString() || '';
-      remixer = (metadataResult.common as unknown as Record<string, string>).remixedBy || '';
+      ({ key, bpm, remixer } = readDjTags(metadataResult));
       const commentEntry = metadataResult.common.comment?.[0];
       comment = typeof commentEntry === 'string' ? commentEntry : commentEntry?.text || '';
       albumArt = extractAlbumArt(metadataResult);
@@ -287,9 +286,7 @@ export async function updateTags(params: UpdateTagsParams): Promise<TrackInfo> {
     year: updatedMetadata.common.year?.toString() || '',
     genre: updatedMetadata.common.genre?.[0] || '',
     label: updatedMetadata.common.label?.[0] || '',
-    key: (updatedMetadata.common as unknown as Record<string, string>).key || '',
-    bpm: updatedMetadata.common.bpm?.toString() || '',
-    remixer: (updatedMetadata.common as unknown as Record<string, string>).remixedBy || '',
+    ...readDjTags(updatedMetadata),
     comment: (() => { const c = updatedMetadata.common.comment?.[0]; return typeof c === 'string' ? c : c?.text || ''; })(),
     albumArt: extractAlbumArt(updatedMetadata),
     hasArtist: !!updatedArtist,
@@ -417,9 +414,17 @@ async function updateTagsFfmpeg(params: UpdateTagsParams): Promise<string> {
   if (year !== undefined) args.push('-metadata', `date=${year}`);
   if (genre !== undefined) args.push('-metadata', `genre=${genre}`);
   if (label !== undefined) args.push('-metadata', `publisher=${label}`);
-  if (key !== undefined) args.push('-metadata', `initialkey=${key}`);
-  if (bpm !== undefined) args.push('-metadata', `bpm=${bpm}`);
-  if (remixer !== undefined) args.push('-metadata', `remixer=${remixer}`);
+  // ID3 containers (AIFF): ffmpeg has no mapping from `initialkey` / `bpm` /
+  // `remixer` to TKEY / TBPM / TPE4 and writes those keys as TXXX custom
+  // frames, which no reader (music-metadata, Rekordbox) treats as key / BPM /
+  // remixer. It DOES write a frame verbatim when the key is a frame id, so
+  // address the frames directly, and blank the legacy TXXX copies that
+  // -map_metadata 0 would otherwise carry over from an earlier bad write.
+  const id3 = outputExt === '.aiff' || outputExt === '.aif';
+  if (key !== undefined) args.push('-metadata', id3 ? `TKEY=${key}` : `initialkey=${key}`);
+  if (bpm !== undefined) args.push('-metadata', id3 ? `TBPM=${bpm}` : `bpm=${bpm}`);
+  if (remixer !== undefined) args.push('-metadata', id3 ? `TPE4=${remixer}` : `remixer=${remixer}`);
+  if (id3) args.push('-metadata', 'initialkey=', '-metadata', 'bpm=', '-metadata', 'remixer=');
   if (comment !== undefined) args.push('-metadata', `comment=${comment}`);
 
   // Format-specific flags

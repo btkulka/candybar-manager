@@ -14,6 +14,7 @@ import { createScopedLogger } from './logger';
 import { getErrorMessage } from './errorUtils';
 import { isTrackDownloaded, recordDownload, getDownloadedTrackPath, forgetDownloadedTrack } from './db';
 import fuzzball from 'fuzzball';
+import { storeScore, ownedVersionSatisfies, STORE_MATCH_FLOOR } from './storeMatching';
 import type {
   StoreTrackInput,
   StoreMatch,
@@ -376,26 +377,14 @@ export async function logoutBeatport(accountId: string): Promise<void> {
 
 // ========== Fuzzy Matching ==========
 
-function scoreMatch(track: StoreTrackInput, candidateArtist: string, candidateTitle: string): number {
-  const trackArtist = normalizeForComparison(track.artist);
-  const trackTitle = normalizeForComparison(track.title);
-  const otherArtist = normalizeForComparison(candidateArtist);
-  const otherTitle = normalizeForComparison(candidateTitle);
-
-  const artistScore = Math.max(
-    fuzzball.ratio(trackArtist, otherArtist),
-    fuzzball.token_set_ratio(trackArtist, otherArtist),
-    fuzzball.partial_ratio(trackArtist, otherArtist)
-  ) / 100;
-
-  const titleScore = Math.max(
-    fuzzball.ratio(trackTitle, otherTitle),
-    fuzzball.token_set_ratio(trackTitle, otherTitle),
-    fuzzball.partial_ratio(trackTitle, otherTitle)
-  ) / 100;
-
-  return titleScore * 0.6 + artistScore * 0.4;
-}
+// Store scoring lives in storeMatching.ts so this file and qobuzCart.ts can't
+// drift apart again — they previously held two copies of it, and only one
+// applied the extended-mix boost.
+const scoreMatch = (
+  track: StoreTrackInput,
+  candidateArtist: string,
+  candidateTitle: string
+): number => storeScore(track, candidateArtist, candidateTitle);
 
 // ========== Qobuz Search ==========
 
@@ -461,7 +450,7 @@ export async function searchQobuzStore(
         }
       }
 
-      if (best && bestScore >= 0.50) {
+      if (best && bestScore >= STORE_MATCH_FLOOR) {
         // Get pricing and quality info from the popin
         try {
           const popinRes = await fetchWithSession(
@@ -603,7 +592,7 @@ export async function searchBeatportStore(
         }
       }
 
-      if (best && bestScore >= 0.50) {
+      if (best && bestScore >= STORE_MATCH_FLOOR) {
         matches.push(best);
         onMatch?.(best);
       } else {
@@ -963,6 +952,12 @@ export function matchesOwnedTrack(
   const trackTitle = normalizeForComparison(track.title);
 
   for (const o of owned) {
+    // A remix/edit of something you own is a DIFFERENT record you still need.
+    // normalizeForComparison strips version tags, so without this guard the
+    // scores below read an owned original and a wanted remix as the same track
+    // — and a track judged already-owned never reaches the store search.
+    if (!ownedVersionSatisfies(track.title, o.title)) continue;
+
     const oArtist = normalizeForComparison(o.artist);
     const oTitle = normalizeForComparison(o.title);
 

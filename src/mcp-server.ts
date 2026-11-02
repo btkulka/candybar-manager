@@ -12,14 +12,12 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod';
 import { checkTrackHealth, TrackHealth } from './lib/trackHealthCheck';
 import { convertToAiff, reencodeToMp3, deleteOriginalAfterConversion } from './lib/trackConverter';
-import { safeDelete } from './lib/safeDelete';
 import * as mm from 'music-metadata';
 import path from 'path';
 import fs from 'fs/promises';
 import os from 'os';
 import { readConfig, setSecretsPath } from './lib/config';
-import { JSDOM } from 'jsdom';
-import crypto from 'crypto';
+import url from 'url';
 
 import { initWriteJournal } from './lib/writeJournal';
 
@@ -219,8 +217,6 @@ server.tool(
 // Store helpers (standalone, no Electron dependency)
 // ---------------------------------------------------------------------------
 
-const USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
-
 function getConfigPaths(): { primary: string; fallback: string } {
   const platform = os.platform();
   const home = os.homedir();
@@ -241,578 +237,462 @@ function getConfigPaths(): { primary: string; fallback: string } {
 // Secrets file lives next to the repo-root config.json (untracked).
 setSecretsPath(path.join(__dirname, '..', '..', 'secrets.json'));
 
-// Qobuz API credentials (extracted from play.qobuz.com web player)
-const QOBUZ_APP_ID = '798273057';
-const QOBUZ_APP_SECRET = 'abb21364945c0583309667d13ca3d93a';
+// The sourcing engine lives in `lib/sourcing/*.mjs` (plain ESM, no build step)
+// so the Electron app, this server, and the playlist-sourcing skill all share
+// one definition of the matching rules and one way of talking to the stores.
+//
+// This file compiles to CommonJS, and a literal `await import()` would be
+// downleveled to require() — which cannot load ESM — so the import goes through
+// a Function constructor that TypeScript leaves alone.
+const esmImport = new Function('p', 'return import(p)') as (p: string) => Promise<any>;
 
-// Per-account auth caches (keyed by email so multiple accounts can be active).
-const qobuzTokens = new Map<string, string>();
-const beatportCookieJars = new Map<string, string>();
+const SOURCING_ROOT = path.join(__dirname, '..', '..');
+const sourcingModule = (name: string) =>
+  esmImport(url.pathToFileURL(path.join(SOURCING_ROOT, 'lib', 'sourcing', `${name}.mjs`)).href);
 
-/**
- * The main app no longer stores passwords — auth moved to browser-session
- * cookies. The MCP server (which has no browser) can only use legacy password
- * data if it still happens to be in the config file. This helper reads those
- * optional fields without breaking the typed StoreAccount shape.
- */
-function legacyCreds(account: { email?: string } | undefined): { email: string; password: string } | null {
-  if (!account) return null;
-  const raw = account as { email?: string; password?: string };
-  if (!raw.email || !raw.password) return null;
-  return { email: raw.email, password: raw.password };
-}
-
-async function loginQobuzStandalone(email: string, password: string): Promise<string | null> {
-  const cached = qobuzTokens.get(email);
-  if (cached) return cached;
+// Store accounts are reached by driving the user's real logged-in Chrome — see
+// lib/sourcing/storeSession.mjs. There are deliberately no stored credentials
+// here: the previous email/password paths died silently (Qobuz changed its auth,
+// Beatport now 403s every non-browser client) and reported "0 purchases" rather
+// than "signed out", which is worse than failing.
+async function withStore<T>(
+  open: 'qobuz' | 'beatport',
+  fn: (page: any, mod: any) => Promise<T>
+): Promise<T> {
+  const mod = await sourcingModule('storeSession');
+  const session = open === 'qobuz' ? await mod.openQobuz() : await mod.openBeatportSession();
   try {
-    const loginRes = await fetch('https://www.qobuz.com/api.json/0.2/user/login', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'User-Agent': USER_AGENT },
-      body: new URLSearchParams({ email, password, app_id: QOBUZ_APP_ID }).toString(),
-    });
-    const data = await loginRes.json() as { user_auth_token?: string };
-    if (!data.user_auth_token) return null;
-    qobuzTokens.set(email, data.user_auth_token);
-    return data.user_auth_token;
-  } catch { return null; }
+    return await fn(session.page, mod);
+  } finally {
+    await session.close();
+  }
 }
 
-function qobuzApiHeaders(token: string): Record<string, string> {
-  return { 'User-Agent': USER_AGENT, 'X-User-Auth-Token': token, 'X-App-Id': QOBUZ_APP_ID };
-}
-
-function signQobuzRequest(method: string, params: Record<string, string>): { request_ts: string; request_sig: string } {
-  const sortedKeys = Object.keys(params).sort();
-  let paramStr = '';
-  for (const key of sortedKeys) paramStr += `${key}${params[key]}`;
-  const requestTs = Math.floor(Date.now() / 1000).toString();
-  const sigInput = `${method}${paramStr}${requestTs}${QOBUZ_APP_SECRET}`;
-  const requestSig = crypto.createHash('md5').update(sigInput).digest('hex');
-  return { request_ts: requestTs, request_sig: requestSig };
-}
-
-async function loginBeatportStandalone(email: string, password: string): Promise<string | null> {
-  const cached = beatportCookieJars.get(email);
-  if (cached) return cached;
-  try {
-    const loginRes = await fetch('https://api.beatport.com/v4/auth/login/', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Accept': 'application/json',
-        'User-Agent': USER_AGENT,
-        'Origin': 'https://www.beatport.com',
-        'Referer': 'https://www.beatport.com/'
-      },
-      body: JSON.stringify({ username: email, password })
-    });
-    if (!loginRes.ok) return null;
-    const jar = (loginRes.headers.getSetCookie?.() || []).map(c => c.split(';')[0]).join('; ');
-    beatportCookieJars.set(email, jar);
-    return jar;
-  } catch { return null; }
-}
-
-async function fetchQobuz(token: string, url: string, options: RequestInit = {}): Promise<Response> {
-  return fetch(url, {
-    ...options,
-    headers: { ...qobuzApiHeaders(token), ...(options.headers || {}) }
-  });
-}
-
-async function fetchBeatport(cookies: string, url: string, options: RequestInit = {}): Promise<Response> {
-  return fetch(url, {
-    ...options,
-    headers: { 'User-Agent': USER_AGENT, 'Cookie': cookies, ...(options.headers || {}) }
-  });
-}
+const SIGN_IN_HINT = (store: string) =>
+  `Not signed in to ${store}. Run the store_login tool for "${store}" — a Chrome window opens, you sign in once, and the session persists for future calls.`;
 
 function sanitizeFilename(name: string): string {
   return name.replace(/[<>:"/\\|?*]/g, '-').replace(/\s+/g, ' ').trim();
 }
 
 // ---------------------------------------------------------------------------
-// Tool 6: search_qobuz
+// Tools 6-10: the stores
+//
+// Qobuz search is public, so it runs over plain HTTP. Everything that needs the
+// user's account — Beatport search included, since Cloudflare 403s any
+// non-browser client — runs through their real Chrome profile.
 // ---------------------------------------------------------------------------
+
 server.tool(
   'search_qobuz',
-  'Search the Qobuz store for a track by artist and title. Returns matching tracks with pricing and quality info. Uses saved Qobuz credentials from app config.',
+  'Search Qobuz for a track and resolve a lossless add-to-cart link. Needs no login: Qobuz search is public. The returned cart URL is the article id carrier, not a clickable link — Qobuz only accepts it as an XHR from its own site, so opening it in a tab 404s; lib/sourcing/cart.mjs adds it from the signed-in profile. Returns the best match with its quality tier, price, and cart link.',
   {
     artist: z.string().describe('Artist name'),
-    title: z.string().describe('Track title')
+    title: z.string().describe('Track title'),
+    prefer: z.enum(['hires', 'cd']).optional().describe('Which lossless tier to link (default hires)'),
   },
-  async ({ artist, title }) => {
-    const { primary, fallback } = getConfigPaths();
-    const config = await readConfig(primary, fallback);
-    const qobuzAccount = config.qobuzAccounts[0];
-    if (!qobuzAccount) {
-      return { content: [{ type: 'text', text: JSON.stringify({ error: 'Qobuz credentials not configured. Add a Qobuz account in settings.' }) }] };
+  async ({ artist, title, prefer }) => {
+    const qobuz = await sourcingModule('qobuz');
+    const want = { artist, title };
+    const match = await qobuz.bestQobuzMatch(want);
+    if (!match) {
+      return { content: [{ type: 'text', text: JSON.stringify({ query: `${artist} - ${title}`, match: null, note: 'No Qobuz result cleared the match floor.' }, null, 2) }] };
     }
-
-    const __q_qobuzAccount = legacyCreds(qobuzAccount); if (!__q_qobuzAccount) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Qobuz auth no longer available to the MCP server — use the desktop app' }) }] }; const token = await loginQobuzStandalone(__q_qobuzAccount.email, __q_qobuzAccount.password);
-    if (!token) {
-      return { content: [{ type: 'text', text: JSON.stringify({ error: 'Qobuz login failed' }) }] };
-    }
-
-    const query = encodeURIComponent(`${artist} ${title}`);
-    const res = await fetchQobuz(token, `https://www.qobuz.com/us-en/search/tracks/${query}`);
-    const html = await res.text();
-    const dom = new JSDOM(html);
-    const doc = dom.window.document;
-    const items = doc.querySelectorAll('.ListItem');
-
-    const results: Array<{ title: string; artist: string; album: string; trackId: string; url: string }> = [];
-    for (const item of items) {
-      const t = item.querySelector('.ListItem__title')?.textContent?.trim() || '';
-      const a = item.querySelector('.ListItem__artists')?.textContent?.trim()?.split('\u2022')[0]?.trim() || '';
-      const album = item.querySelector('.ListItem__artists')?.textContent?.trim()?.split('\u2022')[1]?.trim() || '';
-      const cartBtn = item.querySelector('.add_to_cart[data-url]');
-      const trackId = cartBtn?.getAttribute('data-url')?.split('/').pop() || '';
-      const albumLink = item.querySelector('a[href*="/album/"]');
-      const url = albumLink ? `https://www.qobuz.com${albumLink.getAttribute('href')}` : '';
-
-      if (t && trackId) results.push({ title: t, artist: a, album, trackId, url });
-    }
-
+    const resolved = await qobuz.resolveCart(match, want, { prefer: prefer || 'hires' }).catch((err: Error) => ({ ...match, cartError: err.message }));
     return {
-      content: [{ type: 'text', text: JSON.stringify({ query: `${artist} - ${title}`, matches: results, format: 'FLAC (will be converted to AIFF on download)' }, null, 2) }]
+      content: [{ type: 'text', text: JSON.stringify({
+        query: `${artist} - ${title}`,
+        match: {
+          title: resolved.title, artists: resolved.artists, score: resolved.score,
+          quality: resolved.quality, lossless: resolved.lossless, price: resolved.price,
+          trackId: resolved.trackId, url: resolved.url,
+          cartUrl: resolved.cartUrl, cartLabel: resolved.cartLabel,
+          cartError: resolved.cartError,
+          scoreParts: resolved.scoreParts,
+        },
+      }, null, 2) }]
     };
   }
 );
 
-// ---------------------------------------------------------------------------
-// Tool 7: search_beatport
-// ---------------------------------------------------------------------------
 server.tool(
   'search_beatport',
-  'Search the Beatport store for a track by artist and title. Returns matching tracks with pricing info. Uses saved Beatport credentials from app config.',
+  'Search Beatport for a track. Opens the user\'s real Chrome (Beatport returns 403 to plain HTTP and to headless Chrome alike — Cloudflare fingerprints both), so a browser window will appear. Returns the best match with price and track URL. No login needed for search.',
   {
     artist: z.string().describe('Artist name'),
-    title: z.string().describe('Track title')
+    title: z.string().describe('Track title'),
   },
   async ({ artist, title }) => {
-    const { primary, fallback } = getConfigPaths();
-    const config = await readConfig(primary, fallback);
-    const beatportAccount = config.beatportAccounts[0];
-    if (!beatportAccount) {
-      return { content: [{ type: 'text', text: JSON.stringify({ error: 'Beatport credentials not configured. Add a Beatport account in settings.' }) }] };
+    const bp = await sourcingModule('beatport');
+    const session = await bp.openBeatport();
+    try {
+      const token = await bp.getAccessToken(session.page);
+      const search = bp.makeSearcher({ page: session.page, token });
+      const match = await bp.bestBeatportMatch(search, { artist, title });
+      return {
+        content: [{ type: 'text', text: JSON.stringify({
+          query: `${artist} - ${title}`,
+          signedIn: Boolean(token),
+          match: match && {
+            title: match.title, artists: match.artists, score: match.score,
+            price: match.price, label: match.label, url: match.url,
+            lossless: match.lossless, trackId: match.id, scoreParts: match.scoreParts,
+          },
+          format: 'WAV/AIFF (RX3-compatible)',
+        }, null, 2) }]
+      };
+    } finally {
+      await session.close();
     }
-
-    const __b_beatportAccount = legacyCreds(beatportAccount); if (!__b_beatportAccount) return { content: [{ type: 'text', text: JSON.stringify({ error: 'Beatport auth no longer available to the MCP server — use the desktop app' }) }] }; const cookies = await loginBeatportStandalone(__b_beatportAccount.email, __b_beatportAccount.password);
-    if (!cookies) {
-      return { content: [{ type: 'text', text: JSON.stringify({ error: 'Beatport login failed' }) }] };
-    }
-
-    const query = encodeURIComponent(`${artist} ${title}`);
-    const res = await fetchBeatport(cookies, `https://www.beatport.com/search/tracks?q=${query}`);
-    const html = await res.text();
-
-    const ndMatch = html.match(/<script id="__NEXT_DATA__"[^>]*>([\s\S]*?)<\/script>/);
-    const results: Array<{ title: string; artist: string; trackId: string; price: string; label: string; url: string }> = [];
-
-    if (ndMatch) {
-      try {
-        const data = JSON.parse(ndMatch[1]);
-        const qd = data?.props?.pageProps?.dehydratedState?.queries?.[0]?.state?.data;
-        const searchTracks = qd?.data ? Object.values(qd.data) : [];
-        for (const st of searchTracks as Array<Record<string, unknown>>) {
-          if (!st?.track_name) continue;
-          const artistName = ((st.artists || []) as Array<{ artist_name: string }>).map(a => a.artist_name).join(', ');
-          const mixName = st.mix_name as string || '';
-          const titleWithMix = (st.track_name as string) + (mixName && mixName !== 'Original Mix' ? ` (${mixName})` : '');
-          const price = (st.price as { display?: string })?.display || '';
-          const label = (st.label as { label_name?: string })?.label_name || '';
-          const slug = (st.track_name as string).toLowerCase().replace(/[^a-z0-9]+/g, '-');
-          results.push({
-            title: titleWithMix,
-            artist: artistName,
-            trackId: String(st.track_id),
-            price,
-            label,
-            url: `https://www.beatport.com/track/${slug}/${st.track_id}`
-          });
-        }
-      } catch { /* parse error */ }
-    }
-
-    return {
-      content: [{ type: 'text', text: JSON.stringify({ query: `${artist} - ${title}`, matches: results, format: 'WAV/AIFF (RX3-compatible)' }, null, 2) }]
-    };
   }
 );
 
-// ---------------------------------------------------------------------------
-// Tool 8: list_purchases
-// ---------------------------------------------------------------------------
 server.tool(
   'list_purchases',
-  'List recently purchased tracks from Qobuz and/or Beatport. Returns track artist, title, and ID for each purchase. Use the source parameter to query one or both stores. Optionally filter by a time window (e.g., last 24 hours).',
+  'List tracks already purchased on Qobuz and/or Beatport, read from the user\'s signed-in browser session (no stored credentials). Opens a Chrome window. If a store is signed out this says so explicitly rather than returning an empty list — an empty result and a signed-out session are very different answers.',
   {
-    source: z.enum(['qobuz', 'beatport', 'both']).default('both').describe('Which store(s) to query'),
-    hoursAgo: z.number().optional().describe('Only return purchases from the last N hours (default: all)')
+    source: z.enum(['qobuz', 'beatport', 'both']).default('both').describe('Which store(s) to read'),
+    hoursAgo: z.number().optional().describe('Only return purchases from the last N hours'),
   },
   async ({ source, hoursAgo }) => {
-    const { primary, fallback } = getConfigPaths();
-    const config = await readConfig(primary, fallback);
-    const cutoff = hoursAgo ? Date.now() - hoursAgo * 60 * 60 * 1000 : 0;
-    const allPurchases: Array<{ source: string; artist: string; title: string; trackId: string; album: string; purchasedAt?: string; sourceAccount?: string }> = [];
+    const cutoff = hoursAgo ? Date.now() - hoursAgo * 3600 * 1000 : 0;
+    const out: Record<string, unknown> = {};
+    const all: any[] = [];
 
-    // Track trackIds we've already added so duplicates across accounts collapse.
-    const seenQobuzTracks = new Set<string>();
-    const seenBeatportTracks = new Set<string>();
-
-    // ---- Qobuz (via API) — loop every configured account ----
-    if (source === 'qobuz' || source === 'both') {
-      if (config.qobuzAccounts.length === 0) {
-        if (source === 'qobuz') {
-          return { content: [{ type: 'text', text: JSON.stringify({ error: 'Qobuz credentials not configured' }) }] };
-        }
-      }
-      for (const qobuzAccount of config.qobuzAccounts) {
-        // Skip credential-less accounts (session-only auth) instead of aborting
-        // the whole aggregation on the first one.
-        const __q_qobuzAccount = legacyCreds(qobuzAccount);
-        if (!__q_qobuzAccount) continue;
-        const token = await loginQobuzStandalone(__q_qobuzAccount.email, __q_qobuzAccount.password);
-        if (!token) continue;
-
-        let offset = 0;
-        const limit = 50;
-        for (let page = 0; page < 10; page++) {
-          const res = await fetch(
-            `https://www.qobuz.com/api.json/0.2/purchase/getUserPurchases?limit=${limit}&offset=${offset}&app_id=${QOBUZ_APP_ID}`,
-            { headers: qobuzApiHeaders(token) }
-          );
-          if (!res.ok) break;
-          const data = await res.json() as {
-            tracks?: {
-              total?: number;
-              items?: Array<{
-                id: number;
-                title?: string;
-                performer?: { name: string };
-                album?: { title: string };
-                purchased_at?: number;
-              }>;
-            };
-          };
-          const items = data.tracks?.items || [];
-          if (items.length === 0) break;
-
-          for (const item of items) {
-            const t = item.title || '';
-            const a = item.performer?.name || '';
-            const album = item.album?.title || '';
-            const trackId = String(item.id || '');
-            if (seenQobuzTracks.has(trackId)) continue;
-            const purchasedAt = item.purchased_at
-              ? new Date(item.purchased_at * 1000).toISOString()
-              : undefined;
-
-            if (t && a) {
-              if (cutoff) {
-                // With a time window requested, exclude purchases we can't confirm
-                // fall inside it (missing timestamp) rather than silently including them.
-                if (!item.purchased_at || item.purchased_at * 1000 < cutoff) continue;
-              }
-              seenQobuzTracks.add(trackId);
-              allPurchases.push({ source: 'qobuz', artist: a, title: t, trackId, album, purchasedAt, sourceAccount: qobuzAccount.label || qobuzAccount.email });
-            }
-          }
-
-          offset += limit;
-          if (items.length < limit) break;
-        }
+    for (const store of (source === 'both' ? ['qobuz', 'beatport'] : [source]) as Array<'qobuz' | 'beatport'>) {
+      try {
+        const result = await withStore<{ tracks: any[]; signedIn: boolean; diagnostic: string }>(
+          store,
+          (page, mod) => (store === 'qobuz' ? mod.qobuzPurchases(page) : mod.beatportPurchases(page))
+        );
+        const tracks = cutoff
+          ? result.tracks.filter((t: any) => !t.purchasedAt || new Date(t.purchasedAt).getTime() >= cutoff)
+          : result.tracks;
+        out[store] = result.signedIn
+          ? { signedIn: true, count: tracks.length, note: result.diagnostic }
+          : { signedIn: false, error: SIGN_IN_HINT(store), detail: result.diagnostic };
+        all.push(...tracks);
+      } catch (err) {
+        out[store] = { signedIn: false, error: (err as Error).message };
       }
     }
 
-    // ---- Beatport — loop every configured account ----
-    if (source === 'beatport' || source === 'both') {
-      if (config.beatportAccounts.length === 0) {
-        if (source === 'beatport') {
-          return { content: [{ type: 'text', text: JSON.stringify({ error: 'Beatport credentials not configured' }) }] };
-        }
-      }
-      for (const beatportAccount of config.beatportAccounts) {
-        // Skip credential-less accounts (session-only auth) instead of aborting
-        // the whole aggregation on the first one.
-        const __b_beatportAccount = legacyCreds(beatportAccount);
-        if (!__b_beatportAccount) continue;
-        const cookies = await loginBeatportStandalone(__b_beatportAccount.email, __b_beatportAccount.password);
-        if (!cookies) continue;
+    // Every purchase seen goes in the sourcing history; each is recorded once.
+    const history = await sourcingModule('history');
+    history.recordEvents(all.map((t: any) => history.eventFromPurchase(t)));
 
-        const res = await fetchBeatport(cookies, 'https://www.beatport.com/library/tracks', {
-          headers: { 'Accept': 'text/html' }
-        });
-        const html = await res.text();
-
-        const ndMatch = html.match(/<script id="__NEXT_DATA__"[^>]*>([\s\S]*?)<\/script>/);
-        if (ndMatch) {
-          try {
-            const data = JSON.parse(ndMatch[1]);
-            const items = data?.props?.pageProps?.dehydratedState?.queries?.[0]?.state?.data?.results
-              || data?.props?.pageProps?.dehydratedState?.queries?.[0]?.state?.data?.data
-              || [];
-            const trackList = Array.isArray(items) ? items : Object.values(items);
-            for (const item of trackList as Array<Record<string, unknown>>) {
-              const t = (item.track_name || item.name || '') as string;
-              const artistArr = (item.artists || []) as Array<{ artist_name?: string; name?: string }>;
-              const a = artistArr.map(x => x.artist_name || x.name || '').join(', ');
-              const trackId = String(item.track_id || item.id || '');
-              if (seenBeatportTracks.has(trackId)) continue;
-              const album = ((item.release as Record<string, unknown>)?.release_name || '') as string;
-              const dateStr = (item.purchased_at || item.created_at || '') as string;
-
-              if (t && a) {
-                if (cutoff) {
-                  // Exclude purchases without a valid timestamp when a window is requested.
-                  const purchaseTime = dateStr ? new Date(dateStr).getTime() : NaN;
-                  if (!Number.isFinite(purchaseTime) || purchaseTime < cutoff) continue;
-                }
-                seenBeatportTracks.add(trackId);
-                allPurchases.push({ source: 'beatport', artist: a, title: t, trackId, album, purchasedAt: dateStr || undefined, sourceAccount: beatportAccount.label || beatportAccount.email });
-              }
-            }
-          } catch { /* parse error */ }
-        }
-      }
-    }
-
-    return {
-      content: [{
-        type: 'text',
-        text: JSON.stringify({
-          totalFound: allPurchases.length,
-          filter: hoursAgo ? `last ${hoursAgo} hours` : 'all',
-          purchases: allPurchases
-        }, null, 2)
-      }]
-    };
+    return { content: [{ type: 'text', text: JSON.stringify({ stores: out, totalFound: all.length, purchases: all }, null, 2) }] };
   }
 );
 
-// ---------------------------------------------------------------------------
-// Tool 9: download_track
-// ---------------------------------------------------------------------------
+server.tool(
+  'store_login',
+  'Open a store (Qobuz, Beatport or SoundCloud) in the user\'s real Chrome so they can sign in once. The session is saved to a persistent profile and reused by every later call, so this is normally needed only the first time (or after a sign-out). Blocks until sign-in is detected or the timeout passes.',
+  {
+    store: z.enum(['qobuz', 'beatport', 'soundcloud']).describe('Which store to sign in to'),
+    timeoutSeconds: z.number().optional().describe('How long to wait for sign-in (default 300)'),
+  },
+  async ({ store, timeoutSeconds }) => {
+    const timeoutMs = (timeoutSeconds || 300) * 1000;
+    if (store === 'soundcloud') {
+      const sc = await sourcingModule('soundcloud');
+      const session = await sc.openSoundCloud();
+      try {
+        const ok = await sc.waitForSoundCloudLogin(session.page, { timeoutMs });
+        return { content: [{ type: 'text', text: JSON.stringify({ store, signedIn: ok, note: ok ? 'SoundCloud session saved.' : 'No sign-in detected before the timeout.' }) }] };
+      } finally {
+        await session.close();
+      }
+    }
+    if (store === 'beatport') {
+      const bp = await sourcingModule('beatport');
+      const session = await bp.openBeatport();
+      try {
+        const token = await bp.waitForLogin(session.page, { timeoutMs });
+        return { content: [{ type: 'text', text: JSON.stringify({ store, signedIn: Boolean(token), note: token ? 'Beatport session saved.' : 'No sign-in detected before the timeout.' }) }] };
+      } finally {
+        await session.close();
+      }
+    }
+    const mod = await sourcingModule('storeSession');
+    const session = await mod.openQobuz();
+    try {
+      const ok = await mod.waitForQobuzLogin(session.page, { timeoutMs });
+      return { content: [{ type: 'text', text: JSON.stringify({ store, signedIn: ok, note: ok ? 'Qobuz session saved.' : 'No sign-in detected before the timeout.' }) }] };
+    } finally {
+      await session.close();
+    }
+  }
+);
+
 server.tool(
   'download_track',
-  'Download a purchased track from Qobuz or Beatport by track ID, convert to AIFF, and save to the organize source directory (or a specified directory). Uses saved store credentials.',
+  'Download an already-purchased track through the user\'s signed-in browser session, convert it to AIFF, and save it to the organize source directory. Requires a signed-in store profile (use store_login first) — this reads the download from the store\'s own page rather than replaying a private API with stored credentials.',
   {
-    source: z.enum(['qobuz', 'beatport']).describe('Which store to download from'),
+    source: z.enum(['qobuz', 'beatport']).describe('Which store the track was bought from'),
     trackId: z.string().describe('Track ID from the store'),
-    artist: z.string().describe('Artist name (for filename)'),
-    title: z.string().describe('Track title (for filename)'),
-    destDir: z.string().optional().describe('Destination directory (defaults to organize source dir from config)')
+    artist: z.string().describe('Artist name (for the filename)'),
+    title: z.string().describe('Track title (for the filename)'),
+    destDir: z.string().optional().describe('Destination directory (defaults to organizeSourceDir from config)'),
   },
   async ({ source, trackId, artist, title, destDir }) => {
     const { primary, fallback } = getConfigPaths();
     const config = await readConfig(primary, fallback);
-
     const outputDir = destDir || config.organizeSourceDir;
     if (!outputDir) {
-      return { content: [{ type: 'text', text: JSON.stringify({ error: 'No destination directory. Set organizeSourceDir in settings or provide destDir.' }) }] };
+      return { content: [{ type: 'text', text: JSON.stringify({ error: 'No destination directory. Set organizeSourceDir in settings or pass destDir.' }) }] };
     }
-
     await fs.mkdir(outputDir, { recursive: true });
 
-    if (source === 'qobuz') {
-      if (config.qobuzAccounts.length === 0) {
-        return { content: [{ type: 'text', text: JSON.stringify({ error: 'Qobuz credentials not configured' }) }] };
+    try {
+      const result = await withStore<{ rawPath?: string; error?: string }>(source, async (page, mod) => {
+        // Ask the store for this track's download URL from inside its own
+        // origin, so the request carries the live session and a real browser
+        // fingerprint — no token handling on our side.
+        const resolved = await (source === 'beatport'
+          ? page.evaluate(async (id: string) => {
+              for (const endpoint of [
+                `/api/v4/catalog/tracks/${id}/download/?audio_format_id=14`,
+                `/api/v4/my/downloads/${id}?audio_format_id=14`,
+              ]) {
+                try {
+                  const r = await fetch(endpoint, { credentials: 'include', headers: { Accept: 'application/json' } });
+                  if (!r.ok) continue;
+                  const j = await r.json();
+                  const u = j.download_url || j.url;
+                  if (u) return { url: u as string };
+                } catch { /* try the next endpoint */ }
+              }
+              return null;
+            }, trackId)
+          : page.evaluate(async (id: string) => {
+              try {
+                const r = await fetch(`/api.json/0.2/track/getFileUrl?track_id=${id}&format_id=27&intent=download`, { credentials: 'include' });
+                if (!r.ok) return null;
+                const j = await r.json();
+                return j.url ? { url: j.url as string } : null;
+              } catch {
+                return null;
+              }
+            }, trackId));
+
+        if (!resolved?.url) return { error: `${SIGN_IN_HINT(source)} (No download URL came back for track ${trackId} — it may also not be in this account's purchases.)` };
+
+        const ext = (resolved.url.match(/\.(wav|aiff|aif|mp3|flac)(?:\?|$)/i)?.[1] || (source === 'qobuz' ? 'flac' : 'wav')).toLowerCase();
+        const rawPath = path.join(outputDir, sanitizeFilename(`${artist} - ${title}.${ext}`));
+        await mod.downloadViaBrowser(page, resolved.url, rawPath);
+        return { rawPath };
+      });
+
+      if ('error' in result && result.error) {
+        return { content: [{ type: 'text', text: JSON.stringify({ error: result.error }) }] };
       }
 
-      // Fetch track metadata from Qobuz API (uses any working account)
-      type QobuzTrackInfo = {
-        title?: string;
-        performer?: { name: string };
-        album?: {
-          title?: string;
-          artist?: { name: string };
-          release_date_original?: string;
-          genre?: { name: string };
-          tracks_count?: number;
-          image?: { large?: string; small?: string };
-        };
-        track_number?: number;
-        media_number?: number;
+      const rawPath = (result as { rawPath: string }).rawPath;
+      const rawExt = path.extname(rawPath).toLowerCase();
+      if (rawExt !== '.aiff' && rawExt !== '.aif') {
+        const conv = await convertToAiff(rawPath);
+        if (conv.success && conv.outputPath) {
+          await deleteOriginalAfterConversion(rawPath, conv.outputPath);
+          return { content: [{ type: 'text', text: JSON.stringify({ success: true, path: conv.outputPath, format: 'AIFF' }) }] };
+        }
+        return { content: [{ type: 'text', text: JSON.stringify({ success: true, path: rawPath, format: rawExt.replace('.', '').toUpperCase(), note: 'AIFF conversion failed; original kept.' }) }] };
+      }
+      return { content: [{ type: 'text', text: JSON.stringify({ success: true, path: rawPath, format: 'AIFF' }) }] };
+    } catch (err) {
+      return { content: [{ type: 'text', text: JSON.stringify({ error: (err as Error).message }) }] };
+    }
+  }
+);
+
+// ---------------------------------------------------------------------------
+// Tools 10-12: playlist sourcing
+// ---------------------------------------------------------------------------
+//
+// The sourcing engine lives in `lib/sourcing/*.mjs` (plain ESM, no build step)
+// so the Electron app, this server, and the playlist-sourcing skill all share
+// one definition of the matching rules. This file compiles to CommonJS, and a
+// literal `await import()` would be downleveled to require() — which cannot
+// load ESM — so the import goes through a Function constructor that TypeScript
+// leaves alone.
+server.tool(
+  'check_library_for_tracks',
+  'Check a list of artist/title pairs against the Rekordbox collection (plus candybar-manager\'s scan reflection) and bucket them into owned / probable / missing. Fast — no network, no browser. Ownership means present in Rekordbox; a file that exists on disk but was never imported is reported as probable with the reason "file on disk, not in Rekordbox".',
+  {
+    tracks: z.array(z.object({
+      artist: z.string().describe('Artist name'),
+      title: z.string().describe('Track title'),
+    })).describe('Tracks to check')
+  },
+  async ({ tracks }) => {
+    const [{ loadLibrary, bucketTracks }] = await Promise.all([sourcingModule('library')]);
+    const lib = await loadLibrary();
+    const { owned, probable, missing } = bucketTracks(tracks, lib);
+    return {
+      content: [{ type: 'text', text: JSON.stringify({
+        stats: { ...lib.stats, owned: owned.length, probable: probable.length, missing: missing.length },
+        owned, probable, missing,
+      }, null, 2) }]
+    };
+  }
+);
+
+server.tool(
+  'source_playlist',
+  'Run the full sourcing pipeline over a Spotify playlist or CSV: fetch the tracklist, check it against Rekordbox, then search Beatport and Qobuz for whatever is missing and resolve lossless purchase links. Beatport takes precedence over Qobuz; lossy matches are excluded from the buy list. Opens a real Chrome window (Cloudflare blocks headless Beatport). Takes roughly 2 seconds per missing track — use limit for a quick sample. Returns the session summary and the path to the full session JSON.',
+  {
+    playlistUrl: z.string().optional().describe('Spotify playlist URL'),
+    csvPath: z.string().optional().describe('Path to a CSV export (alternative to playlistUrl)'),
+    limit: z.number().optional().describe('Only source the first N tracks'),
+    prefer: z.enum(['hires', 'cd']).optional().describe('Which lossless Qobuz tier to link (default hires)'),
+    skipBeatport: z.boolean().optional().describe('Qobuz only — no browser launch'),
+  },
+  async ({ playlistUrl, csvPath, limit, prefer, skipBeatport }) => {
+    if (!playlistUrl && !csvPath) {
+      return { content: [{ type: 'text', text: JSON.stringify({ error: 'Provide playlistUrl or csvPath' }) }] };
+    }
+    const args = [path.join(SOURCING_ROOT, 'bin', 'source-playlist.mjs')];
+    if (playlistUrl) args.push('--playlist', playlistUrl);
+    if (csvPath) args.push('--csv', csvPath);
+    if (limit) args.push('--limit', String(limit));
+    if (prefer) args.push('--prefer', prefer);
+    if (skipBeatport) args.push('--skip-beatport');
+
+    const { execFile } = await import('child_process');
+    const { promisify } = await import('util');
+    const execFileAsync = promisify(execFile);
+
+    try {
+      // 30 min ceiling: a long playlist plus a cold library read can legitimately
+      // run for a while, and killing it mid-run wastes every store lookup done.
+      const { stdout, stderr } = await execFileAsync(process.execPath, args, {
+        cwd: SOURCING_ROOT,
+        maxBuffer: 64 * 1024 * 1024,
+        timeout: 30 * 60 * 1000,
+      });
+      const sessionPath = stdout.trim().split('\n').pop() || '';
+      const session = JSON.parse(await fs.readFile(sessionPath, 'utf8'));
+      return {
+        content: [{ type: 'text', text: JSON.stringify({
+          sessionPath,
+          stats: session.stats,
+          buy: session.buy.map((r: any) => ({
+            artist: r.artist, title: r.title, store: r.store,
+            match: r.match?.title, score: r.match?.score,
+            price: r.match?.price, link: r.match?.cartUrl || r.match?.url,
+          })),
+          probable: session.probable,
+          flagged: session.flagged,
+          notFound: session.notFound.map((r: any) => ({ artist: r.artist, title: r.title })),
+          progressLog: stderr.trim().split('\n').slice(-20),
+        }, null, 2) }]
       };
-      let trackInfo: QobuzTrackInfo | null = null;
-      let downloadUrl: string | null = null;
-      let dlFormatId: number | null = null;
-      const loginFailures: string[] = [];
-      // Try each configured account until one owns the track.
-      for (const qobuzAccount of config.qobuzAccounts) {
-        // Skip credential-less accounts (session-only auth) and keep trying the rest.
-        const __q_qobuzAccount = legacyCreds(qobuzAccount);
-        if (!__q_qobuzAccount) { loginFailures.push(qobuzAccount.label || qobuzAccount.email || qobuzAccount.id); continue; }
-        const token = await loginQobuzStandalone(__q_qobuzAccount.email, __q_qobuzAccount.password);
-        if (!token) { loginFailures.push(__q_qobuzAccount.email); continue; }
-
-        if (!trackInfo) {
-          try {
-            const infoRes = await fetch(
-              `https://www.qobuz.com/api.json/0.2/track/get?track_id=${trackId}&app_id=${QOBUZ_APP_ID}`,
-              { headers: qobuzApiHeaders(token) }
-            );
-            if (infoRes.ok) trackInfo = await infoRes.json() as QobuzTrackInfo;
-          } catch { /* metadata fetch failed, continue without */ }
-        }
-
-        for (const fid of ['27', '7', '6']) {
-          const params = { format_id: fid, intent: 'stream', track_id: trackId };
-          const sig = signQobuzRequest('trackgetFileUrl', params);
-          const url = `https://www.qobuz.com/api.json/0.2/track/getFileUrl?track_id=${trackId}&format_id=${fid}&intent=stream&request_ts=${sig.request_ts}&request_sig=${sig.request_sig}&app_id=${QOBUZ_APP_ID}`;
-          const res = await fetch(url, { headers: qobuzApiHeaders(token) });
-          if (res.ok) {
-            const data = await res.json() as { url?: string; format_id?: number; mime_type?: string };
-            if (data.url) {
-              downloadUrl = data.url;
-              dlFormatId = data.format_id || parseInt(fid);
-              break;
-            }
-          }
-        }
-        if (downloadUrl) break;
-      }
-
-      if (!downloadUrl) {
-        const detail = loginFailures.length
-          ? `Login failed for: ${loginFailures.join(', ')}`
-          : 'Track not found in any configured account or no download URL available';
-        return { content: [{ type: 'text', text: JSON.stringify({ error: `Download failed — ${detail}` }) }] };
-      }
-
-      // Download the FLAC file
-      const dlRes = await fetch(downloadUrl, { headers: { 'User-Agent': USER_AGENT } });
-      if (!dlRes.ok) {
-        return { content: [{ type: 'text', text: JSON.stringify({ error: `Download HTTP error: ${dlRes.status}` }) }] };
-      }
-
-      const rawName = sanitizeFilename(`${artist} - ${title}.flac`);
-      const rawPath = path.join(outputDir, rawName);
-      const buffer = Buffer.from(await dlRes.arrayBuffer());
-      await fs.writeFile(rawPath, buffer);
-
-      // Download album art if available
-      let artPath: string | null = null;
-      const artUrl = trackInfo?.album?.image?.large || trackInfo?.album?.image?.small;
-      if (artUrl) {
-        try {
-          const artRes = await fetch(artUrl, { headers: { 'User-Agent': USER_AGENT } });
-          if (artRes.ok) {
-            artPath = path.join(outputDir, `.cover_${trackId}.jpg`);
-            await fs.writeFile(artPath, Buffer.from(await artRes.arrayBuffer()));
-          }
-        } catch { /* art download failed */ }
-      }
-
-      // Convert to AIFF with embedded metadata and art via ffmpeg
-      const aiffName = sanitizeFilename(`${artist} - ${title}.aiff`);
-      const aiffPath = path.join(outputDir, aiffName);
-      const year = trackInfo?.album?.release_date_original?.split('-')[0] || '';
-
-      const ffmpegArgs = ['-i', rawPath];
-      if (artPath) ffmpegArgs.push('-i', artPath);
-      ffmpegArgs.push(
-        '-map', '0:a',
-        ...(artPath ? ['-map', '1:0', '-c:v', 'copy', '-disposition:v', 'attached_pic'] : []),
-        '-acodec', 'pcm_s24be', '-ar', '44100', '-ac', '2',
-        '-write_id3v2', '1',
-        '-metadata', `title=${trackInfo?.title || title}`,
-        '-metadata', `artist=${trackInfo?.performer?.name || artist}`,
-        '-metadata', `album=${trackInfo?.album?.title || ''}`,
-        '-metadata', `album_artist=${trackInfo?.album?.artist?.name || trackInfo?.performer?.name || artist}`,
-        '-metadata', `genre=${trackInfo?.album?.genre?.name || ''}`,
-        '-metadata', `date=${year}`,
-        '-metadata', `track=${trackInfo?.track_number || ''}`,
-        '-metadata', `disc=${trackInfo?.media_number || ''}`,
-        '-y', aiffPath
-      );
-
-      const { execFile } = await import('child_process');
-      const { promisify } = await import('util');
-      const execFileAsync = promisify(execFile);
-      const ffmpegBin: string = require('ffmpeg-static');
-      try {
-        // Async (not execFileSync) so a large-file transcode doesn't block the event loop.
-        await execFileAsync(ffmpegBin, ffmpegArgs);
-        // Clean up the intermediate FLAC (journaled) and temp art.
-        await safeDelete(rawPath, { context: 'mcp-download-cleanup', detail: { convertedTo: aiffPath } }).catch(() => {});
-        if (artPath) await fs.unlink(artPath).catch(() => {});
-        return { content: [{ type: 'text', text: JSON.stringify({ success: true, path: aiffPath, format: 'AIFF', qobuzFormatId: dlFormatId, hasMetadata: true, hasArt: !!artPath }) }] };
-      } catch (convErr) {
-        // Fallback: try without art
-        try {
-          const fallbackArgs = ['-i', rawPath, '-acodec', 'pcm_s24be', '-ar', '44100', '-ac', '2', '-write_id3v2', '1', '-y', aiffPath];
-          await execFileAsync(ffmpegBin, fallbackArgs);
-          await safeDelete(rawPath, { context: 'mcp-download-cleanup', detail: { convertedTo: aiffPath } }).catch(() => {});
-          if (artPath) await fs.unlink(artPath).catch(() => {});
-          return { content: [{ type: 'text', text: JSON.stringify({ success: true, path: aiffPath, format: 'AIFF', note: 'Converted without art embedding' }) }] };
-        } catch {
-          if (artPath) await fs.unlink(artPath).catch(() => {});
-          return { content: [{ type: 'text', text: JSON.stringify({ success: true, path: rawPath, format: 'FLAC', note: 'AIFF conversion failed, FLAC kept' }) }] };
-        }
-      }
+    } catch (err) {
+      const e = err as { message?: string; stderr?: string };
+      return { content: [{ type: 'text', text: JSON.stringify({ error: e.message, stderr: (e.stderr || '').slice(-2000) }) }] };
     }
+  }
+);
 
-    // Beatport — try each configured account until one owns the track.
-    if (config.beatportAccounts.length === 0) {
-      return { content: [{ type: 'text', text: JSON.stringify({ error: 'Beatport credentials not configured' }) }] };
+server.tool(
+  'render_sourcing_review',
+  'Render a sourcing session JSON into a self-contained review page. A playlist session gets the buy list (cover art, prices, store chips, cart links) plus the owned/probable/flagged sections; a SoundCloud-likes session gets the downloaded / needs-your-call / queued / not-free sections. Returns the HTML file path, ready to publish as an artifact.',
+  {
+    sessionPath: z.string().describe('Path to a session JSON produced by source_playlist'),
+    outPath: z.string().optional().describe('Where to write the HTML (default: alongside the session)'),
+  },
+  async ({ sessionPath, outPath }) => {
+    const dest = outPath || sessionPath.replace(/\.json$/, '.html');
+    const kind = JSON.parse(await fs.readFile(sessionPath, 'utf8')).kind;
+    const written = kind === 'soundcloud-likes'
+      ? await (await sourcingModule('likesReview')).writeLikesReview(sessionPath, dest)
+      : await (await sourcingModule('review')).writeReview(sessionPath, dest);
+    return { content: [{ type: 'text', text: JSON.stringify({ path: written }) }] };
+  }
+);
+
+server.tool(
+  'sourcing_history',
+  'The lasting record of what playlist sourcing acquired: free downloads, lossy files deleted or kept, store cart adds and purchases, across every run. Purchases are recorded when list_purchases sees them. Newest first.',
+  {
+    event: z.enum(['downloaded', 'lossy-dropped', 'lossy-kept', 'duplicate-removed', 'cart-added', 'purchased']).optional().describe('Only this kind of event'),
+    source: z.enum(['soundcloud', 'beatport', 'qobuz']).optional().describe('Only this source'),
+    since: z.string().optional().describe('Only events on or after this ISO date'),
+    search: z.string().optional().describe('Match artist or title'),
+  },
+  async ({ event, source, since, search }) => {
+    const history = await sourcingModule('history');
+    const rows = history.queryHistory({ event, source, since, search });
+    return { content: [{ type: 'text', text: JSON.stringify({ path: history.HISTORY_PATH, count: rows.length, events: rows }, null, 2) }] };
+  }
+);
+
+server.tool(
+  'source_soundcloud_likes',
+  'Walk the user\'s SoundCloud likes — or a SoundCloud set (playlist) given with `set` — and fetch every free download that is not already in the Rekordbox collection. Reads likes through the signed-in Chrome profile (or a public profile with `user`); reads a set publicly, falling back to the signed-in session when it is one of the user\'s own private sets. Checks ownership against Rekordbox, classifies each track as a native SoundCloud download, a gate (Hypeddit etc.), or not free, then downloads: native files through the session, gates by walking them in the same Chrome (Hypeddit is automated; other hosts need `assistSeconds` so the user can finish the gate by hand). Lossless files land in the intake folder; lossy ones are kept under lossy/ and flagged, never mixed in. A ledger makes re-runs incremental. Returns the session summary and the session JSON path — render it with render_sourcing_review.',
+  {
+    user: z.string().optional().describe('SoundCloud username or profile URL to read likes from publicly, instead of the signed-in session'),
+    set: z.union([z.string(), z.array(z.string())]).optional().describe('SoundCloud set (playlist) URL, or several, to source instead of likes. Public sets need no sign-in; the user\'s own private sets are read through the signed-in session'),
+    limit: z.number().optional().describe('Only the newest N likes, or the first N tracks of each set'),
+    since: z.string().optional().describe('Only likes made on or after this ISO date (no effect on a set)'),
+    listOnly: z.boolean().optional().describe('Classify and report only; download nothing'),
+    noGates: z.boolean().optional().describe('Native SoundCloud downloads only; list gates without walking them'),
+    dropLossy: z.boolean().optional().describe('Delete lossy files (MP3 etc.) the moment they arrive instead of keeping them under lossy/; the ledger still remembers them so the gate is not walked again'),
+    dest: z.string().optional().describe('Folder for downloaded files (default: <organizeSourceDir>)'),
+    assistSeconds: z.number().optional().describe('When a gate stalls, wait this long for the user to finish it in the Chrome window (default 0 = record it and move on)'),
+    email: z.string().optional().describe('Email address to give gates that demand one (never sent unless provided)'),
+    scActions: z.string().optional().describe('Account actions a gate may perform for real: "follow,like,comment" (default), add "repost" to allow reposts, or "none"'),
+    comment: z.string().optional().describe('Comment text for gates that ask for one (default "dis shit nasty" — the user\'s standing choice)'),
+    resume: z.string().optional().describe('Path of an earlier session JSON; its pending rows are fetched and gates that stalled are retried'),
+  },
+  async ({ user, set, limit, since, listOnly, noGates, dropLossy, dest, assistSeconds, email, scActions, comment, resume }) => {
+    const args = [path.join(SOURCING_ROOT, 'bin', 'source-soundcloud-likes.mjs')];
+    if (user) args.push('--user', user);
+    for (const u of ([] as string[]).concat(set || [])) args.push('--set', u);
+    if (limit) args.push('--limit', String(limit));
+    if (since) args.push('--since', since);
+    if (listOnly) args.push('--list-only');
+    if (noGates) args.push('--no-gates');
+    if (dropLossy) args.push('--drop-lossy');
+    if (dest) args.push('--dest', dest);
+    if (assistSeconds) args.push('--assist', String(assistSeconds));
+    if (email) args.push('--email', email);
+    if (scActions) args.push('--sc-actions', scActions);
+    if (comment) args.push('--comment', comment);
+    if (resume) args.push('--resume', resume);
+
+    const { execFile } = await import('child_process');
+    const { promisify } = await import('util');
+    const execFileAsync = promisify(execFile);
+    try {
+      // Gates are walked one at a time and may wait on the user; give it an hour.
+      const { stdout, stderr } = await execFileAsync(process.execPath, args, {
+        cwd: SOURCING_ROOT,
+        maxBuffer: 64 * 1024 * 1024,
+        timeout: 60 * 60 * 1000,
+      });
+      const sessionPath = stdout.trim().split('\n').pop() || '';
+      const session = JSON.parse(await fs.readFile(sessionPath, 'utf8'));
+      const brief = (r: any) => ({ artist: r.artist, title: r.title, url: r.url, free: r.free?.kind, gate: r.free?.gate?.host || null, status: r.outcome?.status || 'pending', reason: r.outcome?.reason || null, files: (r.outcome?.files || []).map((f: any) => ({ path: f.path, codec: f.codec || f.ext, lossless: f.lossless })) });
+      return {
+        content: [{ type: 'text', text: JSON.stringify({
+          sessionPath,
+          destDir: session.destDir,
+          source: session.source,
+          stats: session.stats,
+          downloaded: session.downloaded.map(brief),
+          flagged: session.flagged.map(brief),
+          dropped: (session.dropped || []).map(brief),
+          queue: session.queue.map(brief),
+          probable: session.probable.map((r: any) => ({ artist: r.artist, title: r.title, reason: r.reason, confidence: r.libraryConfidence, match: r.libraryMatch })),
+          notFree: session.notFree.map((r: any) => ({ artist: r.artist, title: r.title, reason: r.free?.reason })),
+          progressLog: stderr.trim().split('\n').slice(-25),
+        }, null, 2) }]
+      };
+    } catch (err) {
+      const e = err as { message?: string; stderr?: string };
+      return { content: [{ type: 'text', text: JSON.stringify({ error: e.message, stderr: (e.stderr || '').slice(-2000) }) }] };
     }
-
-    let beatportCookies: string | null = null;
-    let dlUrl: string | null = null;
-    const beatportLoginFailures: string[] = [];
-    for (const beatportAccount of config.beatportAccounts) {
-      // Skip credential-less accounts (session-only auth) and keep trying the rest.
-      const __b_beatportAccount = legacyCreds(beatportAccount);
-      if (!__b_beatportAccount) { beatportLoginFailures.push(beatportAccount.label || beatportAccount.email || beatportAccount.id); continue; }
-      const cookies = await loginBeatportStandalone(__b_beatportAccount.email, __b_beatportAccount.password);
-      if (!cookies) { beatportLoginFailures.push(__b_beatportAccount.email); continue; }
-      beatportCookies = cookies;
-
-      for (const endpoint of [
-        `https://www.beatport.com/api/v4/catalog/tracks/${trackId}/download?audio_format_id=3`,
-        `https://www.beatport.com/api/v4/my/downloads/${trackId}?audio_format_id=3`
-      ]) {
-        const res = await fetchBeatport(cookies, endpoint, { headers: { 'Accept': 'application/json' } });
-        if (res.ok) {
-          const data = await res.json() as { download_url?: string; url?: string };
-          const u = data.download_url || data.url;
-          if (u) { dlUrl = u; break; }
-        }
-      }
-      if (dlUrl) break;
-    }
-
-    if (!dlUrl || !beatportCookies) {
-      const detail = beatportLoginFailures.length
-        ? `Login failed for: ${beatportLoginFailures.join(', ')}`
-        : 'Track not found in any configured account';
-      return { content: [{ type: 'text', text: JSON.stringify({ error: `Download failed — ${detail}` }) }] };
-    }
-
-    const ext = dlUrl.match(/\.(wav|aiff|aif|mp3|flac)$/i)?.[1] || 'wav';
-    const rawName = sanitizeFilename(`${artist} - ${title}.${ext}`);
-    const rawPath = path.join(outputDir, rawName);
-
-    const dlRes = await fetchBeatport(beatportCookies, dlUrl, { headers: { 'Accept': '*/*' } });
-    if (!dlRes.ok) {
-      return { content: [{ type: 'text', text: JSON.stringify({ error: `Beatport download HTTP error: ${dlRes.status}` }) }] };
-    }
-    const buffer = Buffer.from(await dlRes.arrayBuffer());
-    await fs.writeFile(rawPath, buffer);
-
-    // Convert to AIFF if needed
-    const rawExt = path.extname(rawPath).toLowerCase();
-    if (rawExt !== '.aiff' && rawExt !== '.aif') {
-      const convResult = await convertToAiff(rawPath);
-      if (convResult.success && convResult.outputPath) {
-        await deleteOriginalAfterConversion(rawPath, convResult.outputPath);
-        return { content: [{ type: 'text', text: JSON.stringify({ success: true, path: convResult.outputPath, format: 'AIFF' }) }] };
-      }
-    }
-    return { content: [{ type: 'text', text: JSON.stringify({ success: true, path: rawPath, format: ext.toUpperCase() }) }] };
   }
 );
 

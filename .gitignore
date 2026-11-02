@@ -28,3 +28,9 @@ secrets.json
 
 # Per-user app config — written to userData at runtime, not shared via git
 /config.json
+
+# playlist / SoundCloud sourcing sessions and their preview clips
+sourcing-sessions/
+
+# Local CLI run log
+.fm-cli-log.jsonl

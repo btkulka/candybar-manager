@@ -10,7 +10,7 @@ import { searchBeatportTracks, BeatportTrack } from './beatport';
 import { normalizeForComparison } from './stringUtils';
 import { createScopedLogger } from './logger';
 import { getErrorMessage } from './errorUtils';
-import fuzzball from 'fuzzball';
+import { storeScoreParts, STORE_MATCH_FLOOR } from './storeMatching';
 
 const log = createScopedLogger('QobuzCart');
 
@@ -29,6 +29,10 @@ export type QobuzCartMatch = {
   qobuzTrack: QobuzTrack | null;
   beatportTrack: BeatportTrack | null;
   confidence: number;
+  /** Breakdown behind `confidence` (artist/title similarity, extended-mix
+   *  boost, rework penalty, whether the artist floor fired). Lets the UI say
+   *  WHY a confident-looking match may still be the wrong record. */
+  scoreParts?: import('./storeMatching').StoreScoreParts;
   source: 'qobuz' | 'beatport' | null;
   /** True iff we're confident the store offers a lossless version of this
    *  specific track. The user's library is DJ-grade; lossy matches must be
@@ -91,46 +95,6 @@ function parseQualityScore(quality: string | null): number {
   return Number(match[1]) * Number(match[2]);
 }
 
-function scoreMatch(track: QobuzCartTrackInput, candidateArtists: string[], candidateTitle: string): number {
-  const trackArtist = normalizeForComparison(track.artist);
-  const trackTitle = normalizeForComparison(track.title);
-  const otherArtists = candidateArtists.map(a => normalizeForComparison(a)).join(' ');
-  const otherTitle = normalizeForComparison(candidateTitle);
-
-  const artistScore = Math.max(
-    fuzzball.ratio(trackArtist, otherArtists),
-    fuzzball.token_set_ratio(trackArtist, otherArtists),
-    fuzzball.partial_ratio(trackArtist, otherArtists)
-  ) / 100;
-
-  const titleScore = Math.max(
-    fuzzball.ratio(trackTitle, otherTitle),
-    fuzzball.token_set_ratio(trackTitle, otherTitle),
-    fuzzball.partial_ratio(trackTitle, otherTitle)
-  ) / 100;
-
-  const base = titleScore * 0.6 + artistScore * 0.4;
-  // Cap at 1 so UI percentages don't show 108% for extended-mix winners.
-  return Math.min(1, base + extendedMixBoost(track.title, candidateTitle));
-}
-
-const EXTENDED_MIX_RE = /\b(extended|club)\s*(mix|version|edit|remix)?\b/i;
-const EXPLICIT_NON_EXTENDED_RE = /\b(radio|short|clean|single|album|instrumental|dub|acapella|a\s*cappella|intro|outro)\s*(edit|mix|version|cut)?\b/i;
-
-/** DJ workflow: when the user's input title doesn't specify a version, prefer
- *  the Extended/Club Mix over the radio edit. Returns a small additive bonus
- *  that nudges ordering without overriding a significantly better base match. */
-function extendedMixBoost(inputTitle: string, candidateTitle: string): number {
-  if (!EXTENDED_MIX_RE.test(candidateTitle)) return 0;
-  // If the user asked for a radio edit (or other explicit non-extended variant),
-  // don't reward extended.
-  if (EXPLICIT_NON_EXTENDED_RE.test(inputTitle)) return 0;
-  // If the user explicitly asked for the extended mix, let the base score do
-  // its job — don't double-count.
-  if (EXTENDED_MIX_RE.test(inputTitle)) return 0;
-  return 0.08;
-}
-
 export async function batchSearchQobuz(
   tracks: QobuzCartTrackInput[],
   onProgress?: (current: number, total: number, currentTrack: string) => void,
@@ -162,22 +126,27 @@ export async function batchSearchQobuz(
 
       let bestQobuzMatch: QobuzTrack | null = null;
       let bestQobuzScore = 0;
+      let bestQobuzParts: ReturnType<typeof storeScoreParts> | null = null;
       for (const qt of qobuzTracks) {
-        const score = scoreMatch(track, qt.artists, qt.name);
+        const parts = storeScoreParts(track, qt.artists, qt.name);
+        const score = parts.score;
         const quality = parseQualityScore(qt.quality);
         if (score > bestQobuzScore || (score === bestQobuzScore && quality > (bestQobuzMatch ? parseQualityScore(bestQobuzMatch.quality) : 0))) {
           bestQobuzScore = score;
           bestQobuzMatch = qt;
+          bestQobuzParts = parts;
         }
       }
 
       let bestBeatportMatch: BeatportTrack | null = null;
       let bestBeatportScore = 0;
+      let bestBeatportParts: ReturnType<typeof storeScoreParts> | null = null;
       for (const bt of beatportTracks) {
-        const score = scoreMatch(track, bt.artists, bt.name);
-        if (score > bestBeatportScore) {
-          bestBeatportScore = score;
+        const parts = storeScoreParts(track, bt.artists, bt.name);
+        if (parts.score > bestBeatportScore) {
+          bestBeatportScore = parts.score;
           bestBeatportMatch = bt;
+          bestBeatportParts = parts;
         }
       }
 
@@ -188,8 +157,8 @@ export async function batchSearchQobuz(
       // only wins an exact tie (both stores lossless; Beatport's WAV is
       // RX3-compatible without conversion, so it's the better default when
       // confidence is genuinely equal).
-      const qobuzOk = bestQobuzMatch && bestQobuzScore >= 0.50;
-      const beatportOk = bestBeatportMatch && bestBeatportScore >= 0.50;
+      const qobuzOk = bestQobuzMatch && bestQobuzScore >= STORE_MATCH_FLOOR;
+      const beatportOk = bestBeatportMatch && bestBeatportScore >= STORE_MATCH_FLOOR;
       const preferBeatport =
         beatportOk && (!qobuzOk || bestBeatportScore >= bestQobuzScore);
       const preferQobuz =
@@ -201,6 +170,7 @@ export async function batchSearchQobuz(
           qobuzTrack: bestQobuzMatch,
           beatportTrack: null,
           confidence: bestQobuzScore,
+          scoreParts: bestQobuzParts ?? undefined,
           source: 'qobuz',
           // Qobuz exposes `quality` (bitDepth/samplingRate) only for lossless
           // releases; null quality means we can't confirm lossless → flag it.
@@ -213,6 +183,7 @@ export async function batchSearchQobuz(
           qobuzTrack: null,
           beatportTrack: bestBeatportMatch,
           confidence: bestBeatportScore,
+          scoreParts: bestBeatportParts ?? undefined,
           source: 'beatport',
           // Beatport's catalog is primarily WAV; treat matches as lossless by
           // default. When per-track format data becomes available we should

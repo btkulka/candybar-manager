@@ -44,6 +44,7 @@ import { restoreLibrary, type RestoreOptions, type RestoreReport, type RestorePr
 import { listExternalVolumes } from './lib/usbScan';
 import type { StoreTrackInput, StoreMatch, StoreAccount } from './types';
 import { scanTracks, updateTags, getAlbumArtFromFile, TrackInfo, UpdateTagsParams } from './lib/trackScanner';
+import { readDjTags } from './lib/djTags';
 import { diagnoseAiffHeader, repairAiffHeader, type AiffHeaderDiagnosis } from './lib/aiffRepair';
 import { scanMissingAlbumArt, type AlbumArtScanProgress } from './lib/albumArtScan';
 import { convertToAiff, reencodeToMp3, createMp3PreviewResponse, ConversionResult } from './lib/trackConverter';
@@ -1538,9 +1539,7 @@ async function processOneAutopopulateTrack(
       year: meta.common.year ? String(meta.common.year) : '',
       genre: meta.common.genre?.[0] || '',
       label: meta.common.label?.[0] || '',
-      key: (common.key as string) || '',
-      bpm: meta.common.bpm ? String(meta.common.bpm) : '',
-      remixer: (common.remixedBy as string) || '',
+      ...readDjTags(meta),
       hasAlbumArt: !!(meta.common.picture && meta.common.picture.length > 0)
     };
   } catch (err) {
@@ -2805,9 +2804,7 @@ ipcMain.handle('get-track-info', async (_event, { filePath }: { filePath: string
       year: meta.common.year ? String(meta.common.year) : '',
       genre: meta.common.genre?.[0] || '',
       label: meta.common.label?.[0] || '',
-      key: (common.key as string) || '',
-      bpm: meta.common.bpm ? String(meta.common.bpm) : '',
-      remixer: (common.remixedBy as string) || '',
+      ...readDjTags(meta),
       comment: (() => { const c = meta.common.comment?.[0]; return typeof c === 'string' ? c : c?.text || ''; })(),
       albumArt,
       hasArtist: !!artist,
