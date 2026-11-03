@@ -28,7 +28,8 @@ export const catalogExportJob: JobDefinition<CatalogExportParams, CatalogExportR
       (current, total, message) => {
         ctx.progress({ phase: 'exporting', current, total, message });
       },
-      fileList?.files
+      fileList?.files,
+      ctx.signal
     );
 
     return result;

@@ -1,7 +1,18 @@
 /**
- * Beatport scraper for track/artist search
- * Scrapes public search pages - no API key required
+ * Beatport catalog search.
+ *
+ * www.beatport.com answers 403 to a plain fetch and to headless Chrome
+ * (Cloudflare — verified live for the CLI, see lib/sourcing/beatport.mjs), so
+ * nothing here scrapes it from Node. With a signed-in session's Bearer token,
+ * search goes to api.beatport.com, which isn't behind Cloudflare and takes no
+ * cookies — the CLI's fast path. Without one, the search page is read from a
+ * hidden page on the Beatport session partition (storeBrowser.ts), a real
+ * Chromium the store treats like any visitor. Failures throw; they are never
+ * an empty result.
  */
+
+import { sessionFetch } from './storeBrowser';
+import { getAnyBeatportAccessToken, beatportSearchPartition, invalidateBeatportToken } from './storePurchase';
 
 export type BeatportTrack = {
   id: string;
@@ -29,36 +40,8 @@ export type BeatportSearchResult = {
 };
 
 const BASE_URL = 'https://www.beatport.com';
+const API = 'https://api.beatport.com/v4';
 const USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
-
-async function fetchPage(url: string): Promise<string> {
-  const response = await fetch(url, {
-    headers: {
-      'User-Agent': USER_AGENT,
-      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-      'Accept-Language': 'en-US,en;q=0.5'
-    }
-  });
-
-  if (!response.ok) {
-    throw new Error(`Beatport fetch failed: ${response.status}`);
-  }
-
-  return response.text();
-}
-
-// Parse Next.js __NEXT_DATA__ JSON embedded in page
-function extractNextData(html: string): unknown {
-  const match = html.match(/<script id="__NEXT_DATA__" type="application\/json">(.+?)<\/script>/s);
-  if (!match) {
-    throw new Error('Could not find Beatport page data');
-  }
-  try {
-    return JSON.parse(match[1]);
-  } catch (err) {
-    throw new Error(`Beatport page data JSON parse failed: ${(err as Error).message}`);
-  }
-}
 
 function slugify(s: string): string {
   return s.toLowerCase()
@@ -68,62 +51,92 @@ function slugify(s: string): string {
     .slice(0, 80) || '-';
 }
 
-export async function searchBeatportTracks(query: string, page = 1): Promise<BeatportTrack[]> {
-  const url = `${BASE_URL}/search/tracks?q=${encodeURIComponent(query)}&page=${page}`;
-  const html = await fetchPage(url);
+/** One track row from either the API (`name`, `artists[].name`, `id`) or the
+ *  search page (`track_name`, `artists[].artist_name`, `track_id`). Beatport
+ *  sometimes bakes the mix name into the name already, so it's only appended
+ *  when it isn't there. */
+export function normalizeBeatportTrack(t: BeatportApiTrack): BeatportTrack {
+  const name = t.track_name ?? t.name ?? '';
+  const mix = t.mix_name && t.mix_name !== 'Original Mix' && !name.toLowerCase().includes(t.mix_name.toLowerCase())
+    ? ` (${t.mix_name})` : '';
+  const id = String(t.track_id ?? t.id ?? '');
+  return {
+    id,
+    name: `${name}${mix}`,
+    artists: (t.artists ?? []).map(a => a.artist_name ?? a.name ?? '').filter(Boolean),
+    remixers: (t.remixers ?? []).map(a => a.artist_name ?? a.name ?? '').filter(Boolean),
+    label: t.label?.label_name ?? t.label?.name ?? '',
+    genre: (Array.isArray(t.genre) ? t.genre[0]?.genre_name : t.genre?.name) ?? '',
+    bpm: t.bpm ?? null,
+    key: t.key_name ?? t.key?.name ?? null,
+    release_date: t.release_date ?? t.publish_date ?? t.new_release_date ?? null,
+    price: t.price?.display ?? null,
+    url: `${BASE_URL}/track/${t.slug || slugify(name || 'track')}/${id}`,
+  };
+}
 
-  try {
-    const data = extractNextData(html) as NextDataTracks;
-    const tracks = data?.props?.pageProps?.dehydratedState?.queries?.[0]?.state?.data?.data;
-
-    if (!tracks || !Array.isArray(tracks)) {
-      return [];
-    }
-
-    return tracks.map((t): BeatportTrack => {
-      const title = t.mix_name && t.mix_name !== 'Original Mix'
-        ? `${t.track_name} (${t.mix_name})`
-        : t.track_name ?? '';
-      return {
-        id: String(t.track_id),
-        name: title,
-        artists: (t.artists ?? []).map((a) => a.artist_name),
-        remixers: [],
-        label: t.label?.label_name ?? '',
-        genre: t.genre?.[0]?.genre_name ?? '',
-        bpm: t.bpm ?? null,
-        key: t.key_name ?? null,
-        release_date: t.release_date ?? t.publish_date ?? null,
-        price: t.price?.display ?? null,
-        url: `${BASE_URL}/track/${slugify(t.track_name ?? 'track')}/${t.track_id}`
-      };
-    });
-  } catch {
-    // Fallback: try regex parsing if JSON structure changed
-    return parseTracksFromHtml(html);
+/** The tracks (or artists) array out of the search page's Next.js payload,
+ *  wherever its query lands it. */
+export function rowsFromNextData(html: string, kind: 'tracks' | 'artists'): unknown[] {
+  const m = html.match(/<script id="__NEXT_DATA__" type="application\/json">(.+?)<\/script>/s);
+  if (!m) throw new Error('Beatport page had no search data (blocked, or the markup changed)');
+  let data: NextData;
+  try { data = JSON.parse(m[1]) as NextData; } catch (err) {
+    throw new Error(`Beatport page data JSON parse failed: ${(err as Error).message}`);
   }
+  for (const q of data.props?.pageProps?.dehydratedState?.queries ?? []) {
+    const d = q?.state?.data as { data?: unknown; artists?: unknown } | unknown[] | undefined;
+    const rows = kind === 'artists'
+      ? (Array.isArray((d as { artists?: unknown })?.artists) ? (d as { artists: unknown[] }).artists : null)
+      : (Array.isArray((d as { data?: unknown })?.data) ? (d as { data: unknown[] }).data : Array.isArray(d) ? d : null);
+    if (!rows) continue;
+    if (kind === 'artists' || rows.some(r => r && typeof r === 'object' && ('track_name' in r || 'mix_name' in r))) return rows;
+  }
+  return [];
+}
+
+/** The search API with the signed-in session's token, or null when there's
+ *  no token (or it just stopped working). */
+async function searchViaApi(type: 'tracks' | 'artists', query: string): Promise<unknown[] | null> {
+  const auth = getAnyBeatportAccessToken();
+  if (!auth) return null;
+  const res = await fetch(`${API}/catalog/search/?q=${encodeURIComponent(query)}&type=${type}&per_page=20`, {
+    headers: { 'User-Agent': USER_AGENT, Accept: 'application/json', Authorization: `Bearer ${auth.token}` },
+    signal: AbortSignal.timeout(20_000),
+  });
+  if (res.status === 401) {
+    invalidateBeatportToken(auth.accountId);
+    return null;
+  }
+  if (!res.ok) throw new Error(`Beatport API search ${res.status}`);
+  const data = await res.json() as Record<string, unknown>;
+  const rows = data[type] ?? data.results ?? data.data ?? [];
+  return Array.isArray(rows) ? rows : [];
+}
+
+/** The search page, read from inside the Beatport session. */
+async function searchViaPage(type: 'tracks' | 'artists', query: string, page: number): Promise<unknown[]> {
+  const res = await sessionFetch(beatportSearchPartition(), BASE_URL, `/search/${type}?q=${encodeURIComponent(query)}&page=${page}`, {
+    headers: { Accept: 'text/html,application/xhtml+xml' },
+  });
+  if (res.status !== 200) throw new Error(`Beatport search ${res.status || 'unreachable'}${res.status ? '' : `: ${res.text}`}`);
+  return rowsFromNextData(res.text, type);
+}
+
+export async function searchBeatportTracks(query: string, page = 1): Promise<BeatportTrack[]> {
+  const rows = (page === 1 ? await searchViaApi('tracks', query) : null) ?? await searchViaPage('tracks', query, page);
+  return (rows as BeatportApiTrack[]).filter(t => t && (t.track_id ?? t.id) != null).map(normalizeBeatportTrack);
 }
 
 export async function searchBeatportArtists(query: string, page = 1): Promise<BeatportArtist[]> {
-  const url = `${BASE_URL}/search/artists?q=${encodeURIComponent(query)}&page=${page}`;
-  const html = await fetchPage(url);
-
-  try {
-    const data = extractNextData(html) as NextDataArtists;
-    const artists = data?.props?.pageProps?.dehydratedState?.queries?.[0]?.state?.data?.artists;
-
-    if (!artists || !Array.isArray(artists)) {
-      return [];
-    }
-
-    return artists.map((a): BeatportArtist => ({
-      id: String(a.id),
-      name: a.name ?? '',
-      url: `${BASE_URL}/artist/${a.slug}/${a.id}`
-    }));
-  } catch {
-    return parseArtistsFromHtml(html);
-  }
+  const rows = (page === 1 ? await searchViaApi('artists', query) : null) ?? await searchViaPage('artists', query, page);
+  return (rows as Array<{ id?: number; artist_id?: number; name?: string; artist_name?: string; slug?: string }>)
+    .filter(a => a && (a.id ?? a.artist_id) != null)
+    .map(a => {
+      const id = String(a.id ?? a.artist_id);
+      const name = a.name ?? a.artist_name ?? '';
+      return { id, name, url: `${BASE_URL}/artist/${a.slug || slugify(name)}/${id}` };
+    });
 }
 
 export async function searchBeatport(query: string): Promise<BeatportSearchResult> {
@@ -135,109 +148,34 @@ export async function searchBeatport(query: string): Promise<BeatportSearchResul
   return { tracks, artists };
 }
 
-// Fallback HTML parsers (regex-based, less reliable)
-function parseTracksFromHtml(html: string): BeatportTrack[] {
-  const tracks: BeatportTrack[] = [];
-  const trackPattern = /href="\/track\/([^/]+)\/(\d+)"[^>]*>([^<]+)/g;
-  let match;
-
-  while ((match = trackPattern.exec(html)) !== null) {
-    const [, slug, id, name] = match;
-    if (!tracks.some(t => t.id === id)) {
-      tracks.push({
-        id,
-        name: decodeHtmlEntities(name.trim()),
-        artists: [],
-        remixers: [],
-        label: '',
-        genre: '',
-        bpm: null,
-        key: null,
-        release_date: null,
-        price: null,
-        url: `${BASE_URL}/track/${slug}/${id}`
-      });
-    }
-  }
-
-  return tracks.slice(0, 20);
-}
-
-function parseArtistsFromHtml(html: string): BeatportArtist[] {
-  const artists: BeatportArtist[] = [];
-  const artistPattern = /href="\/artist\/([^/]+)\/(\d+)"[^>]*>([^<]+)/g;
-  let match;
-
-  while ((match = artistPattern.exec(html)) !== null) {
-    const [, slug, id, name] = match;
-    if (!artists.some(a => a.id === id)) {
-      artists.push({
-        id,
-        name: decodeHtmlEntities(name.trim()),
-        url: `${BASE_URL}/artist/${slug}/${id}`
-      });
-    }
-  }
-
-  return artists.slice(0, 20);
-}
-
-function decodeHtmlEntities(str: string): string {
-  return str
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'");
-}
-
-// Next.js data types (partial, for extraction)
-// Beatport's search API shape (as of 2026): queries[0].state.data.data[]
-// with track_id/track_name/mix_name/etc. — NOT the older tracks[].id/name shape.
-type NextDataTracks = {
-  props?: {
-    pageProps?: {
-      dehydratedState?: {
-        queries?: Array<{
-          state?: {
-            data?: {
-              data?: Array<{
-                track_id: number;
-                track_name: string;
-                mix_name?: string;
-                artists?: Array<{ artist_id: number; artist_name: string }>;
-                label?: { label_id: number; label_name: string };
-                genre?: Array<{ genre_id: number; genre_name: string }>;
-                bpm?: number;
-                key_name?: string;
-                release_date?: string;
-                publish_date?: string;
-                price?: { display: string };
-                release?: { release_id: number; release_name: string };
-              }>;
-            };
-          };
-        }>;
-      };
-    };
-  };
+// Beatport payload shapes (partial). The search page's Next.js data (2026):
+// queries[n].state.data.data[] with track_id/track_name/mix_name; the API:
+// tracks[] with id/name/mix_name. normalizeBeatportTrack reads both.
+type BeatportApiTrack = {
+  id?: number;
+  track_id?: number;
+  name?: string;
+  track_name?: string;
+  mix_name?: string;
+  slug?: string;
+  artists?: Array<{ name?: string; artist_name?: string }>;
+  remixers?: Array<{ name?: string; artist_name?: string }>;
+  label?: { name?: string; label_name?: string };
+  genre?: Array<{ genre_name?: string }> | { name?: string };
+  bpm?: number;
+  key_name?: string;
+  key?: { name?: string };
+  release_date?: string;
+  publish_date?: string;
+  new_release_date?: string;
+  price?: { display?: string };
 };
 
-type NextDataArtists = {
+type NextData = {
   props?: {
     pageProps?: {
       dehydratedState?: {
-        queries?: Array<{
-          state?: {
-            data?: {
-              artists?: Array<{
-                id: number;
-                name: string;
-                slug: string;
-              }>;
-            };
-          };
-        }>;
+        queries?: Array<{ state?: { data?: unknown } }>;
       };
     };
   };

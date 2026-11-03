@@ -17,6 +17,7 @@ export const libraryHealthJob: JobDefinition<HealthParams, LibraryHealthResult> 
     const result = await scanLibraryHealth({
       libraryRoot,
       preScannedFiles: fileList?.files,
+      signal: ctx.signal,
       onProgress: (progress) => {
         ctx.progress({
           phase: progress.phase,

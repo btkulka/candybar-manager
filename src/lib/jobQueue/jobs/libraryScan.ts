@@ -1,6 +1,4 @@
-import fs from 'fs/promises';
-import path from 'path';
-import { AUDIO_EXTENSIONS } from '../../constants';
+import { walkAudioDir } from '../../fileUtils';
 import { JobDefinition, LibraryFileList } from '../types';
 
 type LibraryScanParams = {
@@ -17,41 +15,17 @@ export const libraryScanJob: JobDefinition<LibraryScanParams, LibraryFileList> =
 
     ctx.progress({ phase: 'discovering', current: 0, total: 0, message: 'Discovering audio files...' });
 
-    const files: string[] = [];
-    const stack = [libraryRoot];
-
-    while (stack.length > 0) {
-      if (ctx.signal.aborted) throw new Error('Cancelled');
-
-      const dir = stack.pop()!;
-      let entries: import('fs').Dirent[];
-      try {
-        entries = await fs.readdir(dir, { withFileTypes: true });
-      } catch {
-        // Skip unreadable directories
-        continue;
-      }
-
-      for (const entry of entries) {
-        const fullPath = path.join(dir, entry.name);
-        if (entry.isDirectory() && !entry.name.startsWith('.')) {
-          stack.push(fullPath);
-        } else if (entry.isFile() && !entry.name.startsWith('.')) {
-          const ext = path.extname(entry.name).toLowerCase();
-          if (AUDIO_EXTENSIONS.has(ext)) {
-            files.push(fullPath);
-            if (files.length % 100 === 0) {
-              ctx.progress({
-                phase: 'discovering',
-                current: files.length,
-                total: 0,
-                message: `Found ${files.length} audio files...`
-              });
-            }
-          }
-        }
-      }
-    }
+    // The shared walker resolves DT_UNKNOWN dirents (exFAT/network mounts),
+    // skips this app's temp files, and stops when the job is cancelled.
+    const files = await walkAudioDir(libraryRoot, {
+      signal: ctx.signal,
+      onProgress: (count) => ctx.progress({
+        phase: 'discovering',
+        current: count,
+        total: 0,
+        message: `Found ${count} audio files...`
+      })
+    });
 
     ctx.progress({
       phase: 'complete',

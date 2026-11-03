@@ -1,16 +1,21 @@
 /**
- * Qobuz cart integration:
- * - Batch search missing tracks on Qobuz with fuzzy match scoring
- * - Playwright automation to add tracks to Qobuz shopping cart
+ * Batch store search for the Sources and Upgrades tabs: Qobuz and Beatport
+ * side by side, one winning store per track.
+ *
+ * Qobuz search answers with releases, so a winning Qobuz hit is pinned to the
+ * one track on that release that is the record asked for, and to its best
+ * positively-lossless tier, before it's trusted. Cart adds happen in
+ * storePurchase.ts from the user's own signed-in session.
  */
 
-import type { Browser } from 'playwright';
-import { searchQobuzTracks, QobuzTrack } from './qobuz';
+import { searchQobuzTracks, getQobuzReleaseTracks, getQobuzLosslessTier, QobuzTrack } from './qobuz';
 import { searchBeatportTracks, BeatportTrack } from './beatport';
-import { normalizeForComparison } from './stringUtils';
 import { createScopedLogger } from './logger';
 import { getErrorMessage } from './errorUtils';
-import { storeScoreParts, STORE_MATCH_FLOOR } from './storeMatching';
+import {
+  storeScoreParts, chooseStore, pickReleaseTrack, STORE_MATCH_FLOOR,
+  type StoreScoreParts, type StoreCandidate,
+} from './storeMatching';
 
 const log = createScopedLogger('QobuzCart');
 
@@ -61,26 +66,12 @@ export type QobuzCartMatch = {
   /** Fuzzy score of the best library match (0..1). Only set when
    *  libraryStatus is 'confirmed' or 'probable'. */
   libraryMatchConfidence?: number;
-};
-
-export type CartTrack = {
-  id: string;
-  url: string;
-  name: string;
-  artists: string[];
-};
-
-export type CartAddProgress = {
-  current: number;
-  total: number;
-  currentTrack: string;
-  phase: 'launching' | 'logging_in' | 'adding' | 'complete' | 'error';
-  message: string;
-};
-
-export type CartResult = {
-  added: string[];
-  failed: Array<{ id: string; error: string }>;
+  /** A Qobuz match that is still a whole release: search couldn't pin it to
+   *  the requested track or read that track's tiers. Offered, never
+   *  pre-selected; the cart add resolves it again or fails with a reason. */
+  albumLevel?: boolean;
+  /** Why a match needs a second look (release not resolved, lossy-only tier). */
+  note?: string;
 };
 
 // ========== Batch Search ==========
@@ -93,6 +84,53 @@ function parseQualityScore(quality: string | null): number {
   const match = quality.match(/(\d+)\s*(?:bit)?\s*\/\s*([\d.]+)\s*(?:khz)?/i);
   if (!match) return 0;
   return Number(match[1]) * Number(match[2]);
+}
+
+type QobuzResolution = {
+  track: QobuzTrack;
+  parts?: StoreScoreParts;
+  lossless: boolean;
+  note?: string;
+};
+
+/** Pin a Qobuz release hit to the requested track and its best lossless tier.
+ *  When that can't be done the hit comes back unchanged (still release-level)
+ *  with a note saying why. */
+async function resolveQobuzHit(hit: QobuzTrack, want: QobuzCartTrackInput): Promise<QobuzResolution> {
+  const albumGuess = Boolean(hit.quality);
+  let pick: ReturnType<typeof pickReleaseTrack<{ id: string; title: string; artist: string }>>;
+  try {
+    pick = pickReleaseTrack(want, await getQobuzReleaseTracks(hit.albumId, hit.url), hit.artists);
+  } catch (err) {
+    log.warn('Qobuz release lookup failed for', hit.url, err);
+    return { track: hit, lossless: albumGuess, note: `Couldn't read the Qobuz release: ${getErrorMessage(err)}` };
+  }
+  if (!pick) {
+    return { track: hit, lossless: albumGuess, note: `Couldn't find "${want.title}" on the Qobuz release "${hit.album}" — check it before buying` };
+  }
+
+  let tier: Awaited<ReturnType<typeof getQobuzLosslessTier>>;
+  try {
+    tier = await getQobuzLosslessTier(pick.track.id);
+  } catch (err) {
+    log.warn('Qobuz quality options unreadable for track', pick.track.id, err);
+    return { track: hit, lossless: albumGuess, note: `Couldn't read Qobuz's quality options: ${getErrorMessage(err)}` };
+  }
+
+  const asTrack: QobuzTrack = {
+    ...hit,
+    id: pick.track.id,
+    name: pick.track.title,
+    artists: pick.track.artist ? [pick.track.artist] : hit.artists,
+    trackResolved: true,
+    price: tier?.price ?? hit.price,
+    quality: tier ? (tier.kind === 'hires' ? (hit.quality ?? 'Hi-Res') : '16/44.1') : 'lossy only',
+    cartLink: tier?.cartLink,
+    articleId: tier?.articleId,
+  };
+  return tier
+    ? { track: asTrack, parts: pick.parts, lossless: true }
+    : { track: asTrack, parts: pick.parts, lossless: false, note: 'Qobuz sells this track only in a lossy format' };
 }
 
 export async function batchSearchQobuz(
@@ -112,21 +150,26 @@ export async function batchSearchQobuz(
 
       // Query Qobuz and Beatport in parallel — we need to compare both to avoid
       // locking in a mediocre Qobuz match when Beatport has a better one (common
-      // for EDM releases Beatport carries but Qobuz doesn't).
+      // for EDM releases Beatport carries but Qobuz doesn't). One store failing
+      // doesn't stop the other, but it's remembered: with no match, a store we
+      // couldn't search may well carry the track, so that's an error, not a miss.
+      const storeErrors: string[] = [];
       const [qobuzTracks, beatportTracks] = await Promise.all([
         searchQobuzTracks(query).catch(err => {
           log.warn('Qobuz search failed for', label, err);
+          storeErrors.push(`Qobuz search failed: ${getErrorMessage(err)}`);
           return [] as QobuzTrack[];
         }),
         searchBeatportTracks(query).catch(err => {
           log.warn('Beatport search failed for', label, err);
+          storeErrors.push(`Beatport search failed: ${getErrorMessage(err)}`);
           return [] as BeatportTrack[];
         }),
       ]);
 
       let bestQobuzMatch: QobuzTrack | null = null;
       let bestQobuzScore = 0;
-      let bestQobuzParts: ReturnType<typeof storeScoreParts> | null = null;
+      let bestQobuzParts: StoreScoreParts | null = null;
       for (const qt of qobuzTracks) {
         const parts = storeScoreParts(track, qt.artists, qt.name);
         const score = parts.score;
@@ -140,7 +183,7 @@ export async function batchSearchQobuz(
 
       let bestBeatportMatch: BeatportTrack | null = null;
       let bestBeatportScore = 0;
-      let bestBeatportParts: ReturnType<typeof storeScoreParts> | null = null;
+      let bestBeatportParts: StoreScoreParts | null = null;
       for (const bt of beatportTracks) {
         const parts = storeScoreParts(track, bt.artists, bt.name);
         if (parts.score > bestBeatportScore) {
@@ -150,21 +193,29 @@ export async function batchSearchQobuz(
         }
       }
 
-      // Take whichever source has the strictly higher confidence match. We
-      // always search both stores (above) so that an imperfect hit on one
-      // source can't lock out a better hit on the other — e.g. a 100% Qobuz
-      // match must never be overridden by a lower Beatport score. Beatport
-      // only wins an exact tie (both stores lossless; Beatport's WAV is
-      // RX3-compatible without conversion, so it's the better default when
-      // confidence is genuinely equal).
-      const qobuzOk = bestQobuzMatch && bestQobuzScore >= STORE_MATCH_FLOOR;
-      const beatportOk = bestBeatportMatch && bestBeatportScore >= STORE_MATCH_FLOOR;
-      const preferBeatport =
-        beatportOk && (!qobuzOk || bestBeatportScore >= bestQobuzScore);
-      const preferQobuz =
-        qobuzOk && !preferBeatport;
+      // Beatport sells WAV/AIFF/FLAC on every purchasable track. Qobuz's search
+      // payload carries bitDepth/samplingRate only for lossless editions — a
+      // release-level guess until the track's own tier is read below.
+      const beatportCand: StoreCandidate | null = bestBeatportMatch ? { score: bestBeatportScore, lossless: true } : null;
+      let qobuzCand: StoreCandidate | null = bestQobuzMatch
+        ? { score: bestQobuzScore, lossless: Boolean(bestQobuzMatch.quality) }
+        : null;
+      let store = chooseStore(qobuzCand, beatportCand);
 
-      if (preferQobuz) {
+      let qobuzNote: string | undefined;
+      if (store === 'qobuz' && bestQobuzMatch) {
+        const r = await resolveQobuzHit(bestQobuzMatch, track);
+        bestQobuzMatch = r.track;
+        if (r.parts) { bestQobuzParts = r.parts; bestQobuzScore = r.parts.score; }
+        qobuzNote = r.note;
+        qobuzCand = { score: bestQobuzScore, lossless: r.lossless };
+        // A release that couldn't be pinned to the track loses to any
+        // acceptable Beatport match — that one already is a track.
+        const beatportOk = !!beatportCand && beatportCand.score >= STORE_MATCH_FLOOR;
+        store = chooseStore(!r.track.trackResolved && beatportOk ? null : qobuzCand, beatportCand);
+      }
+
+      if (store === 'qobuz' && bestQobuzMatch) {
         results.push({
           trackInput: track,
           qobuzTrack: bestQobuzMatch,
@@ -172,12 +223,12 @@ export async function batchSearchQobuz(
           confidence: bestQobuzScore,
           scoreParts: bestQobuzParts ?? undefined,
           source: 'qobuz',
-          // Qobuz exposes `quality` (bitDepth/samplingRate) only for lossless
-          // releases; null quality means we can't confirm lossless → flag it.
-          lossless: Boolean(bestQobuzMatch!.quality),
-          status: 'matched'
+          lossless: qobuzCand?.lossless ?? false,
+          status: 'matched',
+          albumLevel: !bestQobuzMatch.trackResolved,
+          note: qobuzNote,
         });
-      } else if (preferBeatport) {
+      } else if (store === 'beatport' && bestBeatportMatch) {
         results.push({
           trackInput: track,
           qobuzTrack: null,
@@ -185,9 +236,6 @@ export async function batchSearchQobuz(
           confidence: bestBeatportScore,
           scoreParts: bestBeatportParts ?? undefined,
           source: 'beatport',
-          // Beatport's catalog is primarily WAV; treat matches as lossless by
-          // default. When per-track format data becomes available we should
-          // verify instead of trust.
           lossless: true,
           status: 'matched'
         });
@@ -199,7 +247,8 @@ export async function batchSearchQobuz(
           confidence: Math.max(bestQobuzScore, bestBeatportScore),
           source: null,
           lossless: false,
-          status: 'no_match'
+          status: storeErrors.length > 0 ? 'error' : 'no_match',
+          error: storeErrors.length > 0 ? storeErrors.join('; ') : undefined,
         });
       }
     } catch (err) {
@@ -228,154 +277,4 @@ export async function batchSearchQobuz(
   }
 
   return results;
-}
-
-// ========== Playwright Cart Automation ==========
-
-let activeBrowser: Browser | null = null;
-
-/** Dismiss the Qobuz CMP cookie-consent modal if it appears. Best-effort — the
- *  modal blocks clicks on the page beneath, so we must click it before doing
- *  anything else. The exact markup varies between Didomi and a custom overlay,
- *  so we try several selectors and fall back to matching button text. */
-async function dismissQobuzConsent(page: import('playwright').Page): Promise<void> {
-  const selectors = [
-    '#didomi-notice-agree-button',
-    'button#didomi-notice-agree-button',
-    'button:has-text("Agree and close")',
-    'button:has-text("Accept all")',
-    'button:has-text("I agree")',
-  ];
-  for (const sel of selectors) {
-    try {
-      const btn = page.locator(sel).first();
-      if (await btn.isVisible({ timeout: 1500 })) {
-        await btn.click({ timeout: 2000 });
-        await page.waitForTimeout(500);
-        return;
-      }
-    } catch { /* try next selector */ }
-  }
-}
-
-export async function addTracksToQobuzCart(
-  tracks: CartTrack[],
-  onProgress?: (progress: CartAddProgress) => void
-): Promise<CartResult> {
-  // Close any previously leaked browser before launching a new one
-  if (activeBrowser) {
-    try { await activeBrowser.close(); } catch { /* already closed */ }
-    activeBrowser = null;
-  }
-
-  const added: string[] = [];
-  const failed: Array<{ id: string; error: string }> = [];
-
-  onProgress?.({
-    current: 0, total: tracks.length,
-    currentTrack: '', phase: 'launching',
-    message: 'Launching browser...'
-  });
-
-  const { chromium } = await import('playwright');
-  const browser = await chromium.launch({
-    headless: false,
-    args: ['--disable-blink-features=AutomationControlled']
-  });
-  activeBrowser = browser;
-
-  try {
-    const context = await browser.newContext({
-      userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-    });
-    const page = await context.newPage();
-
-    onProgress?.({
-      current: 0, total: tracks.length,
-      currentTrack: '', phase: 'logging_in',
-      message: 'Please log in to Qobuz in the browser window...'
-    });
-
-    // /us-en/login 404s; /signin is the canonical Qobuz sign-in URL.
-    await page.goto('https://www.qobuz.com/signin', { waitUntil: 'domcontentloaded' });
-    await dismissQobuzConsent(page);
-
-    // Wait for user to log in (up to 5 minutes). The sign-in page redirects to
-    // an account area on success; the canonical signal is losing the /signin
-    // (or legacy /login) segment.
-    await page.waitForFunction(() => {
-      const p = window.location.pathname;
-      return !p.includes('/signin') && !p.includes('/login');
-    }, { timeout: 300000 });
-
-    // Add each track to cart
-    for (let i = 0; i < tracks.length; i++) {
-      const track = tracks[i];
-      const trackLabel = `${track.artists.join(', ')} - ${track.name}`;
-
-      onProgress?.({
-        current: i + 1, total: tracks.length,
-        currentTrack: trackLabel, phase: 'adding',
-        message: `Adding to cart: ${trackLabel}`
-      });
-
-      try {
-        await page.goto(track.url, { waitUntil: 'domcontentloaded', timeout: 15000 });
-        await dismissQobuzConsent(page);
-        await page.waitForTimeout(1000);
-
-        // Look for "Add to cart" / "Buy" button
-        const addButton = page.locator(
-          'button:has-text("Add to cart"), ' +
-          'button:has-text("Buy"), ' +
-          '[data-testid="add-to-cart"], ' +
-          '.purchasable-track button'
-        ).first();
-
-        if (await addButton.isVisible({ timeout: 5000 })) {
-          await addButton.click();
-          await page.waitForTimeout(1500);
-          added.push(track.id);
-        } else {
-          failed.push({ id: track.id, error: 'Add to cart button not found' });
-        }
-      } catch (err) {
-        log.error('Failed to add track to cart:', track.id, err);
-        failed.push({
-          id: track.id,
-          error: getErrorMessage(err, 'Failed to add to cart')
-        });
-      }
-    }
-
-    onProgress?.({
-      current: tracks.length, total: tracks.length,
-      currentTrack: '', phase: 'complete',
-      message: `Done: ${added.length} added, ${failed.length} failed`
-    });
-  } catch (err) {
-    log.error('Browser automation failed:', err);
-    onProgress?.({
-      current: 0, total: tracks.length,
-      currentTrack: '', phase: 'error',
-      message: getErrorMessage(err, 'Browser automation failed')
-    });
-  } finally {
-    // Ensure browser is always cleaned up
-    try { await browser.close(); } catch { /* already closed */ }
-    activeBrowser = null;
-  }
-
-  return { added, failed };
-}
-
-export async function closeQobuzBrowser(): Promise<void> {
-  if (activeBrowser) {
-    await activeBrowser.close();
-    activeBrowser = null;
-  }
-}
-
-export function isQobuzBrowserOpen(): boolean {
-  return activeBrowser !== null && activeBrowser.isConnected();
 }

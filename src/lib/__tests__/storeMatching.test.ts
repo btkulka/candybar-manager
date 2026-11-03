@@ -9,6 +9,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   storeScore, storeScoreParts, extendedMixBoost, reworkMismatchPenalty, ownedVersionSatisfies,
+  chooseStore, bestOwnedMatch, withVersion, classifyQobuzTier, pickQobuzLosslessTier,
   STORE_MATCH_FLOOR,
 } from '../storeMatching';
 
@@ -47,9 +48,56 @@ describe('version discipline', () => {
       .toBeGreaterThan(storeScore(t, ['Adam Beyer'], 'Your Mind Remixes (Extended Mix)'));
   });
 
+  it('catches a sped-up or slowed edit of the owned track', () => {
+    // Live Qobuz 2026-11-02: an MP3 of "This Feeling [Explicit]" scored the
+    // "(Sped Up)" single at 85%, past the auto-select bar.
+    const t = track('my!lane', 'This Feeling [Explicit]');
+    expect(reworkMismatchPenalty(t.title, 'This Feeling  (Sped Up)')).toBeGreaterThan(0);
+    expect(reworkMismatchPenalty(t.title, 'This Feeling (Slowed + Reverb)')).toBeGreaterThan(0);
+    expect(storeScore(t, ['my!lane'], 'This Feeling')).toBeGreaterThan(storeScore(t, ['my!lane'], 'This Feeling  (Sped Up)'));
+    expect(storeScore(t, ['my!lane'], 'This Feeling  (Sped Up)')).toBeLessThan(0.75);
+    expect(reworkMismatchPenalty('This Feeling (Sped Up)', 'This Feeling (Sped Up)')).toBe(0);
+  });
+
+  it('penalizes the original when a rework was asked for', () => {
+    // Live Qobuz 2026-11-02: a SoundCloud bootleg matched the original album at 100%.
+    expect(reworkMismatchPenalty('Thriller (Moonlght Remix)', 'Thriller 25 Super Deluxe Edition')).toBeGreaterThan(0);
+    expect(reworkMismatchPenalty('Reconnect - Moore Kismet Remix', 'Reconnect')).toBeGreaterThan(0);
+    // A radio/extended request may still be served by the base single.
+    expect(reworkMismatchPenalty('Delilah (Radio Edit)', 'Delilah')).toBe(0);
+    expect(reworkMismatchPenalty('Delilah (Extended Mix)', 'Delilah')).toBe(0);
+  });
+
+  it('does not serve a named mix, edit or dub request with the bare original', () => {
+    // A remix request used to tie the original at 100%, and Qobuz (which
+    // searches albums) then preferred the single over the remix EP.
+    expect(reworkMismatchPenalty('Your Mind (Charles D Epic Mix)', 'Your Mind')).toBeGreaterThan(0);
+    expect(reworkMismatchPenalty('Your Mind (Dom Dolla Edit)', 'Your Mind')).toBeGreaterThan(0);
+    expect(reworkMismatchPenalty('Your Mind - Dom Dolla Edit', 'Your Mind (Original Mix)')).toBeGreaterThan(0);
+    expect(reworkMismatchPenalty('Your Mind (Dub)', 'Your Mind')).toBeGreaterThan(0);
+    expect(storeScore(track('Adam Beyer', 'Your Mind (HNTR Remix)'), ['Adam Beyer'], 'Your Mind (HNTR Remix)'))
+      .toBeGreaterThan(storeScore(track('Adam Beyer', 'Your Mind (HNTR Remix)'), ['Adam Beyer'], 'Your Mind'));
+  });
+
+  it('treats a live take, acapella, acoustic or demo as a different record', () => {
+    for (const tag of ['Live', 'Acapella', 'A Cappella', 'Acoustic', 'Demo', 'Live at Printworks']) {
+      expect(reworkMismatchPenalty('Your Mind', `Your Mind (${tag})`), tag).toBeGreaterThan(0);
+    }
+    expect(reworkMismatchPenalty('Your Mind (Live)', 'Your Mind')).toBeGreaterThan(0);
+    expect(reworkMismatchPenalty('Your Mind - Live', 'Your Mind (Live)')).toBe(0);
+    // In the title body it's just a word.
+    expect(reworkMismatchPenalty('Live Your Life', 'Live Your Life')).toBe(0);
+  });
+
+  it('reads a remaster as the same recording', () => {
+    expect(reworkMismatchPenalty('Glue', 'Glue (2023 Remaster)')).toBe(0);
+    expect(reworkMismatchPenalty('Glue (Remastered)', 'Glue')).toBe(0);
+  });
+
   it('does not penalize a version the user asked for', () => {
     expect(reworkMismatchPenalty('Reconnect - Moore Kismet Remix', 'Reconnect (Moore Kismet Remix)')).toBe(0);
     expect(reworkMismatchPenalty('Your Mind Remixes', 'Your Mind Remixes')).toBe(0);
+    expect(reworkMismatchPenalty('Innerbloom', 'Innerbloom (Original Mix)')).toBe(0);
   });
 
   it('never awards the extended bonus to a rework', () => {
@@ -102,6 +150,13 @@ describe('parity with the sourcing engine', () => {
       [track('Beyer, Adam', 'Your Mind'), ['Adam Beyer'], 'Your Mind'],
       [track('Bicep', 'Glue'), ['Bicep'], 'Glue'],
       [track('RUFUS DU SOL', 'Innerbloom'), ['RUFUS DU SOL'], 'Innerbloom (Original Mix)'],
+      [track('my!lane', 'This Feeling [Explicit]'), ['my!lane'], 'This Feeling  (Sped Up)'],
+      [track('Michael Jackson', 'Thriller (Moonlght Remix)'), ['Michael Jackson'], 'Thriller 25 Super Deluxe Edition'],
+      [track('Adam Beyer', 'Your Mind (Dom Dolla Edit)'), ['Adam Beyer'], 'Your Mind'],
+      [track('Adam Beyer', 'Your Mind'), ['Adam Beyer'], 'Your Mind (Live at Printworks)'],
+      [track('Adam Beyer', 'Your Mind'), ['Adam Beyer'], 'Your Mind (A Cappella)'],
+      [track('Bicep', 'Glue'), ['Bicep'], 'Glue (2023 Remaster)'],
+      [track('Fred again..', 'Delilah (Radio Edit)'), ['Fred again..'], 'Delilah'],
     ];
 
     for (const [t, artists, title] of cases) {
@@ -138,5 +193,86 @@ describe('ownedVersionSatisfies', () => {
 
   it('treats "(Original Mix)" as the base version', () => {
     expect(ownedVersionSatisfies('Innerbloom', 'Innerbloom (Original Mix)')).toBe(true);
+  });
+
+  it('owning a live take does not mean owning the studio record', () => {
+    expect(ownedVersionSatisfies('Innerbloom', 'Innerbloom (Live)')).toBe(false);
+  });
+});
+
+describe('chooseStore', () => {
+  const c = (score: number, lossless = true) => ({ score, lossless });
+
+  it('never lets a lossy hit push out a lossless one', () => {
+    expect(chooseStore(c(0.95, false), c(0.80))).toBe('beatport');
+    expect(chooseStore(c(0.80), c(0.95, false))).toBe('qobuz');
+  });
+
+  it('returns a lossy hit only when nothing lossless clears the floor', () => {
+    expect(chooseStore(c(0.95, false), c(0.40))).toBe('qobuz');
+    expect(chooseStore(c(0.95, false), null)).toBe('qobuz');
+  });
+
+  it('takes the higher score, with Beatport on exact ties', () => {
+    expect(chooseStore(c(1), c(0.9))).toBe('qobuz');
+    expect(chooseStore(c(0.9), c(0.9))).toBe('beatport');
+    expect(chooseStore(c(0.4), c(0.3))).toBeNull();
+  });
+});
+
+describe('bestOwnedMatch', () => {
+  const owned = (artist: string, title: string, id: string) => ({ artist, title, id });
+
+  it('rejects a different song by the same artist', () => {
+    expect(bestOwnedMatch(track('Mau P', 'Gimme That Bounce'), [owned('Mau P', 'Gimme Some', 'a')])).toBeNull();
+  });
+
+  it('rejects the same title by an artist who only shares a word', () => {
+    expect(bestOwnedMatch(track('The Martinez Brothers', 'Home'), [owned('The Chemical Brothers', 'Home', 'a')])).toBeNull();
+    expect(bestOwnedMatch(track('DJ Snake', 'Turn Down'), [owned('DJ Koze', 'Turn Down', 'a')])).toBeNull();
+  });
+
+  it('takes the best purchase, not the first one past the bar', () => {
+    const list = [owned('Mau P', 'Gimme Dat Bounce', 'a'), owned('Mau P', 'Gimme That Bounce', 'b')];
+    expect(bestOwnedMatch(track('Mau P', 'Gimme That Bounce'), list)?.id).toBe('b');
+  });
+
+  it('accepts credit-list differences and still respects versions', () => {
+    expect(bestOwnedMatch(track('Disclosure', 'Latch'), [owned('Disclosure, Sam Smith', 'Latch', 'a')])?.id).toBe('a');
+    expect(bestOwnedMatch(track('Adam Beyer', 'Your Mind'), [owned('Adam Beyer', 'Your Mind (HNTR Remix)', 'a')])).toBeNull();
+  });
+
+  it('reads a Qobuz version back onto the title', () => {
+    expect(withVersion('Your Mind', 'HNTR Remix')).toBe('Your Mind (HNTR Remix)');
+    expect(withVersion('Your Mind (HNTR Remix)', 'HNTR Remix')).toBe('Your Mind (HNTR Remix)');
+    expect(withVersion('Your Mind', null)).toBe('Your Mind');
+  });
+});
+
+describe('Qobuz quality tiers', () => {
+  it('only counts positively lossless tiers', () => {
+    expect(classifyQobuzTier('Hi-Res 24-Bit 96 kHz')).toBe('hires');
+    expect(classifyQobuzTier('CD Quality 16-Bit 44.1 kHz')).toBe('cd');
+    expect(classifyQobuzTier('MP3 320 kbps')).toBe('lossy');
+    expect(classifyQobuzTier('Standard')).toBe('unknown');
+    expect(classifyQobuzTier('')).toBe('unknown');
+  });
+
+  it('never falls back to an MP3 or an unlabeled option', () => {
+    const opts = [
+      { text: 'MP3 320 kbps', cartLink: '/add?articleId=1' },
+      { text: 'Download', cartLink: '/add?articleId=2' },
+    ];
+    expect(pickQobuzLosslessTier(opts)).toBeNull();
+  });
+
+  it('prefers hi-res, or CD when asked', () => {
+    const opts = [
+      { text: 'MP3 320 kbps', cartLink: '/a?articleId=1' },
+      { text: 'CD Quality 16-Bit', cartLink: '/a?articleId=2' },
+      { text: 'Hi-Res 24-Bit 192 kHz', cartLink: '/a?articleId=3' },
+    ];
+    expect(pickQobuzLosslessTier(opts)?.cartLink).toBe('/a?articleId=3');
+    expect(pickQobuzLosslessTier(opts, 'cd')?.cartLink).toBe('/a?articleId=2');
   });
 });

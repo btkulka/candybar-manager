@@ -6,10 +6,12 @@ import NodeID3 from 'node-id3';
 import { checkTrackHealth } from './trackHealthCheck';
 import { AUDIO_EXTENSIONS, METADATA_CONCURRENCY } from './constants';
 import { createScopedLogger } from './logger';
-import { safeMove } from './fileUtils';
+import { safeMove, walkAudioDir, isTransientAudioName } from './fileUtils';
 import { recordWrite, statBytes } from './writeJournal';
 import { safeDelete } from './safeDelete';
 import { readDjTags } from './djTags';
+import { updateDownloadedTrackPath } from './db';
+import { invalidateLibraryFileLists } from './jobQueue/sharedResultStore';
 import type { TrackHealth, TrackInfo, UpdateTagsParams, ScanProgress } from '../types';
 export type { TrackHealth, TrackInfo, UpdateTagsParams, ScanProgress };
 
@@ -26,26 +28,50 @@ function extractAlbumArt(metadata: IAudioMetadata): string | null {
   return `data:${picture.format};base64,${base64}`;
 }
 
-async function collectAudioFiles(dir: string): Promise<string[]> {
-  const files: string[] = [];
-  const entries = await fs.readdir(dir, { withFileTypes: true });
+/** Finder/Windows clutter that is safe to unlink outright. Nothing else in the
+ *  intake folder is ever deleted by a scan — zips, partial downloads, PDFs and
+ *  formats we don't index all stay exactly where the user put them. */
+function isJunkFile(name: string): boolean {
+  return name === '.DS_Store' || name.startsWith('._') || name === 'Thumbs.db' || name === 'desktop.ini' || name === 'Icon\r';
+}
+
+/** Intake subfolders a scan must never flatten or clean (restore staging, etc.). */
+const PROTECTED_INTAKE_DIRS = new Set(['restore_recovered']);
+
+/** Delete junk files and then any directory left empty, bottom-up. Returns how many items went. */
+async function removeJunkAndEmptyDirs(dir: string): Promise<number> {
+  let removed = 0;
+  let entries;
+  try {
+    entries = await fs.readdir(dir, { withFileTypes: true });
+  } catch {
+    return 0;
+  }
   for (const entry of entries) {
     const fullPath = path.join(dir, entry.name);
     if (entry.isDirectory()) {
-      files.push(...await collectAudioFiles(fullPath));
-    } else if (entry.isFile() && !entry.name.startsWith('.')) {
-      const ext = path.extname(entry.name).toLowerCase();
-      if (AUDIO_EXTENSIONS.has(ext)) {
-        files.push(fullPath);
-      }
+      removed += await removeJunkAndEmptyDirs(fullPath);
+    } else if (isJunkFile(entry.name)) {
+      await safeDelete(fullPath, { context: 'scan-flatten:junk', permanent: true }).then(() => { removed++; }, () => {});
     }
   }
-  return files;
+  const left = await fs.readdir(dir).catch(() => ['?']);
+  if (left.length === 0) {
+    try {
+      await fs.rmdir(dir);
+      recordWrite({ op: 'delete', src: dir, context: 'scan-flatten:empty-dir', outcome: 'ok', detail: { emptyDir: true } });
+      removed++;
+    } catch (err) {
+      recordWrite({ op: 'delete', src: dir, context: 'scan-flatten:empty-dir', outcome: 'error', error: err instanceof Error ? err.message : String(err), detail: { emptyDir: true } });
+    }
+  }
+  return removed;
 }
 
-async function flattenAndClean(sourceDir: string): Promise<{ flattened: number; removed: number }> {
+async function flattenAndClean(sourceDir: string, protectedDirs: string[] = []): Promise<{ flattened: number; removed: number }> {
   let flattened = 0;
   let removed = 0;
+  const protectedPaths = new Set(protectedDirs.map(d => path.resolve(d)));
 
   const entries = await fs.readdir(sourceDir, { withFileTypes: true });
 
@@ -53,8 +79,10 @@ async function flattenAndClean(sourceDir: string): Promise<{ flattened: number; 
     const fullPath = path.join(sourceDir, entry.name);
 
     if (entry.isDirectory()) {
-      // Recursively collect audio files from subdirectory
-      const audioFiles = await collectAudioFiles(fullPath);
+      if (entry.name.startsWith('.') || PROTECTED_INTAKE_DIRS.has(entry.name) || protectedPaths.has(path.resolve(fullPath))) continue;
+      // Pull audio files up to the root. walkAudioDir skips hidden files and this
+      // app's in-flight temp files, and resolves DT_UNKNOWN entries on exFAT.
+      const audioFiles = await walkAudioDir(fullPath, { skipHidden: true });
       for (const audioFile of audioFiles) {
         const fileName = path.basename(audioFile);
         let destName = fileName;
@@ -80,16 +108,10 @@ async function flattenAndClean(sourceDir: string): Promise<{ flattened: number; 
         flattened++;
       }
 
-      // Trash the residual (post-extraction) subdirectory tree rather than a
-      // permanent recursive rm, so any unsupported/ancillary files are recoverable.
-      await safeDelete(fullPath, { context: 'scan-flatten', recursive: true, detail: { recursive: true } });
-      removed++;
-    } else if (entry.isFile()) {
-      const ext = path.extname(entry.name).toLowerCase();
-      if (!AUDIO_EXTENSIONS.has(ext) || entry.name.startsWith('.')) {
-        await safeDelete(fullPath, { context: 'scan-flatten' });
-        removed++;
-      }
+      // Only clutter and folders left empty go; anything else stays for the user.
+      removed += await removeJunkAndEmptyDirs(fullPath);
+    } else if (entry.isFile() && isJunkFile(entry.name)) {
+      await safeDelete(fullPath, { context: 'scan-flatten:junk', permanent: true }).then(() => { removed++; }, () => {});
     }
   }
 
@@ -98,7 +120,8 @@ async function flattenAndClean(sourceDir: string): Promise<{ flattened: number; 
 
 export async function scanTracks(
   sourceDir: string,
-  onProgress?: (payload: ScanProgress) => void
+  onProgress?: (payload: ScanProgress) => void,
+  options: { protectedDirs?: string[] } = {}
 ): Promise<TrackInfo[]> {
   const sourceStat = await fs.stat(sourceDir);
   if (!sourceStat.isDirectory()) {
@@ -107,16 +130,26 @@ export async function scanTracks(
 
   onProgress?.({ phase: 'flattening', current: 0, total: 0 });
 
-  // Flatten subdirectories: move all audio files to root, remove everything else
-  const { flattened, removed } = await flattenAndClean(sourceDir);
+  // Flatten subdirectories: move audio files to the root and tidy away only
+  // Finder junk and folders left empty. `protectedDirs` (e.g. the configured
+  // restore staging dir) are never touched.
+  const { flattened, removed } = await flattenAndClean(sourceDir, options.protectedDirs);
   if (flattened > 0 || removed > 0) {
-    log.info(`Flattened ${flattened} audio files, removed ${removed} non-audio items from source`);
+    log.info(`Flattened ${flattened} audio files, removed ${removed} junk files / empty folders from source`);
   }
 
   const entries = await fs.readdir(sourceDir, { withFileTypes: true });
-  const audioEntries = entries.filter(
-    (e) => e.isFile() && !e.name.startsWith('.') && AUDIO_EXTENSIONS.has(path.extname(e.name).toLowerCase())
-  );
+  const audioEntries: typeof entries = [];
+  for (const e of entries) {
+    if (e.name.startsWith('.') || isTransientAudioName(e.name)) continue;
+    if (!AUDIO_EXTENSIONS.has(path.extname(e.name).toLowerCase())) continue;
+    let isFile = e.isFile();
+    // DT_UNKNOWN dirents (some exFAT mounts) report neither file nor dir.
+    if (!isFile && !e.isDirectory() && !e.isSymbolicLink()) {
+      isFile = await fs.stat(path.join(sourceDir, e.name)).then(s => s.isFile(), () => false);
+    }
+    if (isFile) audioEntries.push(e);
+  }
   const tracks: TrackInfo[] = [];
 
   onProgress?.({ phase: 'scanning', current: 0, total: audioEntries.length });
@@ -217,13 +250,23 @@ export async function updateTags(params: UpdateTagsParams): Promise<TrackInfo> {
   const fileExt = path.extname(filePath).toLowerCase();
   let finalPath = filePath;
   const preWriteBytes = await statBytes(filePath);
+  // Field names only — values (esp. base64 album art) would bloat the journal.
+  const fields = Object.keys(params).filter((k) => k !== 'filePath' && params[k as keyof UpdateTagsParams] !== undefined);
 
-  if (fileExt === '.mp3') {
-    updateTagsNodeID3(params);
-  } else if (['.wav', '.aiff', '.aif', '.flac', '.m4a'].includes(fileExt)) {
-    finalPath = await updateTagsFfmpeg(params);
-  } else {
-    throw new Error(`Tag writing is not supported for ${fileExt} files`);
+  try {
+    if (fileExt === '.mp3') {
+      updateTagsNodeID3(params);
+    } else if (['.wav', '.aiff', '.aif', '.flac', '.m4a'].includes(fileExt)) {
+      finalPath = await updateTagsFfmpeg(params);
+    } else {
+      throw new Error(`Tag writing is not supported for ${fileExt} files`);
+    }
+  } catch (err) {
+    recordWrite({
+      op: 'tag-write', src: filePath, bytes: preWriteBytes, outcome: 'error',
+      error: err instanceof Error ? err.message : String(err), detail: { fields },
+    });
+    throw err;
   }
 
   recordWrite({
@@ -232,9 +275,13 @@ export async function updateTags(params: UpdateTagsParams): Promise<TrackInfo> {
     dest: finalPath !== filePath ? finalPath : undefined,
     bytes: preWriteBytes,
     outcome: 'ok',
-    // Field names only — values (esp. base64 album art) would bloat the journal.
-    detail: { fields: Object.keys(params).filter((k) => k !== 'filePath' && params[k as keyof UpdateTagsParams] !== undefined) },
+    detail: { fields },
   });
+  if (finalPath !== filePath) {
+    // WAV/FLAC became AIFF: keep any download record pointing at the real file.
+    updateDownloadedTrackPath(filePath, finalPath);
+    invalidateLibraryFileLists();
+  }
 
   const ext = path.extname(finalPath).toLowerCase();
   const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;

@@ -1,4 +1,4 @@
-import { escapeHtml, showToast, getErrorMessage } from './shared';
+import { escapeHtml, showToast, getErrorMessage, requestOpenSettings } from './shared';
 
 // ========== Types ==========
 
@@ -10,6 +10,8 @@ type Totals = {
   missing: number;
   recovered: number;
   stillMissing: number;
+  /** Missing on disk but left out on purpose: tracks Ben deleted. Not missing, not failed. */
+  deletedSkipped?: number;
 };
 
 type PerAccountCounter = {
@@ -54,10 +56,17 @@ type TrackResult = {
   failureCategory?: 'no_match' | 'login' | 'download' | 'copy' | 'rewrite' | 'other';
 };
 
+/** A track the restore leaves out on purpose (Ben deleted it). */
+type SkippedTrack = { trackId: string; artist: string; title: string; reason: string };
+
 type Report = {
   totals: Totals;
   bySource: Record<string, number>;
   results: TrackResult[];
+  // Optional: reports saved before these fields existed don't have them.
+  deletedSkipped?: SkippedTrack[];
+  /** "Couldn't check Qobuz/Beatport account X: …" purchase-history read errors. */
+  storeErrors?: string[];
   xmlRewrite?: { backupPath: string | null; updated: number; notFound: number };
   durationSec: number;
   options: {
@@ -135,7 +144,6 @@ const statusEls: Record<string, HTMLElement | null> = {
   usb: document.getElementById('restore-status-usb'),
   beatport: document.getElementById('restore-status-beatport'),
   qobuz: document.getElementById('restore-status-qobuz'),
-  soundcloud: document.getElementById('restore-status-soundcloud'),
 };
 
 // ========== State ==========
@@ -193,7 +201,8 @@ let accountStatus: AccountStatus = { qobuz: { connected: 0, total: 0 }, beatport
 
 function setStage(next: Stage) {
   currentStage = next;
-  document.querySelectorAll<HTMLElement>('.wiz-stage').forEach(el => {
+  // Scoped: Splice Recovery uses the same .wiz-stage sections.
+  document.querySelectorAll<HTMLElement>('#page-restore .wiz-stage').forEach(el => {
     const active = el.dataset.stage === next;
     el.classList.toggle('is-active', active);
     el.style.display = active ? '' : 'none';
@@ -215,6 +224,20 @@ function stageOrder(s: Stage): number {
 async function pickXml() {
   const res = await window.candybar.restorePickXml();
   if (res.success && res.path && xmlInput) xmlInput.value = res.path;
+  updateReviewButton();
+}
+
+// Review needs a backup to read; the button says why while it's locked.
+function updateReviewButton() {
+  const hasXml = !!xmlInput?.value.trim();
+  if (toReviewBtn) toReviewBtn.disabled = !hasXml;
+  const hint = document.getElementById('restore-xml-hint');
+  if (hint) hint.style.display = hasXml ? 'none' : '';
+}
+
+async function pickLibraryRoot() {
+  const chosen = await window.candybar.selectPath('dir');
+  if (chosen && libRootInput) libRootInput.value = chosen;
 }
 
 async function refreshVolumes() {
@@ -263,19 +286,36 @@ function updateSourceStatuses() {
     statusEls.usb.textContent = n === 0 ? 'No volumes detected' : `${n} volume${n === 1 ? '' : 's'} detected`;
     statusEls.usb.className = `wiz-source-status ${n === 0 ? 'is-warn' : 'is-ok'}`;
   }
-  if (statusEls.beatport) {
-    const { connected, total } = accountStatus.beatport;
-    statusEls.beatport.textContent = total === 0 ? 'No accounts — add in Settings' : `${connected} of ${total} connected`;
-    statusEls.beatport.className = `wiz-source-status ${total === 0 ? 'is-warn' : connected === 0 ? 'is-bad' : connected < total ? 'is-warn' : 'is-ok'}`;
+  updateStoreSource('beatport', srcBeatport);
+  updateStoreSource('qobuz', srcQobuz);
+  // SoundCloud has no status line; its label carries the "experimental, lossy" badge.
+}
+
+// Stores this page switched off because no account was signed in. They come
+// back on once one connects, so a choice the user made themselves is kept.
+const autoDisabledStores = new Set<'beatport' | 'qobuz'>();
+
+function updateStoreSource(service: 'beatport' | 'qobuz', input: HTMLInputElement | null) {
+  const statusEl = statusEls[service];
+  const { connected, total } = accountStatus[service];
+  if (input) {
+    if (connected === 0) {
+      if (!input.disabled && input.checked) autoDisabledStores.add(service);
+      input.checked = false;
+      input.disabled = true;
+    } else if (input.disabled) {
+      input.disabled = false;
+      if (autoDisabledStores.delete(service)) input.checked = true;
+    }
   }
-  if (statusEls.qobuz) {
-    const { connected, total } = accountStatus.qobuz;
-    statusEls.qobuz.textContent = total === 0 ? 'No accounts — add in Settings' : `${connected} of ${total} connected`;
-    statusEls.qobuz.className = `wiz-source-status ${total === 0 ? 'is-warn' : connected === 0 ? 'is-bad' : connected < total ? 'is-warn' : 'is-ok'}`;
-  }
-  if (statusEls.soundcloud) {
-    statusEls.soundcloud.textContent = 'experimental, lossy';
-    statusEls.soundcloud.className = 'wiz-source-status is-warn';
+  if (!statusEl) return;
+  if (connected === 0) {
+    const what = total === 0 ? 'No account' : 'Not signed in';
+    statusEl.innerHTML = `${what} · <button type="button" class="wiz-source-link" data-settings-section="${service}">Connect in Settings</button>`;
+    statusEl.className = 'wiz-source-status is-warn';
+  } else {
+    statusEl.textContent = `${connected} of ${total} connected`;
+    statusEl.className = `wiz-source-status ${connected < total ? 'is-warn' : 'is-ok'}`;
   }
 }
 
@@ -294,7 +334,28 @@ async function goToReview() {
 
   renderPlan();
   renderWarnings();
+  renderLastRunNotes();
   setStage('review');
+}
+
+/** What the last run (same backup) learned that this one will hit again:
+ *  store accounts it couldn't check, and the deleted tracks it leaves out. */
+function renderLastRunNotes() {
+  const xmlPath = xmlInput?.value.trim() || '';
+  const last = currentReport && currentReport.options.xmlPath === xmlPath ? currentReport : null;
+  const errors = last?.storeErrors ?? [];
+  const hint = 'Last time these couldn\'t be read, so tracks bought there may come up missing. Sign in again in Settings first.';
+  renderStoreErrors(document.getElementById('restore-store-errors'), errors, hint);
+  renderStoreErrors(document.getElementById('review-store-errors'), errors, hint);
+
+  const note = document.getElementById('review-deleted-note');
+  if (note) {
+    const n = last ? deletedCount(last) : 0;
+    note.hidden = n === 0;
+    note.textContent = n > 0
+      ? `${n} track${n === 1 ? '' : 's'} you deleted will be left out again. They aren't counted as missing.`
+      : '';
+  }
 }
 
 function renderPlan() {
@@ -581,6 +642,8 @@ async function startRestore() {
 
   running = true;
   if (startBtn) startBtn.disabled = true;
+  // A previous run's Abort leaves the button disabled.
+  if (abortBtn) abortBtn.disabled = false;
   resetRunState();
   setStage('running');
 
@@ -642,8 +705,18 @@ function renderReport(report: Report) {
         <div class="wiz-hero-num">${formatDuration(report.durationSec)}</div>
         <div class="wiz-hero-label">duration</div>
       </div>
+      ${deletedCount(report) > 0 ? `
+      <div class="wiz-hero-stat is-quiet">
+        <div class="wiz-hero-num">${deletedCount(report)}</div>
+        <div class="wiz-hero-label">left out (you deleted)</div>
+      </div>` : ''}
     `;
   }
+
+  renderStoreErrors(document.getElementById('report-store-errors'), report.storeErrors ?? [],
+    'Tracks marked "Couldn\'t check" below may be in those purchases. Sign in again in Settings, then run again.');
+  renderDeletedGroup(report.deletedSkipped ?? []);
+  renderLastRunNotes(); // the Configure stage's store rows show it too
 
   if (reportBySourceEl) {
     const rows = Object.entries(report.bySource);
@@ -683,17 +756,9 @@ function renderReport(report: Report) {
       reportFailureCard.style.display = 'none';
     } else {
       reportFailureCard.style.display = '';
-      const labelOf = (c: string) => ({
-        no_match: 'No match in any enabled source',
-        login: 'Store login failed',
-        download: 'Download failed',
-        copy: 'USB copy failed',
-        rewrite: 'XML rewrite skipped',
-        other: 'Other',
-      }[c] || c);
       reportFailuresEl.innerHTML = entries
         .sort((a, b) => b[1] - a[1])
-        .map(([cat, n]) => `<div class="wiz-breakdown-row"><span class="wiz-breakdown-label">${escapeHtml(labelOf(cat))}</span><span class="wiz-breakdown-value"><b>${n}</b></span></div>`)
+        .map(([cat, n]) => `<div class="wiz-breakdown-row"><span class="wiz-breakdown-label">${escapeHtml(failureLabel(cat))}</span><span class="wiz-breakdown-value"><b>${n}</b></span></div>`)
         .join('');
     }
   }
@@ -714,6 +779,46 @@ function renderReport(report: Report) {
   drawReportRows(report.results);
 }
 
+function failureLabel(c: string): string {
+  return ({
+    no_match: 'No match in any enabled source',
+    login: 'Store sign-in problem, or purchases couldn\'t be checked',
+    download: 'Download failed',
+    copy: 'USB copy failed',
+    rewrite: 'XML rewrite skipped',
+    other: 'Couldn\'t check every source',
+  } as Record<string, string>)[c] || c;
+}
+
+function deletedCount(report: Report): number {
+  return report.totals.deletedSkipped ?? report.deletedSkipped?.length ?? 0;
+}
+
+/** Warning callout for store accounts whose purchase history couldn't be read. */
+function renderStoreErrors(el: HTMLElement | null, errors: string[], hint: string) {
+  if (!el) return;
+  if (errors.length === 0) { el.hidden = true; el.innerHTML = ''; return; }
+  el.hidden = false;
+  el.innerHTML = `
+    <div class="wiz-callout-title">Couldn't check ${errors.length === 1 ? 'one store account' : `${errors.length} store accounts`}</div>
+    <ul class="wiz-callout-list">${errors.map(e => `<li>${escapeHtml(e)}</li>`).join('')}</ul>
+    <p class="wiz-callout-hint">${escapeHtml(hint)}</p>`;
+}
+
+/** Quiet, collapsed list of tracks left out because Ben deleted them. */
+function renderDeletedGroup(skipped: SkippedTrack[]) {
+  const card = document.getElementById('report-deleted-card') as HTMLDetailsElement | null;
+  const summary = document.getElementById('report-deleted-summary');
+  const list = document.getElementById('report-deleted-list');
+  if (!card || !summary || !list) return;
+  card.hidden = skipped.length === 0;
+  card.open = false;
+  summary.textContent = `Left out — you deleted these (${skipped.length})`;
+  list.innerHTML = skipped.map(t =>
+    `<li><b>${escapeHtml(t.artist || 'Unknown artist')}</b> — ${escapeHtml(t.title || 'Untitled')}</li>`,
+  ).join('');
+}
+
 function drawReportRows(results: TrackResult[]) {
   if (!reportTable) return;
   const body = reportTable.querySelector('tbody') as HTMLTableSectionElement | null;
@@ -726,7 +831,9 @@ function drawReportRows(results: TrackResult[]) {
         <td><b>${escapeHtml(r.track.artist)}</b> — ${escapeHtml(r.track.title)}</td>
         <td class="source" data-source="${r.source || ''}">${escapeHtml(r.source || '—')}</td>
         <td>${escapeHtml(acct || '—')}</td>
-        <td>${escapeHtml(r.detail || '')}</td>
+        <td>${r.status === 'still_missing' && r.failureCategory
+          ? `<span class="restore-reason">${escapeHtml(failureLabel(r.failureCategory))}</span>${r.detail ? `<span class="restore-detail">${escapeHtml(r.detail)}</span>` : ''}`
+          : escapeHtml(r.detail || '')}</td>
       </tr>
     `;
   }).join('');
@@ -752,11 +859,12 @@ async function openStageFolder() {
   if (p) await window.candybar.showInFinder(p).catch(() => { /* ignore */ });
 }
 
-function retryFailed() {
-  // Restrict the upcoming run to the still-missing set is non-trivial without
-  // backend support; for now, just re-run with the same config.
+function runAgain() {
+  // The backend can't yet limit a run to the still-missing tracks, so this
+  // goes back to the plan for a full re-run with the same settings.
   if (!currentReport) return;
-  showToast('info', 'Re-running restore', 'Same XML and sources');
+  renderPlan();
+  renderWarnings();
   setStage('review');
 }
 
@@ -766,6 +874,7 @@ export function initRestore() {
   if (!pickXmlBtn || !stepper) return;
 
   pickXmlBtn.addEventListener('click', () => void pickXml());
+  document.getElementById('restore-pick-library-root')?.addEventListener('click', () => void pickLibraryRoot());
   refreshVolumesBtn?.addEventListener('click', () => void refreshVolumes());
 
   toReviewBtn?.addEventListener('click', () => { void goToReview(); });
@@ -782,7 +891,7 @@ export function initRestore() {
 
   reportExportBtn?.addEventListener('click', () => void exportReport());
   reportOpenStageBtn?.addEventListener('click', () => void openStageFolder());
-  reportRetryBtn?.addEventListener('click', () => retryFailed());
+  reportRetryBtn?.addEventListener('click', () => runAgain());
 
   // Report filter buttons (within stage 4)
   document.querySelectorAll<HTMLButtonElement>('#restore-stage-report .restore-filter').forEach(btn => {
@@ -810,4 +919,17 @@ export function initRestore() {
   [srcUsb, srcBeatport, srcQobuz, srcSoundcloud].forEach(el => {
     el?.addEventListener('change', () => updateSourceStatuses());
   });
+
+  // "Connect in Settings" links inside the store source rows.
+  document.getElementById('restore-sources')?.addEventListener('click', (e) => {
+    const link = (e.target as HTMLElement).closest<HTMLButtonElement>('.wiz-source-link');
+    if (!link?.dataset.settingsSection) return;
+    e.preventDefault();
+    requestOpenSettings(link.dataset.settingsSection);
+  });
+  window.addEventListener('store-account-changed', () => {
+    if (document.getElementById('page-restore')?.classList.contains('active')) void refreshAccountStatuses();
+  });
+
+  updateReviewButton();
 }

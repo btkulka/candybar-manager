@@ -2,6 +2,7 @@ import type { ScriptOutput } from './shared';
 import type { StoreAccount } from '../types';
 import { showToast, getValue, setValue, getErrorMessage, setActiveTab } from './shared';
 import { autoRefreshLibrary } from './library';
+import { confirmAction, confirmChoice } from './confirmDialog';
 
 type StoreService = 'qobuz' | 'beatport';
 
@@ -13,6 +14,7 @@ const closeSettingsBtn = document.getElementById('close-settings') as HTMLButton
 const saveSettingsBtn = document.getElementById('save-settings') as HTMLButtonElement;
 const floatingConsoleToggle = document.getElementById('setting-floating-console') as HTMLInputElement;
 const rekordboxEnabledToggle = document.getElementById('setting-rekordbox-enabled') as HTMLInputElement | null;
+const showAdvancedToggle = document.getElementById('setting-show-advanced') as HTMLInputElement | null;
 const libraryRootChooseBtn = document.getElementById('library-root-choose') as HTMLButtonElement | null;
 // ========== State ==========
 
@@ -26,13 +28,30 @@ export function setCurrentArchivePath(path: string): void {
 }
 
 export function setLibraryRootDisplay(root: string): void {
-  const el = document.getElementById('library-root-display');
-  if (el) el.textContent = root || '(not set)';
+  const el = document.getElementById('library-root-display') as HTMLInputElement | null;
+  if (!el) return;
+  el.value = root;
+  el.title = root || 'Your music library folder'; // the input truncates long paths
+  el.removeAttribute('data-tip-title');
 }
 
 export function setFloatingConsoleEnabled(enabled: boolean): void {
   if (floatingConsoleToggle) floatingConsoleToggle.checked = enabled;
   applyFloatingConsoleVisibility();
+}
+
+export function setShowAdvancedTools(enabled: boolean): void {
+  if (showAdvancedToggle) showAdvancedToggle.checked = enabled;
+  applyAdvancedToolsVisibility(enabled);
+}
+
+function applyAdvancedToolsVisibility(enabled: boolean): void {
+  document.body.classList.toggle('show-advanced', enabled);
+  // Don't leave Settings showing a tab that just disappeared.
+  const activeNav = settingsModal?.querySelector<HTMLElement>('.settings-nav-item.is-active');
+  if (!enabled && activeNav?.hasAttribute('data-advanced')) {
+    settingsModal.querySelector<HTMLButtonElement>('.settings-nav-item[data-target="library"]')?.click();
+  }
 }
 
 export function setRekordboxEnabled(enabled: boolean): void {
@@ -44,6 +63,9 @@ export function applyRekordboxVisibility(enabled: boolean): void {
   const restoreNav = document.getElementById('nav-restore');
   if (restoreNav) restoreNav.style.display = enabled ? '' : 'none';
 
+  const upgradeNav = document.getElementById('nav-upgrade');
+  if (upgradeNav) upgradeNav.style.display = enabled ? '' : 'none';
+
   const sectionLabel = document.getElementById('nav-section-rekordbox');
   if (sectionLabel) sectionLabel.style.display = enabled ? '' : 'none';
 
@@ -53,11 +75,12 @@ export function applyRekordboxVisibility(enabled: boolean): void {
   const settingsSection = document.querySelector<HTMLElement>('.settings-section[data-section="rekordbox"]');
   if (settingsSection) settingsSection.style.display = enabled ? '' : 'none';
 
-  // If the user is currently on the Restore page and rekordbox just got disabled,
-  // bounce them to a safe default so they're not stuck on a hidden page.
+  // If the user is currently on a Rekordbox-only page and rekordbox just got
+  // disabled, bounce them to a safe default so they're not stuck on a hidden page.
   if (!enabled) {
-    const restorePage = document.getElementById('page-restore');
-    if (restorePage?.classList.contains('active')) setActiveTab('organize');
+    const onHiddenPage = ['page-restore', 'page-upgrade']
+      .some(id => document.getElementById(id)?.classList.contains('active'));
+    if (onHiddenPage) setActiveTab('organize');
   }
 
   // If the settings modal currently has the rekordbox tab active, switch to library.
@@ -69,7 +92,7 @@ export function applyRekordboxVisibility(enabled: boolean): void {
 
 export function openSettingsTo(sectionKey: string): void {
   if (!settingsModal) return;
-  settingsModal.classList.add('visible');
+  showSettingsModal();
   const nav = settingsModal.querySelector<HTMLElement>('.settings-nav');
   const sectionsRoot = settingsModal.querySelector<HTMLElement>('.settings-sections');
   if (nav && sectionsRoot) {
@@ -81,6 +104,7 @@ export function openSettingsTo(sectionKey: string): void {
     }
     sectionsRoot.scrollTop = 0;
   }
+  syncSettingsTabs();
   void refreshAccountConnectionStates();
 }
 
@@ -120,19 +144,22 @@ function renderAccountsList(service: StoreService, accounts: StoreAccount[], sta
   if (!container) return;
   container.innerHTML = '';
   if (accounts.length === 0) {
-    appendAccountRow(service, { id: newAccountId(), label: 'Account 1' }, false);
+    appendAccountRow(service, { id: newAccountId(), label: 'Account 1' }, false, true);
     return;
   }
   for (const account of accounts) appendAccountRow(service, account, !!statuses[account.id]);
 }
 
-function appendAccountRow(service: StoreService, account: StoreAccount, connected: boolean): void {
+/** A placeholder row is a blank slot with a Connect button. It isn't an account
+ *  until a sign-in succeeds (main saves it then), so Save never stores one. */
+function appendAccountRow(service: StoreService, account: StoreAccount, connected: boolean, placeholder = false): void {
   const container = document.getElementById(`${service}-accounts-list`);
   if (!container) return;
   const row = document.createElement('div');
   row.className = 'account-row';
   row.dataset.accountId = account.id;
   row.dataset.service = service;
+  if (placeholder) row.dataset.placeholder = '1';
   renderAccountRowContents(row, account, connected);
   container.appendChild(row);
 }
@@ -144,10 +171,10 @@ function renderAccountRowContents(row: HTMLDivElement, account: StoreAccount, co
   if (connected) {
     row.innerHTML = `
       <div class="account-row-header">
-        <span class="account-connected-badge" title="Login succeeded">✓ Connected</span>
-        <input type="text" class="account-label" placeholder="Label (optional)" value="${escapeHtml(account.label ?? '')}" />
-        <button type="button" class="btn-ghost account-disconnect" data-tooltip="Sign out and clear this session">Disconnect</button>
-        <button type="button" class="btn-ghost account-remove" data-tooltip="Remove this account">Remove</button>
+        <span class="account-connected-badge" title="You're signed in. Searches, carts and downloads use this account.">✓ Connected</span>
+        <input type="text" class="account-label" placeholder="Label (optional)" value="${escapeHtml(account.label ?? '')}" title="A name for this account, like Personal or Work" />
+        <button type="button" class="btn-ghost account-disconnect" data-tooltip="Sign out of this account. You can connect again any time.">Disconnect</button>
+        <button type="button" class="btn-ghost account-remove" data-tooltip="Sign out and remove this account from the app. Your store account itself isn't affected.">Remove</button>
       </div>
       ${account.email ? `<div class="account-connected-email">${escapeHtml(account.email)}</div>` : ''}
       <input type="hidden" class="account-email" value="${escapeHtml(account.email ?? '')}" />
@@ -155,16 +182,16 @@ function renderAccountRowContents(row: HTMLDivElement, account: StoreAccount, co
   } else {
     row.innerHTML = `
       <div class="account-row-header">
-        <input type="text" class="account-label" placeholder="Label (optional)" value="${escapeHtml(account.label ?? '')}" />
-        <button type="button" class="btn-secondary account-connect" data-tooltip="Open the store's login page in a window">Connect</button>
-        <button type="button" class="btn-ghost account-remove" data-tooltip="Remove this account">Remove</button>
+        <input type="text" class="account-label" placeholder="Label (optional)" value="${escapeHtml(account.label ?? '')}" title="A name for this account, like Personal or Work" />
+        <button type="button" class="btn-secondary account-connect" data-tooltip="Opens the store's own sign-in page. Your password goes to the store, not to this app.">Connect</button>
+        <button type="button" class="btn-ghost account-remove" data-tooltip="Remove this account from the app">Remove</button>
       </div>
       <div class="setting-row">
         <div class="setting-info">
           <label>Identifier (optional)</label>
           <p class="setting-desc">Shown in the connected card to tell accounts apart.</p>
         </div>
-        <input type="text" class="account-email" placeholder="e.g. ben@forcemajeure.vip" value="${escapeHtml(account.email ?? '')}" />
+        <input type="text" class="account-email" placeholder="e.g. you@example.com" value="${escapeHtml(account.email ?? '')}" title="Any note that tells your accounts apart, such as the email you sign in with" />
       </div>
       <div class="account-error" style="display:none;"></div>
     `;
@@ -172,9 +199,28 @@ function renderAccountRowContents(row: HTMLDivElement, account: StoreAccount, co
 
   row.querySelector('.account-remove')?.addEventListener('click', async () => {
     if (connected) {
+      const ok = await confirmAction({
+        title: `Remove this ${serviceLabel(service)} account?`,
+        message: 'You\'ll be signed out of it here, and it won\'t be used for searches, carts or downloads.',
+        safetyNote: `Your ${serviceLabel(service)} account and purchases aren't affected. You can add it back any time.`,
+        confirmLabel: 'Remove account',
+        tone: 'caution',
+      });
+      if (!ok) return;
       try { await window.candybar.storeLogoutAccount(service, account.id); } catch { /* ignore */ }
     }
+    // Saved right away, like the sign-out above, so Discard can't bring it back.
+    if (row.dataset.placeholder !== '1') {
+      try {
+        await removeSavedAccount(service, row.dataset.accountId || account.id);
+      } catch (err) {
+        showToast('error', 'Couldn\'t remove account', getErrorMessage(err));
+        return;
+      }
+    }
+    const wasClean = settingsFormState() === savedFormState;
     row.remove();
+    if (wasClean) savedFormState = settingsFormState();
     window.dispatchEvent(new CustomEvent('store-account-changed', { detail: { service } }));
   });
 
@@ -207,6 +253,7 @@ async function handleConnect(row: HTMLDivElement, service: StoreService): Promis
     const result = await window.candybar.storeLoginAccount(service, account);
     if (result.success) {
       row.dataset.accountId = id;
+      delete row.dataset.placeholder; // main saved it during sign-in
       renderAccountRowContents(row, account, true);
       showToast('success', `${serviceLabel(service)} Connected`, email || label || 'Account');
       window.dispatchEvent(new CustomEvent('store-account-changed', { detail: { service } }));
@@ -225,6 +272,15 @@ async function handleConnect(row: HTMLDivElement, service: StoreService): Promis
     }
     connectBtn.disabled = false;
     connectBtn.textContent = 'Connect';
+  }
+}
+
+async function removeSavedAccount(service: StoreService, accountId: string): Promise<void> {
+  const config = await window.candybar.getConfig();
+  if (service === 'qobuz') {
+    await window.candybar.updateConfig({ qobuzAccounts: config.qobuzAccounts.filter((a) => a.id !== accountId) });
+  } else {
+    await window.candybar.updateConfig({ beatportAccounts: config.beatportAccounts.filter((a) => a.id !== accountId) });
   }
 }
 
@@ -277,12 +333,15 @@ function collectAccounts(service: StoreService): StoreAccount[] {
   if (!container) return [];
   const accounts: StoreAccount[] = [];
   for (const row of container.querySelectorAll<HTMLDivElement>('.account-row')) {
+    // Never-connected slots aren't accounts yet; saving one would leave a phantom
+    // account that Restore and the store pills treat as "not signed in".
+    if (row.dataset.placeholder === '1') continue;
     const email = (row.querySelector<HTMLInputElement>('.account-email')?.value || '').trim();
     const label = (row.querySelector<HTMLInputElement>('.account-label')?.value || '').trim();
     const existingId = row.dataset.accountId;
-    // Drop only truly-empty NEW rows. A row with an existing account id is a real
-    // (session-authenticated) connection even when email/label are blank — keeping
-    // it preserves the store session partition binding.
+    // A row with an existing account id is a real (session-authenticated)
+    // connection even when email/label are blank — keeping it preserves the
+    // store session partition binding.
     if (!email && !label && !existingId) continue;
     accounts.push({
       id: existingId || newAccountId(),
@@ -299,17 +358,139 @@ function newAccountId(): string {
 }
 
 
+// ========== Open / Close / Save ==========
+// Settings only persist on Save, so closing with edits asks first instead of
+// silently dropping them.
+
+let savedFormState = '';
+
+function settingsFormState(): string {
+  // Read-only fields (the library folder) save as soon as they're picked.
+  const fields = settingsModal?.querySelectorAll<HTMLInputElement>('input:not([readonly]), select, textarea') ?? [];
+  return JSON.stringify(Array.from(fields, (f) => (f.type === 'checkbox' ? f.checked : f.value)));
+}
+
+// Focus moves into the dialog on open, stays inside it while open, and goes
+// back to whatever opened it on close.
+let focusBeforeSettings: HTMLElement | null = null;
+
+function showSettingsModal(): void {
+  if (!settingsModal.classList.contains('visible')) {
+    savedFormState = settingsFormState();
+    focusBeforeSettings = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  }
+  settingsModal.classList.add('visible');
+  syncSettingsTabs();
+  requestAnimationFrame(() => {
+    settingsModal.querySelector<HTMLElement>('.settings-nav-item.is-active')?.focus();
+  });
+}
+
+function hideSettingsModal(): void {
+  settingsModal.classList.remove('visible');
+  focusBeforeSettings?.focus();
+  focusBeforeSettings = null;
+}
+
+/** aria-selected and tabpanel visibility follow the .is-active classes. */
+function syncSettingsTabs(): void {
+  settingsModal?.querySelectorAll<HTMLElement>('.settings-nav-item').forEach((item) => {
+    const active = item.classList.contains('is-active');
+    item.setAttribute('aria-selected', String(active));
+    item.tabIndex = active ? 0 : -1;
+  });
+}
+
+function trapSettingsFocus(e: KeyboardEvent): void {
+  if (e.key !== 'Tab' || !settingsModal.classList.contains('visible')) return;
+  const focusables = Array.from(settingsModal.querySelectorAll<HTMLElement>(
+    'button:not([disabled]), input:not([disabled]):not([type="hidden"]), select:not([disabled]), textarea, [tabindex]:not([tabindex="-1"])'
+  )).filter((el) => el.offsetParent !== null && el.tabIndex >= 0);
+  if (focusables.length === 0) return;
+  const first = focusables[0];
+  const last = focusables[focusables.length - 1];
+  const inside = settingsModal.contains(document.activeElement);
+  if (e.shiftKey && (document.activeElement === first || !inside)) { e.preventDefault(); last.focus(); }
+  else if (!e.shiftKey && (document.activeElement === last || !inside)) { e.preventDefault(); first.focus(); }
+}
+
+async function requestCloseSettings(): Promise<void> {
+  if (!settingsModal.classList.contains('visible')) return;
+  if (settingsFormState() !== savedFormState) {
+    const choice = await confirmChoice({
+      title: 'Save your changes?',
+      message: 'Changes to settings only take effect once they\'re saved.',
+      confirmLabel: 'Save',
+      secondaryLabel: 'Discard changes',
+      cancelLabel: 'Keep editing',
+      tone: 'info',
+    });
+    if (choice === 'cancel') return;
+    if (choice === 'confirm') { await saveSettings(); return; }
+    await revertSettingsForm();
+  }
+  hideSettingsModal();
+}
+
+// Put the form back to what's on disk so a discarded edit doesn't reappear.
+async function revertSettingsForm(): Promise<void> {
+  const config = await window.candybar.getConfig();
+  setValue('setting-archive-path', config.archivePath);
+  setValue('setting-rekordbox-xml-path', config.rekordboxXmlPath ?? '');
+  if (rekordboxEnabledToggle) rekordboxEnabledToggle.checked = config.rekordboxEnabled ?? true;
+  if (floatingConsoleToggle) floatingConsoleToggle.checked = config.floatingConsoleEnabled ?? true;
+  applyFloatingConsoleVisibility();
+  if (showAdvancedToggle) showAdvancedToggle.checked = config.showAdvancedTools ?? false;
+  await setStoreCredentials(config);
+}
+
+async function saveSettings(): Promise<void> {
+  try {
+    const archivePath = getValue('setting-archive-path');
+    const rekordboxXmlPath = getValue('setting-rekordbox-xml-path');
+    const rekordboxEnabled = rekordboxEnabledToggle?.checked ?? true;
+    const floatingConsoleEnabled = floatingConsoleToggle?.checked ?? true;
+    const showAdvancedTools = showAdvancedToggle?.checked ?? false;
+    const qobuzAccounts = collectAccounts('qobuz');
+    const beatportAccounts = collectAccounts('beatport');
+    const spotifyClientId = getValue('setting-spotify-client-id');
+    const spotifyClientSecret = getValue('setting-spotify-client-secret');
+
+    saveSettingsBtn.disabled = true;
+    await window.candybar.updateConfig({
+      archivePath,
+      rekordboxXmlPath,
+      rekordboxEnabled,
+      floatingConsoleEnabled,
+      showAdvancedTools,
+      qobuzAccounts,
+      beatportAccounts,
+      spotifyClientId,
+      spotifyClientSecret,
+    });
+
+    currentArchivePath = archivePath;
+    applyRekordboxVisibility(rekordboxEnabled);
+    applyAdvancedToolsVisibility(showAdvancedTools);
+    hideSettingsModal();
+    showToast('success', 'Settings Saved', 'Your settings have been saved.');
+    window.dispatchEvent(new CustomEvent('store-account-changed', { detail: { service: 'all' } }));
+  } catch (err) {
+    showToast('error', 'Save Failed', getErrorMessage(err));
+  } finally {
+    saveSettingsBtn.disabled = false;
+  }
+}
+
 // ========== Init ==========
 
 export function initSettings(): void {
   openSettingsBtn?.addEventListener('click', () => {
-    settingsModal.classList.add('visible');
+    showSettingsModal();
     void refreshAccountConnectionStates();
   });
 
-  closeSettingsBtn?.addEventListener('click', () => {
-    settingsModal.classList.remove('visible');
-  });
+  closeSettingsBtn?.addEventListener('click', () => void requestCloseSettings());
 
   document.addEventListener('candybar:open-settings', (e) => {
     const sectionKey = (e as CustomEvent<{ sectionKey: string }>).detail?.sectionKey;
@@ -318,8 +499,9 @@ export function initSettings(): void {
 
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && settingsModal.classList.contains('visible')) {
-      settingsModal.classList.remove('visible');
+      void requestCloseSettings();
     }
+    trapSettingsFocus(e);
   });
 
   libraryRootChooseBtn?.addEventListener('click', async () => {
@@ -328,10 +510,10 @@ export function initSettings(): void {
       if (!selected) return;
       const existing = await window.candybar.getConfig();
       if (existing.libraryRoot === selected) return;
-      await window.candybar.setConfig({ ...existing, libraryRoot: selected });
+      await window.candybar.updateConfig({ libraryRoot: selected });
       setLibraryRootDisplay(selected);
       showToast('info', 'Library Root Updated', `Scanning ${selected}…`);
-      settingsModal.classList.remove('visible');
+      await requestCloseSettings();
       await autoRefreshLibrary();
     } catch (err) {
       showToast('error', 'Update Failed', getErrorMessage(err));
@@ -339,50 +521,18 @@ export function initSettings(): void {
   });
 
   settingsModal?.addEventListener('click', (e) => {
-    if (e.target === settingsModal) settingsModal.classList.remove('visible');
+    if (e.target === settingsModal) void requestCloseSettings();
   });
 
-  saveSettingsBtn?.addEventListener('click', async () => {
-    try {
-      const archivePath = getValue('setting-archive-path');
-      const rekordboxXmlPath = getValue('setting-rekordbox-xml-path');
-      const rekordboxEnabled = rekordboxEnabledToggle?.checked ?? true;
-      const floatingConsoleEnabled = floatingConsoleToggle?.checked ?? true;
-      const qobuzAccounts = collectAccounts('qobuz');
-      const beatportAccounts = collectAccounts('beatport');
-      const spotifyClientId = getValue('setting-spotify-client-id');
-      const spotifyClientSecret = getValue('setting-spotify-client-secret');
-
-      const existing = await window.candybar.getConfig();
-      await window.candybar.setConfig({
-        ...existing,
-        archivePath,
-        rekordboxXmlPath,
-        rekordboxEnabled,
-        floatingConsoleEnabled,
-        qobuzAccounts,
-        beatportAccounts,
-        spotifyClientId,
-        spotifyClientSecret,
-      });
-
-      currentArchivePath = archivePath;
-      applyRekordboxVisibility(rekordboxEnabled);
-      settingsModal.classList.remove('visible');
-      showToast('success', 'Settings Saved', 'Your settings have been saved.');
-      window.dispatchEvent(new CustomEvent('store-account-changed', { detail: { service: 'all' } }));
-    } catch (err) {
-      showToast('error', 'Save Failed', getErrorMessage(err));
-    }
-  });
+  saveSettingsBtn?.addEventListener('click', () => void saveSettings());
 
   document.getElementById('add-qobuz-account')?.addEventListener('click', () => {
     const existing = document.querySelectorAll('#qobuz-accounts-list .account-row').length;
-    appendAccountRow('qobuz', { id: newAccountId(), label: `Account ${existing + 1}` }, false);
+    appendAccountRow('qobuz', { id: newAccountId(), label: `Account ${existing + 1}` }, false, true);
   });
   document.getElementById('add-beatport-account')?.addEventListener('click', () => {
     const existing = document.querySelectorAll('#beatport-accounts-list .account-row').length;
-    appendAccountRow('beatport', { id: newAccountId(), label: `Account ${existing + 1}` }, false);
+    appendAccountRow('beatport', { id: newAccountId(), label: `Account ${existing + 1}` }, false, true);
   });
 
   initRekordboxButtons();
@@ -411,6 +561,20 @@ function initSettingsNav(): void {
       section.classList.toggle('is-active', section.dataset.section === sectionKey);
     }
     sectionsRoot.scrollTop = 0;
+    syncSettingsTabs();
+  });
+
+  // Tablist keys: Up/Down move between the visible tabs and open them.
+  nav.addEventListener('keydown', (event) => {
+    if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
+    const tabs = Array.from(nav.querySelectorAll<HTMLButtonElement>('.settings-nav-item'))
+      .filter((t) => t.offsetParent !== null);
+    const i = tabs.indexOf(document.activeElement as HTMLButtonElement);
+    if (i === -1) return;
+    event.preventDefault();
+    const next = tabs[(i + (event.key === 'ArrowDown' ? 1 : -1) + tabs.length) % tabs.length];
+    next.click();
+    next.focus();
   });
 }
 
@@ -471,20 +635,9 @@ function initRekordboxButtons(): void {
   const statusEl = document.getElementById('rekordbox-status');
   const listEl = document.getElementById('rekordbox-missing-list');
 
-  const resyncModal = document.getElementById('rekordbox-resync-modal') as HTMLDivElement | null;
-  const resyncModalClose = document.getElementById('rekordbox-resync-modal-close') as HTMLButtonElement | null;
-  const resyncModalCancel = document.getElementById('rekordbox-resync-modal-cancel') as HTMLButtonElement | null;
-  const resyncModalConfirm = document.getElementById('rekordbox-resync-modal-confirm') as HTMLButtonElement | null;
 
   const setStatus = (text: string) => {
     if (statusEl) statusEl.textContent = text;
-  };
-
-  const hideResyncModal = () => {
-    if (resyncModal) resyncModal.style.display = 'none';
-  };
-  const showResyncModal = () => {
-    if (resyncModal) resyncModal.style.display = 'flex';
   };
 
   scanBtn?.addEventListener('click', async () => {
@@ -496,7 +649,7 @@ function initRekordboxButtons(): void {
       const existing = await window.candybar.getConfig();
       const rekordboxXmlPath = getValue('setting-rekordbox-xml-path');
       if (rekordboxXmlPath !== existing.rekordboxXmlPath) {
-        await window.candybar.setConfig({ ...existing, rekordboxXmlPath });
+        await window.candybar.updateConfig({ rekordboxXmlPath });
       }
       const result = await window.candybar.rekordboxScan();
       setStatus(`${result.total} tracks in XML · ${result.missing.length} missing under ${result.libraryRoot}`);
@@ -534,7 +687,7 @@ function initRekordboxButtons(): void {
       const existing = await window.candybar.getConfig();
       const rekordboxXmlPath = getValue('setting-rekordbox-xml-path');
       if (rekordboxXmlPath !== existing.rekordboxXmlPath) {
-        await window.candybar.setConfig({ ...existing, rekordboxXmlPath });
+        await window.candybar.updateConfig({ rekordboxXmlPath });
       }
       const summary = await window.candybar.rekordboxImport();
       setStatus(`Imported ${summary.imported} · ${summary.missingOnDisk} missing on disk · ${summary.totalInXml} in XML`);
@@ -547,19 +700,20 @@ function initRekordboxButtons(): void {
     }
   });
 
-  resyncBtn?.addEventListener('click', () => {
-    showResyncModal();
-  });
-
-  resyncModalClose?.addEventListener('click', hideResyncModal);
-  resyncModalCancel?.addEventListener('click', hideResyncModal);
-  resyncModal?.addEventListener('click', (e) => {
-    if (e.target === resyncModal) hideResyncModal();
-  });
-
-  resyncModalConfirm?.addEventListener('click', async () => {
-    hideResyncModal();
-    if (!resyncBtn) return;
+  resyncBtn?.addEventListener('click', async () => {
+    const confirmed = await confirmAction({
+      title: 'Rebuild this app\'s library list from Rekordbox?',
+      message: 'This app\'s own track list (candybar.db) for the current library folder is cleared and rebuilt from Rekordbox\'s export.xml. Export a fresh XML from Rekordbox first.',
+      details: [
+        { label: 'Rebuilt', value: 'Tracks, health issues, possible duplicates and scan history' },
+        { label: 'Kept', value: 'Ignored tracks, dismissed duplicates and issues, download history' },
+      ],
+      safetyNote: 'Rekordbox itself (master.db) and your music files are not touched.',
+      confirmLabel: 'Clear and rebuild',
+      tone: 'danger',
+      armMs: 1500,
+    });
+    if (!confirmed || !resyncBtn) return;
     resyncBtn.disabled = true;
     setStatus('Resyncing… (wiping candybar.db, then re-importing from rekordbox XML)');
     if (listEl) listEl.innerHTML = '';
@@ -567,7 +721,7 @@ function initRekordboxButtons(): void {
       const existing = await window.candybar.getConfig();
       const rekordboxXmlPath = getValue('setting-rekordbox-xml-path');
       if (rekordboxXmlPath !== existing.rekordboxXmlPath) {
-        await window.candybar.setConfig({ ...existing, rekordboxXmlPath });
+        await window.candybar.updateConfig({ rekordboxXmlPath });
       }
       const summary = await window.candybar.rekordboxResync();
       setStatus(`Resynced ${summary.imported} · ${summary.missingOnDisk} missing on disk · ${summary.totalInXml} in XML`);

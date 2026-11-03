@@ -139,7 +139,8 @@ export function checkVolumeIssues(volume: VolumeInfo): UsbVolumeIssue[] {
 
 export async function scanUsbHealth(
   volumePath: string,
-  onProgress?: (p: Omit<UsbHealthProgress, 'id'>) => void
+  onProgress?: (p: Omit<UsbHealthProgress, 'id'>) => void,
+  signal?: AbortSignal
 ): Promise<UsbHealthResult> {
   // Step 1: Get volume info (use a basic fallback if diskutil fails)
   let volume = await getVolumeInfo(volumePath);
@@ -160,13 +161,14 @@ export async function scanUsbHealth(
 
   // Step 2: Discover audio files
   onProgress?.({ phase: 'discovering', current: 0, total: 0 });
-  const audioFiles = await walkAudioDir(volumePath);
+  const audioFiles = await walkAudioDir(volumePath, { signal });
   const total = audioFiles.length;
 
   // Step 3: Per-track health check
   const tracks: LibraryHealthTrack[] = [];
 
   for (let i = 0; i < audioFiles.length; i++) {
+    if (signal?.aborted) throw new Error('Cancelled');
     const filePath = audioFiles[i];
 
     const health = await checkTrackHealth(filePath);

@@ -7,12 +7,11 @@ export type { AppConfig };
 
 const log = createScopedLogger('Config');
 
-// Default library root — platform-aware. Picks an existing user folder rather
-// than a Mac-specific /Volumes path that won't resolve on Windows/Linux.
+// Default library root: the user's Music folder on every platform. It always
+// exists after an OS install and is a starting point the user changes in
+// Settings. (This used to be one person's external drive on macOS, which
+// leaked into every fresh install.) Existing configs keep their explicit value.
 function defaultLibraryRoot(): string {
-  if (process.platform === 'darwin') return '/Volumes/Candy Bar/Music';
-  // Windows + Linux: the user's Music folder. Always exists post-OS-install
-  // and matches the spirit of "a default music root the user can change".
   return path.join(os.homedir(), 'Music');
 }
 
@@ -63,7 +62,8 @@ const DEFAULTS: AppConfig = {
   beatportAccounts: [],
   excludedVolumes: DEFAULT_EXCLUDED_VOLUMES,
   rekordboxXmlPath: '',
-  rekordboxEnabled: true
+  rekordboxEnabled: true,
+  showAdvancedTools: false
 };
 
 /** Migrate legacy config values (tab renames + legacy single-account credentials).
@@ -105,13 +105,60 @@ function migrateConfig(config: AppConfig): AppConfig {
   return out;
 }
 
-async function readFileConfig(configPath: string): Promise<AppConfig | null> {
+type FileConfigRead =
+  | { kind: 'ok'; config: AppConfig; raw: Record<string, unknown> }
+  | { kind: 'missing' }
+  | { kind: 'corrupt'; error: string };
+
+// Warnings worth showing the user (a corrupt config that was backed up).
+const configWarnings: string[] = [];
+// "<path>:<mtime>" of corrupt files already backed up, so the many readConfig
+// calls per session don't each write another copy.
+const backedUpCorrupt = new Set<string>();
+
+/** Problems found while loading config this session (e.g. a corrupt file that was backed up). */
+export function getConfigWarnings(): string[] {
+  return [...configWarnings];
+}
+
+async function readFileConfigDetailed(configPath: string): Promise<FileConfigRead> {
+  let content: string;
   try {
-    const content = await fs.readFile(configPath, 'utf8');
-    const parsed = JSON.parse(content) as Partial<AppConfig>;
-    return { ...DEFAULTS, ...parsed };
-  } catch {
-    return null;
+    content = await fs.readFile(configPath, 'utf8');
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return { kind: 'missing' };
+    return { kind: 'corrupt', error: err instanceof Error ? err.message : String(err) };
+  }
+  try {
+    const parsed = JSON.parse(content) as Record<string, unknown>;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('not a JSON object');
+    return { kind: 'ok', config: { ...DEFAULTS, ...(parsed as Partial<AppConfig>) }, raw: parsed };
+  } catch (err) {
+    return { kind: 'corrupt', error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+async function readFileConfig(configPath: string): Promise<AppConfig | null> {
+  const r = await readFileConfigDetailed(configPath);
+  return r.kind === 'ok' ? r.config : null;
+}
+
+/** Copy an unreadable config aside (once per version of it) before anything can overwrite it. */
+async function backUpCorruptConfig(configPath: string, error: string): Promise<void> {
+  const mtime = await fs.stat(configPath).then(s => s.mtimeMs, () => 0);
+  const key = `${configPath}:${mtime}`;
+  if (backedUpCorrupt.has(key)) return;
+  backedUpCorrupt.add(key);
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const backupPath = `${configPath}.corrupt-${stamp}`;
+  try {
+    await fs.copyFile(configPath, backupPath);
+    const msg = `Settings file was unreadable (${error}). Saved a copy to ${backupPath}; using defaults until you change a setting.`;
+    log.warn(msg);
+    configWarnings.push(msg);
+  } catch (err) {
+    log.error('Could not back up corrupt config:', configPath, err);
+    configWarnings.push(`Settings file was unreadable (${error}) and could not be backed up.`);
   }
 }
 
@@ -133,17 +180,29 @@ export function getSecretsPath(): string | null {
   return secretsPath;
 }
 
+/**
+ * Fill secret fields into `target`. A key present in secrets.json (`rawSecrets`)
+ * is authoritative even when empty — that is how a cleared account or client
+ * secret stays cleared instead of being resurrected from an older source.
+ * Otherwise keep a non-empty target value, then the first non-empty source.
+ */
 function mergeSecretsInto(
   target: AppConfig,
-  ...sources: (AppConfig | null)[]
+  rawSecrets: Record<string, unknown> | null,
+  secrets: AppConfig | null,
+  ...fallbacks: (AppConfig | null)[]
 ): AppConfig {
+  const has = (key: string) => !!rawSecrets && Object.prototype.hasOwnProperty.call(rawSecrets, key);
+  const sources = [secrets, ...fallbacks];
   for (const key of SECRET_STRING_KEYS) {
+    if (has(key) && secrets) { target[key] = secrets[key]; continue; }
     if (target[key]) continue;
     for (const src of sources) {
       if (src?.[key]) { target[key] = src[key]; break; }
     }
   }
   for (const key of SECRET_ARRAY_KEYS) {
+    if (has(key) && secrets) { target[key] = secrets[key]; continue; }
     if (target[key]?.length) continue;
     for (const src of sources) {
       if (src?.[key]?.length) { target[key] = src[key]; break; }
@@ -157,24 +216,43 @@ export async function readConfig(
   fallbackPath?: string
 ): Promise<AppConfig> {
   log.debug('Reading config from:', primaryPath);
-  const primary = await readFileConfig(primaryPath);
+  const primaryRead = await readFileConfigDetailed(primaryPath);
+  const primary = primaryRead.kind === 'ok' ? primaryRead.config : null;
   const fallback = fallbackPath ? await readFileConfig(fallbackPath) : null;
-  const secrets = secretsPath ? await readFileConfig(secretsPath) : null;
+  const secretsRead = secretsPath ? await readFileConfigDetailed(secretsPath) : null;
+  const secrets = secretsRead?.kind === 'ok' ? secretsRead.config : null;
+  const rawSecrets = secretsRead?.kind === 'ok' ? secretsRead.raw : null;
+  if (secretsRead?.kind === 'corrupt' && secretsPath) await backUpCorruptConfig(secretsPath, secretsRead.error);
+  const mSecrets = secrets ? migrateConfig(secrets) : null;
+
+  if (primaryRead.kind === 'corrupt') {
+    // A config file exists but can't be read: this is an existing user, not a
+    // first launch. Keep a copy before the next write replaces it, warn, and
+    // run on defaults without restarting the tour.
+    await backUpCorruptConfig(primaryPath, primaryRead.error);
+    const base = migrateConfig(fallback ?? DEFAULTS);
+    base.tutorialCompleted = true;
+    return mergeSecretsInto(base, rawSecrets, mSecrets);
+  }
 
   // If no primary config exists, use fallback (or secrets, or defaults).
   if (!primary) {
     const base = migrateConfig(fallback ?? DEFAULTS);
-    return secrets ? mergeSecretsInto(base, migrateConfig(secrets)) : base;
+    // Nothing written on this machine yet: a first launch. Set the flag explicitly
+    // so it survives the first config write and the tour still runs.
+    base.tutorialCompleted ??= false;
+    return mSecrets ? mergeSecretsInto(base, rawSecrets, mSecrets) : base;
   }
 
   const mPrimary = migrateConfig(primary);
+  // Config files from before the tour existed belong to people already using the app.
+  mPrimary.tutorialCompleted ??= true;
   const mFallback = fallback ? migrateConfig(fallback) : null;
-  const mSecrets = secrets ? migrateConfig(secrets) : null;
 
-  // Primary wins for non-secret fields. Secret fields fall back to secrets.json
-  // first (untracked, authoritative for this machine), then to the tracked
-  // fallback config — only used if secrets.json lacks the field entirely.
-  return mergeSecretsInto(mPrimary, mSecrets, mFallback);
+  // Primary wins for non-secret fields. Secret fields come from secrets.json
+  // (untracked, authoritative for this machine — including deliberately empty
+  // values), then the tracked fallback config only when secrets.json lacks the key.
+  return mergeSecretsInto(mPrimary, rawSecrets, mSecrets, mFallback);
 }
 
 /** Write a file atomically (temp + rename) so a crash mid-write can't truncate it. */
@@ -214,12 +292,16 @@ async function doWriteConfig(configPath: string, config: AppConfig): Promise<App
         existingSecrets = JSON.parse(await fs.readFile(secretsPath, 'utf8')) as Record<string, unknown>;
       } catch { /* no existing secrets file */ }
       const secretsOut: Record<string, unknown> = { ...existingSecrets };
+      // A secret the caller passed is written as-is, empty included, so clearing
+      // the last account or a client secret sticks. A caller that didn't pass the
+      // field at all leaves the stored value alone.
+      const passed = (key: string) => Object.prototype.hasOwnProperty.call(config, key);
       for (const key of SECRET_STRING_KEYS) {
-        if (merged[key]) secretsOut[key] = merged[key];
+        if (passed(key)) secretsOut[key] = merged[key] ?? '';
         delete primaryOut[key];
       }
       for (const key of SECRET_ARRAY_KEYS) {
-        if (merged[key]?.length) secretsOut[key] = merged[key];
+        if (passed(key)) secretsOut[key] = merged[key] ?? [];
         delete primaryOut[key];
       }
       await fs.mkdir(path.dirname(secretsPath), { recursive: true });

@@ -11,7 +11,8 @@ export type { AlbumArtMissingTrack, AlbumArtScanProgress };
 export async function scanMissingAlbumArt(
   libraryRoot: string,
   onProgress?: (progress: AlbumArtScanProgress) => void,
-  preScannedFiles?: string[]
+  preScannedFiles?: string[],
+  signal?: AbortSignal
 ): Promise<AlbumArtMissingTrack[]> {
   if (!fs.existsSync(libraryRoot)) {
     throw new Error(`Library directory not found: ${libraryRoot}`);
@@ -23,12 +24,13 @@ export async function scanMissingAlbumArt(
   }
 
   // Use pre-scanned files from job queue, or discover them
+  // An empty pre-scanned list isn't proof the library is empty; walk instead.
   let audioFiles: string[];
-  if (preScannedFiles) {
+  if (preScannedFiles && preScannedFiles.length > 0) {
     audioFiles = preScannedFiles;
   } else {
     onProgress?.({ phase: 'discovering', current: 0, total: 0 });
-    audioFiles = await walkAudioDir(libraryRoot);
+    audioFiles = await walkAudioDir(libraryRoot, { signal });
   }
   const missingTracks: AlbumArtMissingTrack[] = [];
   const total = audioFiles.length;
@@ -39,31 +41,31 @@ export async function scanMissingAlbumArt(
   }
 
   for (let i = 0; i < audioFiles.length; i += 1) {
+    if (signal?.aborted) throw new Error('Cancelled');
     const filePath = audioFiles[i];
     try {
       const metadata = await parseFile(filePath, { duration: false });
       const title = metadata.common.title || '';
       const artist = metadata.common.artist || metadata.common.artists?.[0] || '';
-
-      if (!title || !artist) continue;
-
       const hasArt = (metadata.common.picture?.length ?? 0) > 0;
-      if (hasArt) continue;
 
-      missingTracks.push({
-        id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-        filePath,
-        fileName: path.basename(filePath),
-        title,
-        artist,
-        album: metadata.common.album || '',
-        year: metadata.common.year?.toString() || '',
-        genre: metadata.common.genre?.[0] || ''
-      });
+      if (title && artist && !hasArt) {
+        missingTracks.push({
+          id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          filePath,
+          fileName: path.basename(filePath),
+          title,
+          artist,
+          album: metadata.common.album || '',
+          year: metadata.common.year?.toString() || '',
+          genre: metadata.common.genre?.[0] || ''
+        });
+      }
     } catch (err) {
       log.warn(`Metadata read failed for ${path.basename(filePath)}:`, err);
     }
 
+    // Report every file, including the ones skipped above, so the bar moves steadily.
     onProgress?.({
       phase: 'scanning',
       current: i + 1,

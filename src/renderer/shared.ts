@@ -1,5 +1,17 @@
-import { getErrorMessage } from '../lib/errorUtils';
-export { getErrorMessage };
+import { getErrorMessage as baseErrorMessage } from '../lib/errorUtils';
+import { confirmAction } from './confirmDialog';
+
+/** Electron wraps a rejected ipcRenderer.invoke as
+ *  "Error invoking remote method 'scan-library-health': Error: <message>".
+ *  The channel name means nothing to the user, so keep only <message>. */
+export function stripIpcErrorPrefix(message: string): string {
+  return message.replace(/^Error invoking remote method '[^']*':\s*(?:[A-Za-z]*Error:\s*)?/, '');
+}
+
+/** A caught value's message, minus Electron's IPC wrapper. */
+export function getErrorMessage(err: unknown, fallback = 'Unknown error'): string {
+  return stripIpcErrorPrefix(baseErrorMessage(err, fallback));
+}
 
 import type {
   ScriptOutput,
@@ -172,6 +184,8 @@ declare global {
       getConfigPath: () => Promise<string>;
       getLibraryRoot: () => Promise<string>;
       setConfig: (config: AppConfig) => Promise<AppConfig>;
+      /** Merge-write: only the given keys change, so concurrent saves can't clobber each other. */
+      updateConfig: (partial: Partial<AppConfig>) => Promise<AppConfig>;
       migrateArchive: (oldPath: string, newPath: string) => Promise<{ success: boolean; error?: string }>;
       onMigrateProgress: (callback: (payload: { current: number; total: number; file: string }) => void) => void;
       checkSpotify: () => Promise<boolean>;
@@ -184,7 +198,7 @@ declare global {
       onScanProgress: (callback: (payload: ScanProgress) => void) => () => void;
       autopopulateTracks: (tracks: Array<{ filePath: string; title: string; artist: string; album: string; year: string; genre: string; label: string; key: string; bpm: string; remixer: string; hasAlbumArt: boolean }>, force?: boolean) =>
         Promise<Array<{ filePath: string; updated: boolean; fieldsPopulated: string[]; error?: string }>>;
-      onAutopopulateProgress: (callback: (payload: { current: number; total: number; filePath: string }) => void) => void;
+      onAutopopulateProgress: (callback: (payload: { current: number; total: number; filePath: string }) => void) => (() => void);
       scanMissingAlbumArt: () => Promise<{ id: string; tracks: AlbumArtMissingTrack[] }>;
       onPolishScanProgress: (callback: (payload: AlbumArtScanProgress) => void) => void;
       updateTrackTags: (params: UpdateTagsParams) => Promise<TrackInfo>;
@@ -257,12 +271,17 @@ declare global {
         Promise<{ success: boolean; filePath?: string; error?: string }>;
 
       // Combined library-check + store-search pipeline.
-      librarySourcingRun: (source: { csvPath?: string; spotifyPlaylistUrl?: string }) =>
+      librarySourcingRun: (source: { csvPath?: string; spotifyPlaylistUrl?: string; soundcloudSetUrl?: string }) =>
         Promise<{ success: boolean; result?: import('../types').LibrarySourcingResult; error?: string }>;
       onLibrarySourcingPhase1Progress: (callback: (payload: { phase?: string; current: number; total: number; message?: string }) => void) => void;
       onLibrarySourcingPhase2Progress: (callback: (payload: { current: number; total: number; currentTrack: string }) => void) => void;
       onLibrarySourcingPhase2Match: (callback: (match: import('../lib/qobuzCart').QobuzCartMatch) => void) => void;
       onLibrarySourcingPlaylistInfo: (callback: (info: import('../types').SourcePlaylistInfo) => void) => void;
+
+      // Lossless upgrades (Rekordbox playlist → lossless copies of its lossy tracks)
+      upgradeListPlaylists: () => Promise<{ success: boolean; playlists?: import('../types').RekordboxPlaylistSummary[]; error?: string }>;
+      upgradeRun: (playlistId: string) => Promise<{ success: boolean; result?: import('../types').LosslessUpgradeResult; error?: string }>;
+      onUpgradeProgress: (callback: (p: import('../types').LosslessUpgradeProgress) => void) => (() => void);
 
       // Qobuz cart integration
       qobuzCartSearch: (tracks: Array<{ key: string; artist: string; title: string; album?: string; duration?: number }>) =>
@@ -285,8 +304,7 @@ declare global {
       onStoreSearchProgress: (callback: (payload: StoreSearchProgress) => void) => void;
       onStoreSearchMatch: (callback: (match: StoreMatch) => void) => void;
       storeCartAdd: (matches: StoreMatch[], source: 'qobuz' | 'beatport') => Promise<{ success: boolean; result?: StoreCartResult; error?: string }>;
-      onStoreCartProgress: (callback: (payload: StoreCartProgress) => void) => void;
-      offStoreCartProgress: (callback: (payload: StoreCartProgress) => void) => void;
+      onStoreCartProgress: (callback: (payload: StoreCartProgress) => void) => (() => void);
       storeOpenCart: (store: 'qobuz' | 'beatport') => Promise<{ success: boolean }>;
       storeLoadResults: () => Promise<{ success: boolean; matches?: StoreMatch[]; savedAt?: string; trackCount?: number }>;
       storeClearResults: () => Promise<{ success: boolean }>;
@@ -301,7 +319,8 @@ declare global {
       storePanelStatus: () => Promise<{ open: boolean; store: string | null; url: string | null }>;
       storePanelCheckoutAdvance: (store: 'qobuz' | 'beatport') => Promise<{
         success: boolean;
-        result?: { phase: 'place-order-ready'; total: string | null; buttonText: string }
+        /** itemCount: items the store's own checkout page lists, or null when it can't be read. */
+        result?: { phase: 'place-order-ready'; total: string | null; buttonText: string; itemCount?: number | null }
                 | { phase: 'advanced'; clickedText: string }
                 | { phase: 'unknown' };
         error?: string;
@@ -440,9 +459,12 @@ export function showToast(
 ) {
   const toast = document.createElement('div');
   toast.className = `toast toast-${type}`;
+  // Titles and messages carry file names, store titles and error text, so they
+  // go in as text, never markup.
+  if (message) message = stripIpcErrorPrefix(message);
 
   const copyBtn = type === 'error' && message
-    ? `<button class="toast-copy" data-tooltip="Copy error details">
+    ? `<button class="toast-copy" data-tooltip="Copy error details" aria-label="Copy error details">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
           <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
@@ -457,13 +479,13 @@ export function showToast(
   toast.innerHTML = `
     <div class="toast-icon">${toastIcons[type]}</div>
     <div class="toast-content">
-      <div class="toast-title">${title}</div>
-      ${message ? `<div class="toast-message">${message}</div>` : ''}
+      <div class="toast-title"></div>
+      ${message ? `<div class="toast-message"></div>` : ''}
     </div>
     <div class="toast-actions">
       ${actionBtn}
       ${copyBtn}
-      <button class="toast-close" data-tooltip="Dismiss">
+      <button class="toast-close" data-tooltip="Dismiss" aria-label="Dismiss">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <line x1="18" y1="6" x2="6" y2="18"/>
           <line x1="6" y1="6" x2="18" y2="18"/>
@@ -471,6 +493,9 @@ export function showToast(
       </button>
     </div>
   `;
+  (toast.querySelector('.toast-title') as HTMLElement).textContent = title;
+  const messageEl = toast.querySelector<HTMLElement>('.toast-message');
+  if (messageEl && message) messageEl.textContent = message;
 
   if (type === 'error' && message) {
     const copyBtnEl = toast.querySelector('.toast-copy') as HTMLButtonElement;
@@ -584,6 +609,24 @@ export const icons = {
   </svg>`
 };
 
+// ========== Action Hints ==========
+// One plain-language explanation per track action, shared by row buttons,
+// right-click menus and the inspector so the same action never reads two ways.
+
+export const actionHints = {
+  play: 'Listen to it in the player at the top of the window.',
+  convertAiff: 'Make a lossless AIFF version that Pioneer CDJs and XDJs play reliably. It sounds the same.',
+  reencodeMp3: 'Rebuild this MP3 in the standard 320 kbps format Pioneer players accept. It fixes playback problems, not sound quality.',
+  editTags: 'Change the artist, title, key, BPM and artwork saved inside the file.',
+  populateTags: 'Look the track up online and fill in any empty tags. Tags you already have are kept.',
+  archive: 'Move it out of your library into your archive folder. Nothing is deleted.',
+  trash: 'Move it to the Trash. You\'ll be asked first, and you can put it back from Finder.',
+  dismissIssue: 'Stop flagging this problem on this track. You can bring it back later.',
+  restoreIssue: 'Start flagging this problem on this track again.',
+  ignore: 'Leave this track where it is when you organize.',
+  include: 'Organize this track along with the others.',
+} as const;
+
 // ========== Utility Functions ==========
 
 export function setStatus(text: string) {
@@ -617,10 +660,75 @@ export function escapeHtml(text: string): string {
 }
 
 export function formatDuration(seconds: number | null | undefined): string {
-  if (seconds == null) return '';
+  if (seconds == null || !Number.isFinite(seconds)) return '';
   const mins = Math.floor(seconds / 60);
   const secs = Math.floor(seconds % 60);
   return `${mins}:${secs.toString().padStart(2, '0')}`;
+}
+
+// ========== Dialog Focus ==========
+// Same contract as Settings and the album-art overlay: focus moves in on
+// open, Tab stays inside while open, and focus goes back on close.
+
+const FOCUSABLE = 'button:not([disabled]), input:not([disabled]):not([type="hidden"]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+/** Keep Tab / Shift+Tab inside `container`. Call from a keydown handler. */
+export function trapDialogFocus(container: HTMLElement, e: KeyboardEvent): void {
+  if (e.key !== 'Tab' || e.defaultPrevented) return;
+  const focusables = Array.from(container.querySelectorAll<HTMLElement>(FOCUSABLE))
+    .filter((el) => el.offsetParent !== null && el.tabIndex >= 0);
+  if (focusables.length === 0) return;
+  const first = focusables[0];
+  const last = focusables[focusables.length - 1];
+  const inside = container.contains(document.activeElement);
+  if (e.shiftKey && (document.activeElement === first || !inside)) { e.preventDefault(); last.focus(); }
+  else if (!e.shiftKey && (document.activeElement === last || !inside)) { e.preventDefault(); first.focus(); }
+}
+
+/** Remember what had focus before a dialog opened, and hand it back later. */
+export function captureFocusReturn(): () => void {
+  const before = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  return () => { if (before?.isConnected) before.focus({ preventScroll: true }); };
+}
+
+// ========== Store Match Flags ==========
+// Shared by the Sources and Upgrades rows, so a match reads the same on both.
+
+/** A Qobuz hit that is still a whole release (its title and price are the
+ *  release's, not the track's). Never pre-selected; flagged on the row. */
+export function isReleaseMatch(m: import('../lib/qobuzCart').QobuzCartMatch): boolean {
+  return m.source === 'qobuz' && (m.albumLevel === true || m.qobuzTrack?.trackResolved === false);
+}
+
+export const RELEASE_MATCH_TAG = '<span class="src-tag-version src-tag-release" title="Qobuz matched the whole release, not this one track, so the name and price shown may be the release\'s. Open it on Qobuz before buying.">release match — check before buying</span>';
+
+/** The match's note ("Couldn't find X on the release…"), as a row sub-line. */
+export function matchNoteHtml(m: import('../lib/qobuzCart').QobuzCartMatch): string {
+  return m.note ? `<span class="sub src-match-note">${escapeHtml(m.note)}</span>` : '';
+}
+
+/** "1 track", "3 tracks". Pass `pluralWord` for irregular plurals. */
+export function plural(n: number, word: string, pluralWord = `${word}s`): string {
+  return `${n.toLocaleString()} ${n === 1 ? word : pluralWord}`;
+}
+
+/** Format a summed price in the currency the store's own price strings use
+ *  ("$2.99", "€1.29", "1.79 USD"), rather than assuming dollars. With no
+ *  currency in sight it's just the number. */
+export function formatPriceTotal(total: number, samplePrices: Array<string | null | undefined>): string {
+  for (const raw of samplePrices) {
+    if (!raw) continue;
+    const code = raw.match(/\b([A-Z]{3})\b/)?.[1];
+    if (code) {
+      try {
+        return new Intl.NumberFormat(undefined, { style: 'currency', currency: code }).format(total);
+      } catch { /* not an ISO code; keep looking */ }
+    }
+    const symbol = raw.match(/[$€£¥]/)?.[0];
+    if (symbol) return `${symbol}${total.toFixed(2)}`;
+  }
+  // Nothing to read a currency from (e.g. an empty store): the stores bill in USD.
+  return `$${total.toFixed(2)}`;
 }
 
 // ========== Context Menu ==========
@@ -630,6 +738,10 @@ export type ContextMenuItem = {
   icon?: string;
   disabled?: boolean;
   separator?: boolean;
+  /** Red styling for items that remove or move files. */
+  danger?: boolean;
+  /** Plain-language explanation shown as a tooltip. */
+  hint?: string;
   action?: () => void;
 };
 
@@ -653,21 +765,34 @@ window.addEventListener('blur', dismissContextMenu);
 
 export function showContextMenu(x: number, y: number, items: ContextMenuItem[]) {
   dismissContextMenu();
+  const returnFocus = document.activeElement as HTMLElement | null;
 
   const menu = document.createElement('div');
   menu.className = 'context-menu';
+  menu.setAttribute('role', 'menu');
 
   for (const item of items) {
     if (item.separator) {
       const sep = document.createElement('div');
       sep.className = 'context-menu-separator';
+      sep.setAttribute('role', 'separator');
       menu.appendChild(sep);
       continue;
     }
 
     const row = document.createElement('div');
     row.className = 'context-menu-item';
-    if (item.disabled) row.classList.add('disabled');
+    row.setAttribute('role', 'menuitem');
+    row.tabIndex = -1;
+    if (item.disabled) {
+      row.classList.add('disabled');
+      row.setAttribute('aria-disabled', 'true');
+    }
+    if (item.danger) row.classList.add('is-danger');
+    if (item.hint) {
+      row.dataset.tooltip = item.hint;
+      row.dataset.tooltipPos = 'right';
+    }
 
     row.innerHTML = `${item.icon ? `<span class="context-menu-icon">${item.icon}</span>` : ''}<span class="context-menu-label">${escapeHtml(item.label ?? '')}</span>`;
 
@@ -682,8 +807,30 @@ export function showContextMenu(x: number, y: number, items: ContextMenuItem[]) 
     menu.appendChild(row);
   }
 
+  // Keyboard: arrows move between items, Enter/Space runs one, Escape closes
+  // the menu (and only the menu) and gives focus back.
+  const enabledRows = () => [...menu.querySelectorAll<HTMLElement>('.context-menu-item:not(.disabled)')];
+  menu.addEventListener('keydown', (e) => {
+    const rows = enabledRows();
+    const i = rows.indexOf(document.activeElement as HTMLElement);
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      const step = e.key === 'ArrowDown' ? 1 : -1;
+      rows[(i + step + rows.length) % rows.length]?.focus();
+    } else if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      (document.activeElement as HTMLElement | null)?.click();
+    } else if (e.key === 'Escape' || e.key === 'Tab') {
+      e.preventDefault();
+      e.stopPropagation();
+      dismissContextMenu();
+      returnFocus?.focus?.();
+    }
+  });
+
   document.body.appendChild(menu);
   activeContextMenu = menu;
+  enabledRows()[0]?.focus({ preventScroll: true });
 
   // Position: ensure it fits within the viewport
   const rect = menu.getBoundingClientRect();
@@ -789,16 +936,23 @@ export async function updateTrackTagsWithRepair(
     if (!msg.startsWith('AIFC_CORRUPT_HEADER:')) throw err;
 
     const label = fileLabel || params.filePath.split('/').pop() || 'this file';
-    const accept = window.confirm(
-      `"${label}" has a corrupt AIFC header that blocks tag writing.\n\n` +
-      `Repair it now? This rewrites 4 bytes in the header to mark the file ` +
-      `as uncompressed PCM (which it already is). No audio data is changed.`
-    );
+    const accept = await confirmAiffHeaderRepair(label, 'save its tags');
     if (!accept) throw new Error('Repair declined');
 
     await window.candybar.repairAiffHeader(params.filePath);
     return await window.candybar.updateTrackTags(params);
   }
+}
+
+function confirmAiffHeaderRepair(label: string, blockedAction: string): Promise<boolean> {
+  return confirmAction({
+    title: 'Repair this file first?',
+    message: `"${label}" has a damaged header (the label at the start of the file), so we can't ${blockedAction}. ` +
+      'A quick repair corrects 4 bytes of that label.',
+    safetyNote: 'The music itself is not touched.',
+    confirmLabel: 'Repair and continue',
+    tone: 'info',
+  });
 }
 
 // Mirror of updateTrackTagsWithRepair for the convert-to-AIFF flow. ffmpeg
@@ -816,11 +970,7 @@ export async function convertTrackWithRepair(
   if (!msg.startsWith('AIFC_CORRUPT_HEADER:')) return first;
 
   const label = fileLabel || filePath.split('/').pop() || 'this file';
-  const accept = window.confirm(
-    `"${label}" has a corrupt AIFC header that blocks conversion.\n\n` +
-    `Repair it now? This rewrites 4 bytes in the header to mark the file ` +
-    `as uncompressed PCM (which it already is). No audio data is changed.`
-  );
+  const accept = await confirmAiffHeaderRepair(label, 'convert it');
   if (!accept) return first;
 
   try {
@@ -1050,9 +1200,14 @@ export function initArtViewer() {
   });
 
   overlay.addEventListener('click', close);
+  // Capture phase so Escape closes only the viewer, not the tag editor or
+  // drawer it was opened over.
   document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && overlay.style.display === 'flex') close();
-  });
+    if (e.key === 'Escape' && overlay.style.display === 'flex') {
+      e.stopImmediatePropagation();
+      close();
+    }
+  }, true);
 }
 
 // ========== Tag Editor Modal ==========
@@ -1074,9 +1229,12 @@ export type TagEditorTrack = {
 };
 
 let tagEditorOnSave: ((updatedTrack: TrackInfo) => void) | null = null;
+/** Gives focus back to whatever opened the editor. */
+let tagEditorFocusReturn: (() => void) | null = null;
 let tagEditorPendingAlbumArt: string | null = null;
 let tagEditorArtSuggestions: AlbumArtSuggestion[] = [];
 let tagEditorArtSearchToken = 0;
+let tagEditorArtLoadToken = 0;
 
 const TAG_EDITOR_FIELDS = [
   'edit-title', 'edit-artist', 'edit-album', 'edit-year',
@@ -1148,6 +1306,23 @@ export function initTagEditor() {
     if (e.target === _tagEditorModal) closeTagEditor();
   });
 
+  // It's a dialog: say so, keep Tab inside it, and let Escape close it. A
+  // confirm or the art viewer opened on top handles those keys first (and
+  // stops or marks them), so they never reach this.
+  const drawer = _tagEditorModal.querySelector<HTMLElement>('.drawer');
+  drawer?.setAttribute('role', 'dialog');
+  drawer?.setAttribute('aria-modal', 'true');
+  drawer?.setAttribute('aria-label', 'Edit track tags');
+  document.addEventListener('keydown', (e) => {
+    if (e.defaultPrevented || _tagEditorModal.style.display === 'none') return;
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      closeTagEditor();
+    } else if (e.key === 'Tab') {
+      trapDialogFocus(drawer ?? _tagEditorModal, e);
+    }
+  });
+
   // Undo/redo keyboard handler
   _tagEditorModal.addEventListener('keydown', (e) => {
     if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) {
@@ -1194,12 +1369,26 @@ export function initTagEditor() {
       return;
     }
 
+    // Locked before the WAV confirm, so a double-click can't open two of them
+    // and save twice.
+    if (_tagEditorSaveBtn.disabled) return;
+    _tagEditorSaveBtn.disabled = true;
+
     if (filePath.toLowerCase().endsWith('.wav')) {
-      const ok = confirm('WAV files don\'t support tags reliably.\n\nThis file will be converted to AIFF and the original WAV will be deleted. Continue?');
-      if (!ok) return;
+      const ok = await confirmAction({
+        title: 'Convert to AIFF to save tags?',
+        message: 'WAV files can\'t reliably hold tags like artist and title, so this track will be saved as an AIFF copy with your changes.',
+        details: [{ label: 'File', value: filePath.split('/').pop() || filePath }],
+        safetyNote: 'AIFF sounds identical to WAV. The original WAV goes to the Trash, so you can put it back.',
+        confirmLabel: 'Convert and save',
+        tone: 'caution',
+      });
+      if (!ok) {
+        _tagEditorSaveBtn.disabled = false;
+        return;
+      }
     }
 
-    _tagEditorSaveBtn.disabled = true;
     _tagEditorSaveBtn.textContent = 'Saving...';
 
     try {
@@ -1250,12 +1439,16 @@ export function openTagEditor(track: TagEditorTrack, onSave?: (updatedTrack: Tra
   setValue('edit-comment', track.comment || '');
 
   tagEditorPendingAlbumArt = null;
+  // Each open gets a token, so a slow art read for the previous track can't
+  // land in this one's preview.
+  const artToken = ++tagEditorArtLoadToken;
   const hasArt = track.albumArt || track.hasAlbumArt;
   if (track.albumArt) {
     _tagEditorAlbumArtPreview.innerHTML = `<img src="${track.albumArt}" alt="Album art" />`;
   } else if (track.hasAlbumArt) {
     _tagEditorAlbumArtPreview.innerHTML = `<div class="inspector-art-loading">Loading...</div>`;
     window.candybar.getTrackAlbumArt(track.filePath).then((dataUrl) => {
+      if (artToken !== tagEditorArtLoadToken) return;
       if (dataUrl) {
         _tagEditorAlbumArtPreview.innerHTML = `<img src="${dataUrl}" alt="Album art" />`;
       } else {
@@ -1281,7 +1474,9 @@ export function openTagEditor(track: TagEditorTrack, onSave?: (updatedTrack: Tra
   tagEditorUndoStack = [];
   tagEditorRedoStack = [];
 
+  if (_tagEditorModal.style.display === 'none') tagEditorFocusReturn = captureFocusReturn();
   _tagEditorModal.style.display = 'flex';
+  requestAnimationFrame(() => document.getElementById('edit-title')?.focus());
 
   if (!hasArt) {
     tagEditorSearchAlbumArt();
@@ -1289,12 +1484,15 @@ export function openTagEditor(track: TagEditorTrack, onSave?: (updatedTrack: Tra
 }
 
 export function closeTagEditor() {
+  const wasOpen = _tagEditorModal.style.display !== 'none';
   _tagEditorModal.style.display = 'none';
   tagEditorPendingAlbumArt = null;
   tagEditorOnSave = null;
   tagEditorArtSuggestions = [];
   _tagEditorAlbumArtSuggestions.style.display = 'none';
   _tagEditorAlbumArtSuggestionsGrid.innerHTML = '';
+  if (wasOpen) tagEditorFocusReturn?.();
+  tagEditorFocusReturn = null;
 }
 
 type ScannedTagMatch = {
@@ -1492,11 +1690,13 @@ export function initNavigation() {
 
       setActiveTab(targetPage);
 
-      const currentConfig = await window.candybar.getConfig();
-      await window.candybar.setConfig({
-        ...currentConfig,
-        activeTab: targetPage
-      });
+      // Merge-write just this key: a full getConfig → setConfig here could
+      // overwrite a Settings or tour save that landed in between.
+      try {
+        await window.candybar.updateConfig({ activeTab: targetPage });
+      } catch (err) {
+        console.error('[Navigation] saving activeTab failed:', err);
+      }
     });
   });
 }

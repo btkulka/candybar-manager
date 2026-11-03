@@ -1,6 +1,4 @@
-import type { JobInfo, JobProgress, JobType } from '../types';
-import { icons, setActiveTab } from './shared';
-import { playFile } from './player';
+import type { JobInfo, JobType } from '../types';
 
 // Job type → display label
 const JOB_LABELS: Record<JobType, string> = {
@@ -11,17 +9,6 @@ const JOB_LABELS: Record<JobType, string> = {
   'catalog-export': 'Catalog Export',
   'organize-tracks': 'Organize',
   'usb-health-scan': 'USB Health Scan'
-};
-
-// Job type → page to navigate to (null = no navigation)
-const JOB_PAGE_MAP: Record<JobType, string | null> = {
-  'library-scan': null,
-  'library-check': 'check',
-  'library-health': 'library',
-  'album-art-scan': 'polish',
-  'catalog-export': null,
-  'organize-tracks': 'organize',
-  'usb-health-scan': 'usb-health'
 };
 
 // Track visible jobs and their removal timers
@@ -58,22 +45,6 @@ export function updateConversionTask(id: string, status: 'completed' | 'failed',
   if (outputPath) task.outputPath = outputPath;
 }
 
-// ========== Download Tasks ==========
-
-export function addDownloadTask(count: number): void {
-  // Registered; no-op for now (UI updated via progress listeners)
-  void count;
-}
-
-export function updateDownloadProgress(payload: { current: number; total: number; message: string }): void {
-  void payload;
-}
-
-export function completeDownloadTask(downloaded: number, failed: number): void {
-  void downloaded;
-  void failed;
-}
-
 // ========== Init ==========
 
 export function initActivity(): void {
@@ -85,6 +56,8 @@ export function initActivity(): void {
     renderJobs();
 
     if (job.status === 'completed' || job.status === 'failed' || job.status === 'cancelled') {
+      // A repeated final update restarts the countdown instead of stacking timers.
+      clearTimeout(removalTimers.get(job.id));
       const timer = setTimeout(() => {
         visibleJobs.delete(job.id);
         removalTimers.delete(job.id);

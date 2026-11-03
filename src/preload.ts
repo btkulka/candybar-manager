@@ -20,22 +20,32 @@ import type {
   ArchiveResult,
   JobInfo,
   JobProgress,
-  StoreTrackInput,
   StoreMatch,
-  StoreSearchProgress,
   StoreCartProgress,
-  StoreSearchResult,
   StoreCartResult,
-  VolumeInfo,
-  UsbHealthProgress
+  VolumeInfo
 } from './types';
+
+/**
+ * Subscribe to a main → renderer channel. Every `on*` below returns its own
+ * unsubscribe: a callback crosses the context bridge as a new proxy on every
+ * call, so an `off(callback)` could never find the listener `on()` added, and
+ * `removeAllListeners` would knock out other screens' listeners on the channel.
+ */
+function subscribe<T>(channel: string, callback: (payload: T) => void): () => void {
+  const listener = (_event: Electron.IpcRendererEvent, payload: T) => callback(payload);
+  ipcRenderer.on(channel, listener);
+  return () => { ipcRenderer.removeListener(channel, listener); };
+}
 
 contextBridge.exposeInMainWorld('candybar', {
   selectPath: (type: 'file' | 'dir') => ipcRenderer.invoke('select-path', { type }),
   /**
    * @deprecated Use `librarySourcingRun` instead (phase 1 + phase 2 combined).
    * Kept for one release so external callers (MCP, scripts) that drive the
-   * phase-1 library-match path independently don't break.
+   * phase-1 library-match path independently don't break. Ownership comes from
+   * the Rekordbox collection; there is no cached result any more, so
+   * `cacheOnly` always comes back empty.
    */
   checkLibrary: (source: { csvPath?: string; spotifyPlaylistUrl?: string }, useCache = true, cacheOnly = false) =>
     ipcRenderer.invoke('check-library', { ...source, useCache, cacheOnly }),
@@ -43,42 +53,37 @@ contextBridge.exposeInMainWorld('candybar', {
   getConfigPath: (): Promise<string> => ipcRenderer.invoke('get-config-path'),
   getLibraryRoot: () => ipcRenderer.invoke('get-library-root'),
   setConfig: (config: AppConfig) => ipcRenderer.invoke('set-config', config),
+  // Merge just these fields into the saved config and get the result back.
+  // Prefer this to setConfig, which replaces everything with the caller's copy.
+  updateConfig: (partial: Partial<AppConfig>): Promise<AppConfig> =>
+    ipcRenderer.invoke('update-config', partial),
   migrateArchive: (oldPath: string, newPath: string) =>
     ipcRenderer.invoke('migrate-archive', { oldPath, newPath }),
-  onMigrateProgress: (callback: (payload: { current: number; total: number; file: string }) => void) =>
-    ipcRenderer.on('migrate-progress', (_event, payload) => callback(payload)),
+  onMigrateProgress: (callback: (payload: { current: number; total: number; file: string }) => void): (() => void) =>
+    subscribe('migrate-progress', callback),
   searchMusic: (query: string, sources: ('spotify' | 'soundcloud' | 'beatport' | 'qobuz')[]) =>
     ipcRenderer.invoke('search-music', { query, sources }),
   checkSpotify: () => ipcRenderer.invoke('check-spotify'),
-  getSpotifyPlaylistInfo: (url: string) => ipcRenderer.invoke('get-spotify-playlist-info', url),
   checkSoundCloud: () => ipcRenderer.invoke('check-soundcloud'),
-  onOutput: (callback: (payload: ScriptOutput) => void) =>
-    ipcRenderer.on('script-output', (_event, payload: ScriptOutput) => callback(payload)),
-  onCheckProgress: (callback: (payload: CheckProgress) => void) =>
-    ipcRenderer.on('check-progress', (_event, payload: CheckProgress) => callback(payload)),
+  onOutput: (callback: (payload: ScriptOutput) => void): (() => void) =>
+    subscribe('script-output', callback),
+  onCheckProgress: (callback: (payload: CheckProgress) => void): (() => void) =>
+    subscribe('check-progress', callback),
 
   // Track scanning and organization
   scanTracks: (sourceDir: string): Promise<TrackInfo[]> =>
     ipcRenderer.invoke('scan-tracks', { sourceDir }),
-  onScanProgress: (callback: (payload: ScanProgress) => void) => {
-    const listener = (_e: unknown, payload: ScanProgress) => callback(payload);
-    ipcRenderer.on('scan-progress', listener);
-    return () => ipcRenderer.off('scan-progress', listener);
-  },
+  onScanProgress: (callback: (payload: ScanProgress) => void): (() => void) =>
+    subscribe('scan-progress', callback),
   autopopulateTracks: (tracks: Array<{ filePath: string; title: string; artist: string; album: string; year: string; genre: string; label: string; key: string; bpm: string; remixer: string; hasAlbumArt: boolean }>, force = false): Promise<Array<{ filePath: string; updated: boolean; fieldsPopulated: string[]; error?: string }>> =>
     ipcRenderer.invoke('autopopulate-tracks', { tracks, force }),
-  onAutopopulateProgress: (callback: (payload: { current: number; total: number; filePath: string }) => void) => {
-    // Registered once per scan (organize + bulk-populate flows). Remove any prior
-    // listener so repeated scans replace rather than accumulate leaked listeners.
-    ipcRenderer.removeAllListeners('autopopulate-progress');
-    const listener = (_e: unknown, payload: { current: number; total: number; filePath: string }) => callback(payload);
-    ipcRenderer.on('autopopulate-progress', listener);
-    return () => ipcRenderer.off('autopopulate-progress', listener);
-  },
+  // Callers must keep the returned unsubscribe and call it when their run ends.
+  onAutopopulateProgress: (callback: (payload: { current: number; total: number; filePath: string }) => void): (() => void) =>
+    subscribe('autopopulate-progress', callback),
   scanMissingAlbumArt: (): Promise<{ id: string; tracks: AlbumArtMissingTrack[] }> =>
     ipcRenderer.invoke('scan-missing-album-art'),
-  onPolishScanProgress: (callback: (payload: AlbumArtScanProgress) => void) =>
-    ipcRenderer.on('polish-scan-progress', (_event, payload: AlbumArtScanProgress) => callback(payload)),
+  onPolishScanProgress: (callback: (payload: AlbumArtScanProgress) => void): (() => void) =>
+    subscribe('polish-scan-progress', callback),
   updateTrackTags: (params: UpdateTagsParams): Promise<TrackInfo> =>
     ipcRenderer.invoke('update-track-tags', params),
   getTrackInfo: (filePath: string): Promise<TrackInfo | null> =>
@@ -91,11 +96,8 @@ contextBridge.exposeInMainWorld('candybar', {
   organizeTracks: (
     tracks: Array<{ filePath: string; ignored: boolean; isHealthy?: boolean }>
   ): Promise<OrganizeResult[]> => ipcRenderer.invoke('organize-tracks', { tracks }),
-  onOrganizeProgress: (callback: (payload: OrganizeProgress) => void) => {
-    const listener = (_e: unknown, payload: OrganizeProgress) => callback(payload);
-    ipcRenderer.on('organize-progress', listener);
-    return () => ipcRenderer.off('organize-progress', listener);
-  },
+  onOrganizeProgress: (callback: (payload: OrganizeProgress) => void): (() => void) =>
+    subscribe('organize-progress', callback),
 
   organizeResolveConflict: (
     incomingPath: string, existingPath: string, targetPath: string, keep: 'incoming' | 'existing'
@@ -118,9 +120,11 @@ contextBridge.exposeInMainWorld('candybar', {
   // Library health scan
   scanLibraryHealth: (useCache = true, cacheOnly = false): Promise<{ id: string; result?: LibraryHealthResult; fromCache: boolean; cacheOnly?: boolean }> =>
     ipcRenderer.invoke('scan-library-health', { useCache, cacheOnly }),
-  onHealthScanProgress: (callback: (payload: HealthScanProgress) => void) =>
-    ipcRenderer.on('health-scan-progress', (_event, payload: HealthScanProgress) => callback(payload)),
-  deleteTrackFile: (filePath: string): Promise<{ success: boolean; error?: string }> =>
+  onHealthScanProgress: (callback: (payload: HealthScanProgress) => void): (() => void) =>
+    subscribe('health-scan-progress', callback),
+  // Fails (success: false) rather than reporting success if the file couldn't be
+  // moved to the Trash. A file deleted from the intake folder is never fetched again.
+  deleteTrackFile: (filePath: string): Promise<{ success: boolean; trashPath?: string; error?: string }> =>
     ipcRenderer.invoke('delete-track-file', { filePath }),
   fixTrackFile: (filePath: string, deleteOriginal: boolean): Promise<ConversionResult> =>
     ipcRenderer.invoke('fix-track-file', { filePath, deleteOriginal }),
@@ -192,10 +196,12 @@ contextBridge.exposeInMainWorld('candybar', {
     ipcRenderer.invoke('job-cancel', { jobId }),
   jobList: (): Promise<JobInfo[]> =>
     ipcRenderer.invoke('job-list'),
-  onJobUpdate: (callback: (info: JobInfo) => void) =>
-    ipcRenderer.on('job-update', (_event, info: JobInfo) => callback(info)),
-  onJobProgress: (callback: (progress: JobProgress) => void) =>
-    ipcRenderer.on('job-progress', (_event, progress: JobProgress) => callback(progress)),
+  onJobUpdate: (callback: (info: JobInfo) => void): (() => void) =>
+    subscribe('job-update', callback),
+  // Progress for every job-queue job (library scans, USB health scans, …);
+  // filter on progress.jobId / jobType.
+  onJobProgress: (callback: (progress: JobProgress) => void): (() => void) =>
+    subscribe('job-progress', callback),
 
   // Ignored tracks
   ignoreTrack: (key: string, artist: string, title: string): Promise<{ success: boolean }> =>
@@ -224,32 +230,34 @@ contextBridge.exposeInMainWorld('candybar', {
     ipcRenderer.invoke('source-export-csv', { content, filePath }),
 
   // Combined library-check + store-search pipeline (replaces both check-library
-  // and source-search in the merged tab). Phase 1 is library fuzzy-match,
-  // phase 2 is store search for the uncertain + missing subset.
-  librarySourcingRun: (source: { csvPath?: string; spotifyPlaylistUrl?: string }) =>
+  // and source-search in the merged tab). Phase 1 checks the Rekordbox
+  // collection, phase 2 is store search for the probable + missing subset.
+  librarySourcingRun: (source: { csvPath?: string; spotifyPlaylistUrl?: string; soundcloudSetUrl?: string }) =>
     ipcRenderer.invoke('library-sourcing:run', source),
-  onLibrarySourcingPhase1Progress: (callback: (payload: { phase?: string; current: number; total: number; message?: string }) => void) =>
-    ipcRenderer.on('library-sourcing:phase1-progress', (_event, payload) => callback(payload)),
-  onLibrarySourcingPhase2Progress: (callback: (payload: { current: number; total: number; currentTrack: string }) => void) =>
-    ipcRenderer.on('library-sourcing:phase2-progress', (_event, payload) => callback(payload)),
-  onLibrarySourcingPhase2Match: (callback: (match: unknown) => void) =>
-    ipcRenderer.on('library-sourcing:phase2-match', (_event, match) => callback(match)),
-  onLibrarySourcingPlaylistInfo: (callback: (info: import('./types').SourcePlaylistInfo) => void) =>
-    ipcRenderer.on('library-sourcing:playlist-info', (_event, info) => callback(info)),
+  onLibrarySourcingPhase1Progress: (callback: (payload: { phase?: string; current: number; total: number; message?: string }) => void): (() => void) =>
+    subscribe('library-sourcing:phase1-progress', callback),
+  onLibrarySourcingPhase2Progress: (callback: (payload: { current: number; total: number; currentTrack: string }) => void): (() => void) =>
+    subscribe('library-sourcing:phase2-progress', callback),
+  onLibrarySourcingPhase2Match: (callback: (match: unknown) => void): (() => void) =>
+    subscribe('library-sourcing:phase2-match', callback),
+  onLibrarySourcingPlaylistInfo: (callback: (info: import('./types').SourcePlaylistInfo) => void): (() => void) =>
+    subscribe('library-sourcing:playlist-info', callback),
 
-  // Qobuz cart integration
+  // Lossless upgrades (Rekordbox playlist → lossless copies of its lossy tracks)
+  upgradeListPlaylists: (): Promise<{ success: boolean; playlists?: import('./types').RekordboxPlaylistSummary[]; error?: string }> =>
+    ipcRenderer.invoke('lossless-upgrade:list-playlists'),
+  upgradeRun: (playlistId: string): Promise<{ success: boolean; result?: import('./types').LosslessUpgradeResult; error?: string }> =>
+    ipcRenderer.invoke('lossless-upgrade:run', { playlistId }),
+  onUpgradeProgress: (callback: (p: import('./types').LosslessUpgradeProgress) => void): (() => void) =>
+    subscribe('lossless-upgrade:progress', callback),
+
+  // Qobuz + Beatport search (no cart add here — see storeCartAdd)
   qobuzCartSearch: (tracks: Array<{ key: string; artist: string; title: string; album?: string; duration?: number }>) =>
     ipcRenderer.invoke('qobuz-cart-search', { tracks }),
-  onQobuzCartSearchProgress: (callback: (payload: { current: number; total: number; currentTrack: string }) => void) =>
-    ipcRenderer.on('qobuz-cart-search-progress', (_event, payload) => callback(payload)),
-  onQobuzCartSearchMatch: (callback: (match: unknown) => void) =>
-    ipcRenderer.on('qobuz-cart-search-match', (_event, match) => callback(match)),
-  qobuzCartAdd: (tracks: Array<{ id: string; url: string; name: string; artists: string[] }>) =>
-    ipcRenderer.invoke('qobuz-cart-add', { tracks }),
-  onQobuzCartAddProgress: (callback: (payload: { current: number; total: number; currentTrack: string; phase: string; message: string }) => void) =>
-    ipcRenderer.on('qobuz-cart-add-progress', (_event, payload) => callback(payload)),
-  qobuzBrowserClose: () => ipcRenderer.invoke('qobuz-browser-close'),
-  qobuzBrowserStatus: () => ipcRenderer.invoke('qobuz-browser-status'),
+  onQobuzCartSearchProgress: (callback: (payload: { current: number; total: number; currentTrack: string }) => void): (() => void) =>
+    subscribe('qobuz-cart-search-progress', callback),
+  onQobuzCartSearchMatch: (callback: (match: unknown) => void): (() => void) =>
+    subscribe('qobuz-cart-search-match', callback),
 
   // Store purchase integration
   storeLogin: (store: 'qobuz' | 'beatport'): Promise<{ success: boolean; error?: string; perAccount?: Record<string, boolean> }> =>
@@ -266,68 +274,33 @@ contextBridge.exposeInMainWorld('candybar', {
     accountId: string
   ): Promise<{ success: boolean; error?: string }> =>
     ipcRenderer.invoke('store-logout-account', { store, accountId }),
-  fetchStorePurchases: (source: 'qobuz' | 'beatport'): Promise<{ success: boolean; owned?: Array<{ source: 'qobuz' | 'beatport'; trackId: string; artist: string; title: string }>; error?: string }> =>
+  // `errors` names accounts whose purchases couldn't be read; `complete` is false
+  // then, and an empty `owned` means "couldn't check", not "owns nothing".
+  fetchStorePurchases: (source: 'qobuz' | 'beatport'): Promise<{ success: boolean; owned?: Array<{ source: 'qobuz' | 'beatport'; trackId: string; artist: string; title: string }>; errors?: string[]; complete?: boolean; error?: string }> =>
     ipcRenderer.invoke('fetch-store-purchases', { source }),
-  probeBeatportPurchases: (): Promise<{ success: boolean; results?: Array<{ url: string; auth: string; status: number; ok: boolean; bodySnippet: string; topLevelKeys?: string[]; count?: number; firstResultKeys?: string[]; firstResultSample?: unknown }>; outPath?: string; error?: string }> =>
-    ipcRenderer.invoke('probe-beatport-purchases'),
-  probeQobuzDownload: (trackId: string): Promise<{ success: boolean; results?: Array<{ url: string; method: string; status: number; ok: boolean; body: string; parsed?: unknown }>; error?: string }> =>
-    ipcRenderer.invoke('probe-qobuz-download', { trackId }),
-  probeQobuzPurchases: (): Promise<{ success: boolean; results?: Array<{ url: string; method: string; status: number; ok: boolean; bodyLength: number; bodySnippet: string; hasListItems?: boolean; jsonTopLevelKeys?: string[] }>; outPath?: string; error?: string }> =>
-    ipcRenderer.invoke('probe-qobuz-purchases'),
-  openQobuzLoginWindow: (): Promise<{ success: boolean; error?: string }> =>
-    ipcRenderer.invoke('open-qobuz-login-window'),
-  sniffQobuzHeaders: (): Promise<{ success: boolean; capturedCount?: number; totalUrls?: number; outPath?: string; sample?: Array<{ url: string; headers: Record<string, string> }>; urlSample?: string[]; error?: string }> =>
-    ipcRenderer.invoke('sniff-qobuz-headers'),
-  sniffBeatportHeaders: (): Promise<{ success: boolean; capturedCount?: number; totalUrls?: number; outPath?: string; error?: string }> =>
-    ipcRenderer.invoke('sniff-beatport-headers'),
-  probeBeatportDownloadLink: (trackId: string, orderItemDownloadId?: string): Promise<{ success: boolean; results?: Array<{ url: string; auth: string; status: number; ok: boolean; bodySnippet: string; topLevelKeys?: string[]; firstResultSample?: unknown }>; error?: string }> =>
-    ipcRenderer.invoke('probe-beatport-download-link', { trackId, orderItemDownloadId }),
   downloadBeatportMatches: (matches: unknown[], destDir: string): Promise<{ success: boolean; downloaded?: string[]; failed?: Array<{ artist: string; title: string; error: string }>; destDir?: string; error?: string }> =>
     ipcRenderer.invoke('download-beatport-matches', { matches, destDir }),
   downloadBeatportMatchesConcurrent: (matches: unknown[], destDir: string, concurrency: number): Promise<{ success: boolean; downloaded?: string[]; failed?: Array<{ artist: string; title: string; error: string }>; destDir?: string; error?: string }> =>
     ipcRenderer.invoke('download-beatport-matches-concurrent', { matches, destDir, concurrency }),
   downloadQobuzMatchesConcurrent: (matches: unknown[], destDir: string, concurrency: number): Promise<{ success: boolean; downloaded?: string[]; failed?: Array<{ artist: string; title: string; error: string }>; destDir?: string; error?: string }> =>
     ipcRenderer.invoke('download-qobuz-matches-concurrent', { matches, destDir, concurrency }),
-  onDownloadQobuzProgress: (callback: (p: { current: number; total: number; currentTrack: string; phase: string; message: string }) => void) => {
-    const listener = (_e: unknown, p: Parameters<typeof callback>[0]) => callback(p);
-    ipcRenderer.on('download-qobuz-progress', listener);
-    return () => ipcRenderer.off('download-qobuz-progress', listener);
-  },
-  onDownloadBeatportProgress: (callback: (p: { current: number; total: number; currentTrack: string; phase: string; message: string }) => void) => {
-    const listener = (_e: unknown, p: Parameters<typeof callback>[0]) => callback(p);
-    ipcRenderer.on('download-beatport-progress', listener);
-    return () => ipcRenderer.off('download-beatport-progress', listener);
-  },
-  storeSearch: (tracks: StoreTrackInput[], source: 'qobuz' | 'beatport'): Promise<{ success: boolean; result?: StoreSearchResult; error?: string }> =>
-    ipcRenderer.invoke('store-search', { tracks, source }),
-  storeSearchAll: (tracks: StoreTrackInput[]): Promise<{ success: boolean; matchCount?: number; error?: string }> =>
-    ipcRenderer.invoke('store-search-all', { tracks }),
-  onStoreSearchProgress: (callback: (payload: StoreSearchProgress) => void) =>
-    ipcRenderer.on('store-search-progress', (_event, payload: StoreSearchProgress) => callback(payload)),
-  onStoreSearchMatch: (callback: (match: StoreMatch) => void) =>
-    ipcRenderer.on('store-search-match', (_event, match: StoreMatch) => callback(match)),
+  onDownloadQobuzProgress: (callback: (p: { current: number; total: number; currentTrack: string; phase: string; message: string }) => void): (() => void) =>
+    subscribe('download-qobuz-progress', callback),
+  onDownloadBeatportProgress: (callback: (p: { current: number; total: number; currentTrack: string; phase: string; message: string }) => void): (() => void) =>
+    subscribe('download-beatport-progress', callback),
+  // Lossless only: main excludes any match whose `lossless` isn't true and
+  // returns it in result.failed ("Excluded: not a lossless match").
   storeCartAdd: (matches: StoreMatch[], source: 'qobuz' | 'beatport'): Promise<{ success: boolean; result?: StoreCartResult; error?: string }> =>
     ipcRenderer.invoke('store-cart-add', { matches, source }),
-  onStoreCartProgress: (callback: (payload: StoreCartProgress) => void) => {
-    const wrapped = (_event: Electron.IpcRendererEvent, payload: StoreCartProgress) => callback(payload);
-    ipcRenderer.on('store-cart-progress', wrapped);
-    // Tag the callback so offStoreCartProgress can find and remove it.
-    (callback as unknown as { __wrapped?: typeof wrapped }).__wrapped = wrapped;
-  },
-  offStoreCartProgress: (callback: (payload: StoreCartProgress) => void) => {
-    const wrapped = (callback as unknown as { __wrapped?: (event: Electron.IpcRendererEvent, payload: StoreCartProgress) => void }).__wrapped;
-    if (wrapped) ipcRenderer.removeListener('store-cart-progress', wrapped);
-  },
+  onStoreCartProgress: (callback: (payload: StoreCartProgress) => void): (() => void) =>
+    subscribe('store-cart-progress', callback),
   storeOpenCart: (store: 'qobuz' | 'beatport'): Promise<{ success: boolean }> =>
     ipcRenderer.invoke('store-open-cart', { store }),
-  storeLoadResults: (): Promise<{ success: boolean; matches?: StoreMatch[]; savedAt?: string; trackCount?: number }> =>
-    ipcRenderer.invoke('store-load-results'),
-  storeClearResults: (): Promise<{ success: boolean }> =>
-    ipcRenderer.invoke('store-clear-results'),
-  storeDownloadPurchases: (matches: StoreMatch[]): Promise<{ success: boolean; downloaded?: number; failed?: Array<{ artist: string; title: string; error: string }>; destDir?: string; error?: string }> =>
+  // `skipped` are tracks you deleted earlier, left out on purpose (deleted stays deleted).
+  storeDownloadPurchases: (matches: StoreMatch[]): Promise<{ success: boolean; downloaded?: number; failed?: Array<{ artist: string; title: string; error: string }>; skipped?: Array<{ trackId: string; artist: string; title: string; reason: string }>; destDir?: string; error?: string }> =>
     ipcRenderer.invoke('store-download-purchases', { matches }),
-  onStoreDownloadProgress: (callback: (payload: { current: number; total: number; currentTrack: string; phase: string; message: string }) => void) =>
-    ipcRenderer.on('store-download-progress', (_event, payload) => callback(payload)),
+  onStoreDownloadProgress: (callback: (payload: { current: number; total: number; currentTrack: string; phase: string; message: string }) => void): (() => void) =>
+    subscribe('store-download-progress', callback),
 
   // Store panel (embedded browser)
   storePanelOpen: (store: 'qobuz' | 'beatport', url: string): Promise<{ success: boolean }> =>
@@ -344,9 +317,11 @@ contextBridge.exposeInMainWorld('candybar', {
     ipcRenderer.invoke('store-panel-nav', { url }),
   storePanelStatus: (): Promise<{ open: boolean; store: string | null; url: string | null }> =>
     ipcRenderer.invoke('store-panel-status'),
+  // Both refuse (success: false) unless the panel is on the store's own cart or
+  // checkout pages. `itemCount` is scraped from the page; null when it says none.
   storePanelCheckoutAdvance: (store: 'qobuz' | 'beatport'): Promise<{
     success: boolean;
-    result?: { phase: 'place-order-ready'; total: string | null; buttonText: string }
+    result?: { phase: 'place-order-ready'; total: string | null; itemCount: number | null; buttonText: string }
             | { phase: 'advanced'; clickedText: string }
             | { phase: 'unknown' };
     error?: string;
@@ -354,12 +329,12 @@ contextBridge.exposeInMainWorld('candybar', {
     ipcRenderer.invoke('store-panel-checkout-advance', { store }),
   storePanelPlaceOrder: (store: 'qobuz' | 'beatport'): Promise<{ success: boolean; clickedText?: string; error?: string }> =>
     ipcRenderer.invoke('store-panel-place-order', { store }),
-  onStorePanelState: (callback: (state: { open: boolean; store?: string | null; url?: string; partition?: string }) => void) =>
-    ipcRenderer.on('store-panel-state', (_event, state) => callback(state)),
-  onStorePanelAuth: (callback: (auth: { store: string; loggedIn: boolean }) => void) =>
-    ipcRenderer.on('store-panel-auth', (_event, auth) => callback(auth)),
-  onStorePanelNavigated: (callback: (nav: { url: string }) => void) =>
-    ipcRenderer.on('store-panel-navigated', (_event, nav) => callback(nav)),
+  onStorePanelState: (callback: (state: { open: boolean; store?: string | null; url?: string; partition?: string }) => void): (() => void) =>
+    subscribe('store-panel-state', callback),
+  onStorePanelAuth: (callback: (auth: { store: string; loggedIn: boolean }) => void): (() => void) =>
+    subscribe('store-panel-auth', callback),
+  onStorePanelNavigated: (callback: (nav: { url: string }) => void): (() => void) =>
+    subscribe('store-panel-navigated', callback),
 
   // Rekordbox XML repair
   rekordboxScan: (): Promise<{ total: number; missing: Array<{ trackId: string; filePath: string; artist: string; title: string; album: string }>; libraryRoot: string; xmlPath: string }> =>
@@ -374,10 +349,8 @@ contextBridge.exposeInMainWorld('candybar', {
     ipcRenderer.invoke('list-volumes'),
   excludeVolume: (name: string): Promise<{ success: boolean; error?: string }> =>
     ipcRenderer.invoke('exclude-volume', { name }),
-  onUsbHealthProgress: (callback: (payload: UsbHealthProgress) => void) =>
-    ipcRenderer.on('usb-health-progress', (_event, payload: UsbHealthProgress) => callback(payload)),
-  offUsbHealthProgress: () =>
-    ipcRenderer.removeAllListeners('usb-health-progress'),
+  // (USB health scan progress arrives on onJobProgress; nothing sends the old
+  // usb-health-progress channel.)
 
   // Restore Library
   restoreListVolumes: (): Promise<{ success: boolean; volumes?: Array<{ name: string; mountPath: string; scanRoot: string }>; error?: string }> =>
@@ -401,18 +374,15 @@ contextBridge.exposeInMainWorld('candybar', {
       phaseStatus?: 'start' | 'update' | 'end' | 'skipped';
       message: string;
       currentTrack?: string;
-      totals: { totalXmlTracks: number; alreadyInLibrary: number; missing: number; recovered: number; stillMissing: number };
+      /** deletedSkipped: tracks left out because you deleted them before (they stay deleted). */
+      totals: { totalXmlTracks: number; alreadyInLibrary: number; missing: number; recovered: number; stillMissing: number; deletedSkipped?: number };
       elapsedSec: number;
       estRemainingSec?: number;
       rate?: number;
       perAccount?: Array<{ accountId: string; service: 'qobuz' | 'beatport'; label?: string; email?: string; ownedCount?: number; matchedCount?: number; downloadedCount?: number; failedCount?: number }>;
       log?: { level: 'info' | 'warn' | 'error'; phase: string; message: string; timestamp: number; currentTrack?: string };
     }) => void,
-  ) => {
-    const listener = (_e: unknown, p: Parameters<typeof callback>[0]) => callback(p);
-    ipcRenderer.on('restore-progress', listener);
-    return () => ipcRenderer.off('restore-progress', listener);
-  },
+  ): (() => void) => subscribe('restore-progress', callback),
 
   // Splice recovery (Ableton .als sample re-download)
   spliceLoginStatus: (): Promise<{ success: boolean; status?: { connected: boolean; tokenExpiresAt: number | null; hasProfile: boolean }; error?: string }> =>
@@ -467,9 +437,5 @@ contextBridge.exposeInMainWorld('candybar', {
       | { phase: 'downloading'; index: number; total: number; sample: { originalPath: string; basename: string }; status?: 'ok' | 'fail'; error?: string }
       | { phase: 'complete' }
     ) => void,
-  ) => {
-    const listener = (_e: unknown, p: Parameters<typeof callback>[0]) => callback(p);
-    ipcRenderer.on('splice-progress', listener);
-    return () => ipcRenderer.off('splice-progress', listener);
-  },
+  ): (() => void) => subscribe('splice-progress', callback),
 });

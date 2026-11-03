@@ -152,34 +152,3 @@ export async function clearCacheEntry(type: 'libraryCheck'): Promise<void> {
   delete store[type];
   persistToDisk();
 }
-
-let backgroundRefreshTimer: NodeJS.Timeout | null = null;
-
-export function startBackgroundRefresh(callbacks: {
-  onRefreshLibraryCheck?: (libraryRoot: string, csvPath: string) => Promise<void>;
-}): void {
-  stopBackgroundRefresh();
-  const REFRESH_INTERVAL_MS = 10 * 60 * 1000; // 10 minutes
-
-  backgroundRefreshTimer = setInterval(async () => {
-    const checkEntry = store.libraryCheck;
-    if (checkEntry && callbacks.onRefreshLibraryCheck) {
-      const age = Date.now() - checkEntry.timestamp;
-      if (age >= REFRESH_INTERVAL_MS) {
-        log.info('Background refresh: library check');
-        try {
-          await callbacks.onRefreshLibraryCheck(checkEntry.libraryRoot, checkEntry.csvPath!);
-        } catch (err) {
-          log.error('Background refresh failed for library check:', err);
-        }
-      }
-    }
-  }, REFRESH_INTERVAL_MS);
-}
-
-export function stopBackgroundRefresh(): void {
-  if (backgroundRefreshTimer) {
-    clearInterval(backgroundRefreshTimer);
-    backgroundRefreshTimer = null;
-  }
-}

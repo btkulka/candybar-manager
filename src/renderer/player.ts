@@ -16,6 +16,8 @@ const volumeSlider = document.getElementById('sidebar-player-volume') as HTMLInp
 const muteBtn = document.getElementById('sidebar-player-mute') as HTMLButtonElement;
 
 let currentFilePath: string | null = null;
+/** Bumped per track so a slow art read for the last track can't touch this one. */
+let artToken = 0;
 
 // Persisted volume across audio instances + sessions.
 const VOLUME_STORAGE_KEY = 'candybar.player.volume';
@@ -46,6 +48,8 @@ function updateProgress() {
   const pct = audio.duration ? (audio.currentTime / audio.duration) * 100 : 0;
   progressBar.style.width = `${pct}%`;
   timeEl.textContent = formatTime(audio.currentTime);
+  progressWrap.setAttribute('aria-valuenow', String(Math.round(audio.currentTime)));
+  progressWrap.setAttribute('aria-valuetext', formatTime(audio.currentTime));
   if (!audio.paused) {
     animFrameId = requestAnimationFrame(updateProgress);
   }
@@ -71,19 +75,20 @@ function buildMediaUrl(filePath: string): string {
 }
 
 async function loadAlbumArt(filePath: string) {
+  const token = ++artToken;
   artEl.innerHTML = '';
+  playerEl.classList.remove('has-art');
   try {
     const dataUrl = await window.candybar.getTrackAlbumArt(filePath);
-    if (dataUrl && currentFilePath === filePath) {
+    if (token !== artToken) return; // another track started meanwhile
+    if (dataUrl) {
       const img = document.createElement('img');
       img.src = dataUrl;
       img.alt = 'Album art';
       artEl.appendChild(img);
       playerEl.classList.add('has-art');
-      return;
     }
-  } catch { /* ignore */ }
-  playerEl.classList.remove('has-art');
+  } catch { /* no art; the placeholder stays */ }
 }
 
 export function stopPlayer() {
@@ -101,7 +106,6 @@ export function stopPlayer() {
   timeEl.textContent = '0:00';
   durationEl.textContent = '0:00';
   currentFilePath = null;
-  document.querySelectorAll('.preview-btn.playing').forEach(btn => btn.classList.remove('playing'));
 }
 
 export function playFile(filePath: string, displayName?: string) {
@@ -133,6 +137,7 @@ export function playFile(filePath: string, displayName?: string) {
   audio.addEventListener('loadedmetadata', () => {
     if (!audio) return;
     durationEl.textContent = formatTime(audio.duration);
+    progressWrap.setAttribute('aria-valuemax', String(Math.round(audio.duration || 0)));
     audio.play();
     setPlaying(true);
     animFrameId = requestAnimationFrame(updateProgress);
@@ -181,6 +186,27 @@ export function initPlayer() {
     const rect = progressWrap.getBoundingClientRect();
     const pct = (e.clientX - rect.left) / rect.width;
     audio.currentTime = pct * audio.duration;
+    updateProgress();
+  });
+
+  // Keyboard seeking: the bar is a slider. Arrows move 5 s, Page keys 30 s,
+  // Home/End jump to the ends.
+  progressWrap.tabIndex = 0;
+  progressWrap.setAttribute('role', 'slider');
+  progressWrap.setAttribute('aria-label', 'Playback position');
+  progressWrap.setAttribute('aria-valuemin', '0');
+  progressWrap.setAttribute('aria-valuemax', '0');
+  progressWrap.setAttribute('aria-valuenow', '0');
+  progressWrap.addEventListener('keydown', (e) => {
+    if (!audio || !audio.duration) return;
+    const steps: Record<string, number> = { ArrowRight: 5, ArrowUp: 5, ArrowLeft: -5, ArrowDown: -5, PageUp: 30, PageDown: -30 };
+    let next: number | null = null;
+    if (e.key in steps) next = audio.currentTime + steps[e.key];
+    else if (e.key === 'Home') next = 0;
+    else if (e.key === 'End') next = audio.duration;
+    if (next === null) return;
+    e.preventDefault();
+    audio.currentTime = Math.min(audio.duration, Math.max(0, next));
     updateProgress();
   });
 

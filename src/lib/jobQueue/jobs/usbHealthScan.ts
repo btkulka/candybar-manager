@@ -19,6 +19,6 @@ export const usbHealthScanJob: JobDefinition<UsbHealthParams, UsbHealthResult> =
         message: `${p.phase}: ${p.current}/${p.total}`,
         detail: p.currentFile
       });
-    });
+    }, ctx.signal);
   }
 };

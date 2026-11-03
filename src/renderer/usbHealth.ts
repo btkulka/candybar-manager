@@ -1,26 +1,11 @@
-import type { VolumeInfo, UsbHealthResult, UsbHealthProgress, LibraryHealthTrack } from './shared';
+import type { VolumeInfo, UsbHealthResult, LibraryHealthTrack } from './shared';
+import type { JobProgress } from '../types';
 import { showToast, escapeHtml, getErrorMessage } from './shared';
-
-// ========== Pioneer Device Catalog ==========
-
-type PioneerDevice = {
-  name: string;
-  category: 'flagship' | 'all-in-one' | 'media-player';
-  supportedFS: string[];       // normalized names
-  supportedFormats: Set<string>; // uppercase container names
-};
-
-const PIONEER_DEVICES: PioneerDevice[] = [
-  { name: 'CDJ-3000',    category: 'flagship',     supportedFS: ['FAT32', 'FAT16', 'HFS+', 'exFAT'], supportedFormats: new Set(['WAVE', 'AIFF', 'MPEG', 'MP4', 'FLAC']) },
-  { name: 'CDJ-2000NXS2',category: 'flagship',     supportedFS: ['FAT32', 'FAT16', 'HFS+'],          supportedFormats: new Set(['WAVE', 'AIFF', 'MPEG', 'MP4', 'FLAC']) },
-  { name: 'CDJ-2000NXS', category: 'flagship',     supportedFS: ['FAT32', 'FAT16', 'HFS+'],          supportedFormats: new Set(['WAVE', 'AIFF', 'MPEG', 'MP4']) },
-  { name: 'XDJ-RX3',     category: 'all-in-one',   supportedFS: ['FAT32', 'FAT16', 'HFS+'],          supportedFormats: new Set(['WAVE', 'AIFF', 'MPEG', 'MP4']) },
-  { name: 'XDJ-RX2',     category: 'all-in-one',   supportedFS: ['FAT32', 'FAT16', 'HFS+'],          supportedFormats: new Set(['WAVE', 'AIFF', 'MPEG', 'MP4']) },
-  { name: 'XDJ-XZ',      category: 'all-in-one',   supportedFS: ['FAT32', 'FAT16', 'HFS+'],          supportedFormats: new Set(['WAVE', 'AIFF', 'MPEG', 'MP4', 'FLAC']) },
-  { name: 'OPUS-QUAD',   category: 'all-in-one',   supportedFS: ['FAT32', 'FAT16', 'exFAT', 'HFS+'], supportedFormats: new Set(['WAVE', 'AIFF', 'MPEG', 'MP4', 'FLAC']) },
-  { name: 'XDJ-1000MK2', category: 'media-player', supportedFS: ['FAT32', 'FAT16', 'HFS+'],          supportedFormats: new Set(['WAVE', 'AIFF', 'MPEG', 'MP4', 'FLAC']) },
-  { name: 'XDJ-700',     category: 'media-player', supportedFS: ['FAT32', 'FAT16', 'HFS+'],          supportedFormats: new Set(['WAVE', 'AIFF', 'MPEG', 'MP4']) },
-];
+import { type SortKey, getFilteredTracks, sortTracks, createTrackRow } from './healthTrackTable';
+import {
+  type PioneerDevice, PIONEER_DEVICES,
+  containerLabel, countFormats, categoryLabel, deviceReadsFS, normalizeFS,
+} from './pioneerDevices';
 
 // All filesystems and formats that can possibly appear as matrix rows
 const KNOWN_FORMATS = ['WAVE', 'AIFF', 'MPEG', 'MP4', 'FLAC', 'OGG'] as const;
@@ -45,11 +30,28 @@ const checklistEl = document.getElementById('usb-checklist') as HTMLDivElement;
 const formatBreakdownEl = document.getElementById('usb-format-breakdown') as HTMLDivElement;
 const kpiRowEl = document.getElementById('usb-kpi-row') as HTMLDivElement;
 
+const tableBody = document.getElementById('usb-table-body') as HTMLTableSectionElement;
+const tableEl = document.getElementById('usb-data-table') as HTMLTableElement;
+const tableEmpty = document.getElementById('usb-table-empty') as HTMLElement;
+const trackCountEl = document.getElementById('usb-track-count') as HTMLSpanElement;
+const filterTabs = document.querySelectorAll<HTMLButtonElement>('.usb-filter-tab');
+
 // ========== State ==========
 
 let usbResult: UsbHealthResult | null = null;
 let selectedVolumePath: string | null = null;
 let scanRunning = false;
+
+// Track table: problems sort to the top so they're the first thing on screen.
+let tableFilter: 'all' | 'errors' | 'warnings' = 'all';
+let sortKey: SortKey = 'status';
+let sortDir: 'asc' | 'desc' = 'desc';
+
+// Progress for the scan this page started. job-progress carries no context
+// key, so the job id is latched from the first event whose file sits under
+// the drive being scanned; later events must match that id.
+let scanVolumePath: string | null = null;
+let scanJobId: string | null = null;
 
 // ========== SVG icons ==========
 
@@ -67,34 +69,6 @@ function formatBytes(bytes: number): string {
   return `${(bytes / Math.pow(1024, i)).toFixed(i > 1 ? 1 : 0)} ${units[i]}`;
 }
 
-function containerLabel(container: string): string {
-  const map: Record<string, string> = {
-    'WAVE': 'WAV', 'AIFF': 'AIFF', 'MPEG': 'MP3', 'MP4': 'AAC',
-    'FLAC': 'FLAC', 'OGG': 'OGG', 'Unknown': '?',
-  };
-  return map[container] || container;
-}
-
-function normalizeFS(fs: string): string {
-  const upper = fs.toUpperCase().replace(/[^A-Z0-9]/g, '');
-  if (upper.includes('FAT32') || upper === 'MSDOSFAT32') return 'FAT32';
-  if (upper.includes('FAT16') || upper === 'MSDOSFAT16') return 'FAT16';
-  if (upper.includes('EXFAT')) return 'exFAT';
-  if (upper.includes('HFS') || upper.includes('APFS')) return 'HFS+';
-  if (upper.includes('NTFS')) return 'NTFS';
-  if (upper.includes('FAT')) return 'FAT32';
-  return fs;
-}
-
-function countFormats(tracks: LibraryHealthTrack[]): Record<string, number> {
-  const counts: Record<string, number> = {};
-  for (const t of tracks) {
-    const fmt = (t.format.container || 'Unknown').toUpperCase();
-    counts[fmt] = (counts[fmt] || 0) + 1;
-  }
-  return counts;
-}
-
 // ========== Volume list rendering ==========
 
 function renderVolumeList(volumes: VolumeInfo[]) {
@@ -110,6 +84,9 @@ function renderVolumeList(volumes: VolumeInfo[]) {
     row.className = 'usb-volume-row';
     if (selectedVolumePath === vol.path) row.classList.add('selected');
     row.dataset.path = vol.path;
+    row.tabIndex = 0;
+    row.setAttribute('role', 'button');
+    row.setAttribute('aria-pressed', String(selectedVolumePath === vol.path));
 
     const fsBadgeClass = vol.isCompatible ? 'ok' : 'warn';
     const fsFriendly = vol.isCompatible ? 'FAT32' : escapeHtml(vol.fileSystem || 'Unknown');
@@ -125,15 +102,21 @@ function renderVolumeList(volumes: VolumeInfo[]) {
           <div class="usb-volume-row-meta">${freeLabel}</div>
         </div>
       </div>
-      <span class="usb-fs-pill ${fsBadgeClass}">${fsFriendly}</span>
+      <span class="usb-fs-pill ${fsBadgeClass}" title="${escapeHtml(fileSystemHint(vol.isCompatible))}">${fsFriendly}</span>
     `;
 
-    row.addEventListener('click', () => {
+    const select = () => {
       selectedVolumePath = vol.path;
-      volumeList.querySelectorAll('.usb-volume-row').forEach((r) => {
-        r.classList.toggle('selected', (r as HTMLElement).dataset.path === vol.path);
+      volumeList.querySelectorAll<HTMLElement>('.usb-volume-row').forEach((r) => {
+        const on = r.dataset.path === vol.path;
+        r.classList.toggle('selected', on);
+        r.setAttribute('aria-pressed', String(on));
       });
-      scanBtn.disabled = false;
+      scanBtn.disabled = scanRunning;
+    };
+    row.addEventListener('click', select);
+    row.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); select(); }
     });
 
     volumeList.appendChild(row);
@@ -141,6 +124,18 @@ function renderVolumeList(volumes: VolumeInfo[]) {
 }
 
 // ========== Drive Overview (hero strip) ==========
+
+const VERDICT_HINTS: Record<'ok' | 'warn' | 'error', string> = {
+  ok: 'Every check passed. This drive should play fine.',
+  warn: 'It should play, but some tracks are worth fixing. Details are below.',
+  error: 'Some tracks won\'t play, or the drive format is wrong. Details are below.',
+};
+
+function fileSystemHint(compatible: boolean): string {
+  return compatible
+    ? 'The drive\'s format. FAT32 is read by every Pioneer player.'
+    : 'The drive\'s format. Some Pioneer players only read FAT32. To change it, copy your music off, then reformat as MS-DOS (FAT) in Disk Utility. Reformatting erases the drive.';
+}
 
 function renderDriveOverview(result: UsbHealthResult) {
   const { volume, summary } = result;
@@ -170,12 +165,12 @@ function renderDriveOverview(result: UsbHealthResult) {
       <div class="usb-drive-hero-info">
         <div class="usb-drive-hero-name">${escapeHtml(volume.name)}</div>
         <div class="usb-drive-hero-meta">
-          <span class="usb-fs-pill ${fsClass}">${fsLabel}</span>
+          <span class="usb-fs-pill ${fsClass}" title="${escapeHtml(fileSystemHint(volume.isCompatible))}">${fsLabel}</span>
           <span class="usb-drive-hero-stat">${summary.total} tracks</span>
           <span class="usb-drive-hero-stat">${formatBytes(volume.totalBytes)} total</span>
         </div>
       </div>
-      <div class="usb-verdict ${verdictClass}">
+      <div class="usb-verdict ${verdictClass}" title="${escapeHtml(VERDICT_HINTS[verdictClass])}">
         <span class="usb-verdict-icon">${verdictIcon}</span>
         <span class="usb-verdict-label">${verdictLabel}</span>
       </div>
@@ -211,7 +206,7 @@ function computeMatrix(result: UsbHealthResult): {
     label: volumeFS || result.volume.fileSystem || 'Unknown',
     type: 'fs',
     key: volumeFS,
-    cells: PIONEER_DEVICES.map(d => d.supportedFS.some(fs => normalizeFS(fs) === volumeFS) ? 'pass' : 'fail'),
+    cells: PIONEER_DEVICES.map(d => deviceReadsFS(d, result.volume.fileSystem || '') ? 'pass' : 'fail'),
   });
 
   // One row per format found on drive
@@ -301,12 +296,6 @@ function renderMatrix(result: UsbHealthResult) {
   // Summary
   const okCount = verdicts.filter(v => v.compatible).length;
   compatSummaryEl.innerHTML = `Compatible with <strong>${okCount}</strong> of <strong>${verdicts.length}</strong> devices`;
-}
-
-function categoryLabel(cat: PioneerDevice['category']): string {
-  return cat === 'flagship' ? 'Club Standard'
-    : cat === 'all-in-one' ? 'All-in-One'
-    : 'Media Player';
 }
 
 // ========== Health Checklist ==========
@@ -475,7 +464,20 @@ function overallVerdict(result: UsbHealthResult): 'ok' | 'warning' | 'error' {
 
 // ========== Scan handlers ==========
 
-function handleProgress(payload: UsbHealthProgress) {
+function isUnderPath(file: unknown, root: string): boolean {
+  if (typeof file !== 'string') return false;
+  const base = root.replace(/\/+$/, '');
+  return file === base || file.startsWith(`${base}/`);
+}
+
+function handleJobProgress(payload: JobProgress) {
+  if (payload.jobType !== 'usb-health-scan' || !scanRunning || !scanVolumePath) return;
+  if (scanJobId === null) {
+    if (!isUnderPath(payload.detail, scanVolumePath)) return;
+    scanJobId = payload.jobId;
+  } else if (payload.jobId !== scanJobId) {
+    return;
+  }
   const pct = payload.total > 0 ? Math.round((payload.current / payload.total) * 100) : 0;
   progressBar.style.width = `${pct}%`;
   progressMessage.textContent = payload.phase === 'discovering'
@@ -515,7 +517,7 @@ async function handleSelectFolder() {
   if (!chosen) return;
   selectedVolumePath = chosen;
   volumeList.innerHTML = `
-    <div class="usb-volume-row selected" data-path="${escapeHtml(chosen)}">
+    <div class="usb-volume-row selected" data-path="${escapeHtml(chosen)}" aria-current="true">
       <div class="usb-volume-row-left">
         <svg class="usb-drive-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7h18v13H3z"/><path d="M8 7V4h8v3"/></svg>
         <div class="usb-volume-row-text">
@@ -532,15 +534,15 @@ async function handleSelectFolder() {
 async function handleScan() {
   if (scanRunning || !selectedVolumePath) return;
   scanRunning = true;
+  scanVolumePath = selectedVolumePath;
+  scanJobId = null;
   scanBtn.disabled = true;
   resultsWrap.style.display = 'none';
 
   progressSection.style.display = 'block';
   progressBar.style.width = '0%';
-  progressMessage.textContent = 'Starting…';
+  progressMessage.textContent = 'Finding audio files…';
   progressCount.textContent = '';
-
-  window.candybar.onUsbHealthProgress(handleProgress);
 
   try {
     const response = await window.candybar.jobEnqueueAndWait(
@@ -559,6 +561,7 @@ async function handleScan() {
     renderMatrix(usbResult);
     renderChecklist(usbResult);
     renderFormatBreakdown(usbResult);
+    renderTrackTable();
     resultsWrap.style.display = 'block';
 
     const verdict = overallVerdict(usbResult);
@@ -573,10 +576,76 @@ async function handleScan() {
     showToast('error', 'Scan Failed', getErrorMessage(err));
   } finally {
     scanRunning = false;
-    scanBtn.disabled = false;
+    scanVolumePath = null;
+    scanJobId = null;
+    scanBtn.disabled = !selectedVolumePath;
     progressSection.style.display = 'none';
-    window.candybar.offUsbHealthProgress();
   }
+}
+
+// ========== Track table ==========
+
+function renderTrackTable() {
+  if (!usbResult || !tableBody) return;
+  const filtered = getFilteredTracks(usbResult.tracks, {
+    showAllTracks: tableFilter === 'all',
+    severityFilter: tableFilter,
+    activeIssueCode: null,
+  });
+  const rows = sortTracks(filtered, sortKey, sortDir);
+
+  tableBody.innerHTML = '';
+  const frag = document.createDocumentFragment();
+  for (const track of rows) {
+    // Read-only: fixes happen in the Library page, where the files are indexed.
+    frag.appendChild(createTrackRow(track, { isSelected: () => false, onSelected: () => {} }));
+  }
+  tableBody.appendChild(frag);
+
+  const total = usbResult.tracks.length;
+  trackCountEl.textContent = tableFilter === 'all'
+    ? `${total} track${total === 1 ? '' : 's'}`
+    : `${rows.length} of ${total} tracks`;
+  if (tableEmpty) tableEmpty.style.display = rows.length === 0 ? '' : 'none';
+
+  tableEl?.querySelectorAll<HTMLElement>('th[data-sort]').forEach((th) => {
+    const active = th.dataset.sort === sortKey;
+    th.classList.toggle('sorted', active);
+    th.setAttribute('aria-sort', active ? (sortDir === 'asc' ? 'ascending' : 'descending') : 'none');
+    const indicator = th.querySelector('.sort-indicator');
+    if (indicator) {
+      indicator.textContent = active ? '▲' : '';
+      indicator.classList.toggle('desc', active && sortDir === 'desc');
+    }
+  });
+}
+
+function initTrackTable() {
+  filterTabs.forEach((tab) => {
+    tab.addEventListener('click', () => {
+      const next = tab.dataset.filter as typeof tableFilter | undefined;
+      if (!next || next === tableFilter) return;
+      tableFilter = next;
+      filterTabs.forEach((t) => {
+        t.classList.toggle('active', t === tab);
+        t.setAttribute('aria-pressed', String(t === tab));
+      });
+      renderTrackTable();
+    });
+  });
+  tableEl?.querySelectorAll<HTMLElement>('th[data-sort]').forEach((th) => {
+    th.tabIndex = 0;
+    const sortBy = () => {
+      const key = th.dataset.sort as SortKey;
+      if (key === sortKey) sortDir = sortDir === 'asc' ? 'desc' : 'asc';
+      else { sortKey = key; sortDir = key === 'status' ? 'desc' : 'asc'; }
+      renderTrackTable();
+    };
+    th.addEventListener('click', sortBy);
+    th.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); sortBy(); }
+    });
+  });
 }
 
 // ========== Init ==========
@@ -585,6 +654,8 @@ export function initUsbHealth() {
   refreshBtn.addEventListener('click', () => void handleRefreshVolumes());
   selectFolderBtn.addEventListener('click', () => void handleSelectFolder());
   scanBtn.addEventListener('click', () => void handleScan());
+  window.candybar.onJobProgress(handleJobProgress);
+  initTrackTable();
 
   const page = document.getElementById('page-usb-health');
   if (page) {

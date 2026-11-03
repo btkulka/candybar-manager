@@ -323,11 +323,27 @@ function mapV2Track(t: V2Track): SoundCloudPublicTrack {
   };
 }
 
+/** GET an api-v2 URL with the public client_id. SoundCloud rotates that id
+ *  every few weeks and a stale one answers 401/403, so on either the cache is
+ *  dropped and the id re-scraped once before the call counts as failed. */
+async function publicV2Get(urlWithoutClientId: string): Promise<Response> {
+  const attempt = async () => {
+    const clientId = await getPublicSoundCloudClientId();
+    const sep = urlWithoutClientId.includes('?') ? '&' : '?';
+    return fetch(`${urlWithoutClientId}${sep}client_id=${clientId}`, {
+      headers: { 'User-Agent': 'Mozilla/5.0', 'Accept': 'application/json' },
+      signal: AbortSignal.timeout(20_000),
+    });
+  };
+  const res = await attempt();
+  if (res.status !== 401 && res.status !== 403) return res;
+  publicClientIdCache = null;
+  return attempt();
+}
+
 /** Public V2 search — no OAuth required, uses rotating client_id. */
 export async function searchSoundCloudPublic(query: string, limit = 10): Promise<SoundCloudPublicTrack[]> {
-  const clientId = await getPublicSoundCloudClientId();
-  const url = `https://api-v2.soundcloud.com/search/tracks?q=${encodeURIComponent(query)}&client_id=${clientId}&limit=${limit}`;
-  const res = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0', 'Accept': 'application/json' } });
+  const res = await publicV2Get(`https://api-v2.soundcloud.com/search/tracks?q=${encodeURIComponent(query)}&limit=${limit}`);
   if (!res.ok) throw new Error(`SoundCloud v2 search failed: HTTP ${res.status}`);
   const data = await res.json() as { collection?: V2Track[] };
   return (data.collection || []).map(mapV2Track);
@@ -342,9 +358,7 @@ export async function searchSoundCloudPublicTracks(
   query: string,
   limit = 10,
 ): Promise<SoundCloudSearchResult> {
-  const clientId = await getPublicSoundCloudClientId();
-  const url = `https://api-v2.soundcloud.com/search/tracks?q=${encodeURIComponent(query)}&client_id=${clientId}&limit=${limit}`;
-  const res = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0', 'Accept': 'application/json' } });
+  const res = await publicV2Get(`https://api-v2.soundcloud.com/search/tracks?q=${encodeURIComponent(query)}&limit=${limit}`);
   if (!res.ok) throw new Error(`SoundCloud v2 search failed: HTTP ${res.status}`);
   const data = await res.json() as { collection?: V2PublicSearchTrack[] };
   const tracks: SoundCloudTrack[] = (data.collection || []).map((t) => ({
@@ -364,28 +378,6 @@ type V2PublicSearchTrack = V2Track & {
   artwork_url?: string | null;
   playback_count?: number;
 };
-
-/** Fetch a single track's full metadata by ID (needed for description etc.). */
-export async function getSoundCloudTrack(trackId: number): Promise<SoundCloudPublicTrack> {
-  const clientId = await getPublicSoundCloudClientId();
-  const res = await fetch(`https://api-v2.soundcloud.com/tracks/${trackId}?client_id=${clientId}`, {
-    headers: { 'User-Agent': 'Mozilla/5.0', 'Accept': 'application/json' },
-  });
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  const data = await res.json() as V2Track;
-  return mapV2Track(data);
-}
-
-/** Get a direct download URL for a downloadable track. Returns null if not downloadable. */
-export async function getSoundCloudDownloadUrl(trackId: number): Promise<string | null> {
-  const clientId = await getPublicSoundCloudClientId();
-  const res = await fetch(`https://api-v2.soundcloud.com/tracks/${trackId}/download?client_id=${clientId}`, {
-    headers: { 'User-Agent': 'Mozilla/5.0', 'Accept': 'application/json' },
-  });
-  if (!res.ok) return null;
-  const data = await res.json() as { redirectUri?: string; url?: string };
-  return data.redirectUri || data.url || null;
-}
 
 export async function testSoundCloudConnection(credentials: SoundCloudCredentials): Promise<boolean> {
   log.debug('[SoundCloud:testSoundCloudConnection] Called');

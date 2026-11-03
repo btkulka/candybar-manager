@@ -10,12 +10,15 @@ import fsp from 'fs/promises';
 import path from 'path';
 import fuzzball from 'fuzzball';
 import { parseFile } from 'music-metadata';
-import { makeTagKey, normalizeForComparison } from './stringUtils';
+import { makeTagKey, normalizeForComparison, sameTitleVersion } from './stringUtils';
 import { createScopedLogger } from './logger';
+import { walkAudioDir } from './fileUtils';
+import { DEFAULT_EXCLUDED_VOLUMES } from './config';
 import type { RekordboxTrack } from './rekordboxXml';
 
 const log = createScopedLogger('UsbScan');
-const AUDIO_EXT_RE = /\.(aiff?|wav|mp3|flac|m4a)$/i;
+/** A fuzzy or tag match whose length differs from Rekordbox's TotalTime by more than this is rejected. */
+const MAX_DURATION_DIFF_SEC = 3;
 
 export type UsbVolume = {
   name: string;
@@ -46,16 +49,23 @@ export type BuildIndexOptions = {
 
 /** Detect mounted volumes that aren't the system disk. */
 export async function listExternalVolumes(): Promise<UsbVolume[]> {
-  const EXCLUDE = new Set(['Macintosh HD', 'com.apple.TimeMachine.localsnapshots']);
+  const EXCLUDE = new Set([...DEFAULT_EXCLUDED_VOLUMES, 'com.apple.TimeMachine.localsnapshots']);
   const results: UsbVolume[] = [];
   let entries: fs.Dirent[] = [];
   try {
     entries = await fsp.readdir('/Volumes', { withFileTypes: true });
   } catch { return []; }
   for (const e of entries) {
+    if (e.name.startsWith('.')) continue;
     if (!e.isDirectory() && !e.isSymbolicLink()) continue;
     if (EXCLUDE.has(e.name)) continue;
     const mountPath = path.join('/Volumes', e.name);
+    // The boot volume appears as a symlink to '/' under whatever name it has;
+    // walking it would index the whole system disk.
+    const real = await fsp.realpath(mountPath).catch(() => mountPath);
+    if (real === '/') continue;
+    // Time Machine destinations hold every historical copy; never a restore source.
+    if (fs.existsSync(path.join(mountPath, 'Backups.backupdb'))) continue;
     // Prefer a Rekordbox "Contents" folder when present (e.g. USB exports from Rekordbox).
     let scanRoot = mountPath;
     try {
@@ -66,19 +76,6 @@ export async function listExternalVolumes(): Promise<UsbVolume[]> {
     results.push({ name: e.name, mountPath, scanRoot });
   }
   return results;
-}
-
-async function walkAudio(dir: string, out: string[] = [], depth = 0): Promise<string[]> {
-  if (depth > 8) return out;
-  let entries: fs.Dirent[] = [];
-  try { entries = await fsp.readdir(dir, { withFileTypes: true }); } catch { return out; }
-  for (const e of entries) {
-    if (e.name.startsWith('.')) continue;
-    const p = path.join(dir, e.name);
-    if (e.isDirectory()) await walkAudio(p, out, depth + 1);
-    else if (AUDIO_EXT_RE.test(e.name)) out.push(p);
-  }
-  return out;
 }
 
 export type UsbIndex = {
@@ -95,7 +92,8 @@ export async function buildUsbIndex(
   options: BuildIndexOptions = {},
 ): Promise<UsbIndex> {
   log.info(`Indexing ${volume.mountPath}${options.readTags ? ' (with tag read)' : ''}`);
-  const files = await walkAudio(volume.scanRoot);
+  // Shared walker: resolves DT_UNKNOWN dirents (FAT/exFAT mounts) and skips temp files.
+  const files = await walkAudioDir(volume.scanRoot, { maxDepth: 8 });
   const byArtistFolder = new Map<string, string[]>();
   const rootLen = volume.scanRoot.length + 1;
   for (const f of files) {
@@ -158,6 +156,31 @@ function fuzzScore(a: string, b: string): number {
   return Math.max(fuzzball.ratio(aN, bN), fuzzball.token_set_ratio(aN, bN)) / 100;
 }
 
+/** Best-effort title from a filename: drop the extension and a leading "Artist - ". */
+function titleFromFilename(fname: string): string {
+  const stem = fname.replace(/\.[^.]+$/, '');
+  const dash = stem.indexOf(' - ');
+  return dash >= 0 ? stem.slice(dash + 3) : stem;
+}
+
+/**
+ * Confirm a non-exact USB match has the length Rekordbox recorded (TotalTime),
+ * so a same-titled but different recording isn't copied in. Exact-path matches
+ * and tracks without a TotalTime pass; an unreadable candidate fails.
+ */
+export async function usbMatchDurationOk(match: UsbMatch): Promise<boolean> {
+  const expected = match.rekordboxTrack.totalTime;
+  if (match.method === 'exact_path' || !expected) return true;
+  try {
+    const meta = await parseFile(match.sourcePath, { duration: false, skipCovers: true });
+    const actual = meta.format.duration;
+    if (!actual) return true;
+    return Math.abs(actual - expected) <= MAX_DURATION_DIFF_SEC;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Match a Rekordbox track against one indexed USB.
  *
@@ -214,6 +237,9 @@ export function matchAgainstUsbIndex(track: RekordboxTrack, index: UsbIndex): Us
   let bestHits = 0;
   for (const f of candidates) {
     const fname = path.basename(f);
+    // Never take a different version (remix vs original, extended vs radio):
+    // that would point the original's cues and beatgrid at the wrong audio.
+    if (!sameTitleVersion(track.title, titleFromFilename(fname))) continue;
     const nFile = normalizeForComparison(fname);
     const hitRatio = titleTokens.filter(w => nFile.includes(w)).length / titleTokens.length;
     if (hitRatio === 0) continue; // require at least one title token in filename

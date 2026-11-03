@@ -25,7 +25,8 @@ export const albumArtScanJob: JobDefinition<AlbumArtScanParams, AlbumArtMissingT
           detail: progress.filePath
         });
       },
-      fileList?.files
+      fileList?.files,
+      ctx.signal
     );
 
     return result;

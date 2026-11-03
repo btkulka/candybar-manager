@@ -2,10 +2,11 @@ import fs from 'fs/promises';
 import path from 'path';
 import { parseFile } from 'music-metadata';
 import { parse } from 'csv-parse/sync';
-import { normalizeForComparison, normalizeBasic, sameTitleVersion } from './stringUtils';
+import { normalizeForComparison, normalizeBasic, sameTitleVersion, titleVersionSignature } from './stringUtils';
 import { walkAudioDir } from './fileUtils';
 import { METADATA_CONCURRENCY } from './constants';
 import { createScopedLogger } from './logger';
+import { CSV_ARTIST_HEADERS, CSV_TITLE_HEADERS, CSV_ALBUM_HEADERS, CSV_YEAR_HEADERS, normalizeCsvHeader } from './csvHeaders';
 import * as fuzzball from 'fuzzball';
 import type { SpotifyTrack } from './spotify';
 
@@ -54,36 +55,42 @@ function fieldSimilarity(a: string, b: string): number {
   return Math.max(ratio, tokenSort) / 100;
 }
 
-/**
- * Calculate overall match confidence between a CSV track and a library track
- * Returns a confidence score from 0 to 1.
- * Exported for unit testing of the version-aware bucketing.
- */
-export function calculateMatchConfidence(csvTrack: TrackRecord, libraryTrack: TrackRecord): number {
+/** Per-track strings the scorer needs, computed once per track instead of once
+ *  per (source, library) pair — the normalization regexes were the hot path. */
+type PreparedTrack = {
+  track: TrackRecord;
+  artistLower: string;
+  titleLower: string;
+  artistNorm: string;
+  titleNorm: string;
+  versionSig: string;
+};
+
+function prepareTrack(track: TrackRecord): PreparedTrack {
+  return {
+    track,
+    artistLower: track.artist.toLowerCase(),
+    titleLower: track.title.toLowerCase(),
+    artistNorm: normalizeForComparison(track.artist),
+    titleNorm: normalizeForComparison(track.title),
+    versionSig: titleVersionSignature(track.title),
+  };
+}
+
+function scorePrepared(csv: PreparedTrack, lib: PreparedTrack): number {
   // Exact key match = 100%. The key (normalizeBasic) preserves version tags, so
   // this only fires for a true same-version match.
-  if (csvTrack.key === libraryTrack.key) return 1;
+  if (csv.track.key === lib.track.key) return 1;
 
   // --- Pass 1: Raw comparison ---
-  const artistSim = fieldSimilarity(
-    csvTrack.artist.toLowerCase(),
-    libraryTrack.artist.toLowerCase()
-  );
-  const titleSim = fieldSimilarity(
-    csvTrack.title.toLowerCase(),
-    libraryTrack.title.toLowerCase()
-  );
+  const artistSim = fieldSimilarity(csv.artistLower, lib.artistLower);
+  const titleSim = fieldSimilarity(csv.titleLower, lib.titleLower);
 
   const rawScore = artistSim * 0.6 + titleSim * 0.4;
 
   // --- Pass 2: Normalized comparison (strips remix tags, feat, etc.) ---
-  const csvArtistNorm = normalizeForComparison(csvTrack.artist);
-  const libArtistNorm = normalizeForComparison(libraryTrack.artist);
-  const csvTitleNorm = normalizeForComparison(csvTrack.title);
-  const libTitleNorm = normalizeForComparison(libraryTrack.title);
-
-  const normArtistSim = fieldSimilarity(csvArtistNorm, libArtistNorm);
-  const normTitleSim = fieldSimilarity(csvTitleNorm, libTitleNorm);
+  const normArtistSim = fieldSimilarity(csv.artistNorm, lib.artistNorm);
+  const normTitleSim = fieldSimilarity(csv.titleNorm, lib.titleNorm);
 
   const normScore = normArtistSim * 0.6 + normTitleSim * 0.4;
 
@@ -92,8 +99,8 @@ export function calculateMatchConfidence(csvTrack: TrackRecord, libraryTrack: Tr
 
   // Bonus for exact matches on either field (check both raw and normalized)
   let bonus = 0;
-  if (csvArtistNorm === libArtistNorm && csvArtistNorm.length > 0) bonus += 0.1;
-  if (csvTitleNorm === libTitleNorm && csvTitleNorm.length > 0) bonus += 0.15;
+  if (csv.artistNorm === lib.artistNorm && csv.artistNorm.length > 0) bonus += 0.1;
+  if (csv.titleNorm === lib.titleNorm && csv.titleNorm.length > 0) bonus += 0.15;
 
   let confidence = Math.min(1, weightedScore + bonus);
 
@@ -113,10 +120,19 @@ export function calculateMatchConfidence(csvTrack: TrackRecord, libraryTrack: Tr
   // fuzzy score above matches on version-STRIPPED fields (so an owned remix and
   // this remix still read as the same song), but a version mismatch means it's a
   // distinct track to source, not a duplicate to hide.
-  if (!sameTitleVersion(csvTrack.title, libraryTrack.title)) {
+  if (csv.versionSig !== lib.versionSig) {
     confidence = Math.min(confidence, VERSION_MISMATCH_CAP);
   }
   return confidence;
+}
+
+/**
+ * Calculate overall match confidence between a CSV track and a library track
+ * Returns a confidence score from 0 to 1.
+ * Exported for unit testing of the version-aware bucketing.
+ */
+export function calculateMatchConfidence(csvTrack: TrackRecord, libraryTrack: TrackRecord): number {
+  return scorePrepared(prepareTrack(csvTrack), prepareTrack(libraryTrack));
 }
 
 /**
@@ -126,7 +142,7 @@ type MatchCandidate = { track: TrackRecord; confidence: number };
 
 function findTopMatches(
   csvTrack: TrackRecord,
-  libraryTracks: TrackRecord[],
+  preparedLibrary: PreparedTrack[],
   libraryMap: Map<string, TrackRecord>,
   normalizedLibraryMap: Map<string, TrackRecord>,
   count = 5
@@ -149,17 +165,18 @@ function findTopMatches(
   }
 
   // Fuzzy search — keep top N candidates
+  const prepared = prepareTrack(csvTrack);
   const candidates: MatchCandidate[] = [];
 
-  for (const libraryTrack of libraryTracks) {
-    const confidence = calculateMatchConfidence(csvTrack, libraryTrack);
+  for (const lib of preparedLibrary) {
+    const confidence = scorePrepared(prepared, lib);
     if (candidates.length < count) {
-      candidates.push({ track: libraryTrack, confidence });
+      candidates.push({ track: lib.track, confidence });
       if (candidates.length === count) {
         candidates.sort((a, b) => b.confidence - a.confidence);
       }
     } else if (confidence > candidates[count - 1].confidence) {
-      candidates[count - 1] = { track: libraryTrack, confidence };
+      candidates[count - 1] = { track: lib.track, confidence };
       candidates.sort((a, b) => b.confidence - a.confidence);
     }
   }
@@ -194,6 +211,7 @@ type CheckParams = {
   csvPath: string;
   onProgress?: ProgressFn;
   preScannedFiles?: string[];
+  signal?: AbortSignal;
 };
 
 type CheckFromTracksParams = {
@@ -201,6 +219,7 @@ type CheckFromTracksParams = {
   tracks: TrackRecord[];
   onProgress?: ProgressFn;
   preScannedFiles?: string[];
+  signal?: AbortSignal;
 };
 
 // Individual track record with full metadata
@@ -263,18 +282,22 @@ export type CheckResult = {
   total: number;
 };
 
+/** The first non-empty value under any of `names` (see csvHeaders.ts, shared
+ *  with the CLI's spellings), tried in priority order. */
 function pickField(record: Record<string, string>, names: string[]) {
-  for (const [key, value] of Object.entries(record)) {
-    const normalized = key.toLowerCase().trim();
-    if (names.includes(normalized)) return value?.trim();
+  const keys = Object.keys(record);
+  for (const name of names) {
+    const hit = keys.find(k => normalizeCsvHeader(k) === name);
+    const value = hit ? record[hit]?.trim() : '';
+    if (value) return value;
   }
   return '';
 }
 
 
 function recordToTrack(record: Record<string, string>): TrackRecord | null {
-  const artist = pickField(record, ['artist', 'artists', 'performer']);
-  const title = pickField(record, ['title', 'track', 'name', 'song']);
+  const artist = pickField(record, CSV_ARTIST_HEADERS);
+  const title = pickField(record, CSV_TITLE_HEADERS);
 
   if (!title && !artist) return null;
 
@@ -286,15 +309,17 @@ function recordToTrack(record: Record<string, string>): TrackRecord | null {
     key,
     artist: artist || 'Unknown Artist',
     title: title || 'Unknown Title',
-    album: pickField(record, ['album']),
-    year: pickField(record, ['year', 'date']),
+    album: pickField(record, CSV_ALBUM_HEADERS),
+    year: pickField(record, CSV_YEAR_HEADERS),
     genre: pickField(record, ['genre'])
   };
 }
 
 async function processFileMetadata(filePath: string): Promise<TrackRecord | null> {
   try {
-    const metadata = await parseFile(filePath, { duration: true });
+    // duration:false still gets the length from the header (Xing/VBRI or a CBR
+    // estimate); `true` scans every frame of every MP3 in the library.
+    const metadata = await parseFile(filePath, { duration: false, skipCovers: true });
     const artist = metadata.common.artist || metadata.common.artists?.[0] || '';
     const title = metadata.common.title || '';
 
@@ -330,7 +355,8 @@ async function processFileMetadata(filePath: string): Promise<TrackRecord | null
 // Process files in parallel with concurrency limit
 async function processFilesParallel(
   files: string[],
-  onProgress: (processed: number, total: number) => void
+  onProgress: (processed: number, total: number) => void,
+  signal?: AbortSignal
 ): Promise<TrackRecord[]> {
   const results: TrackRecord[] = [];
   let processed = 0;
@@ -338,6 +364,7 @@ async function processFilesParallel(
 
   // Process in batches
   for (let i = 0; i < files.length; i += METADATA_CONCURRENCY) {
+    if (signal?.aborted) throw new Error('Cancelled');
     const batch = files.slice(i, i + METADATA_CONCURRENCY);
     const batchResults = await Promise.all(batch.map(processFileMetadata));
 
@@ -362,17 +389,20 @@ async function matchTracksAgainstLibrary(
   sourceTracks: TrackRecord[],
   libraryRoot: string,
   progress: ProgressFn,
-  preScannedFiles?: string[]
+  preScannedFiles?: string[],
+  signal?: AbortSignal
 ): Promise<CheckResult> {
-  // Phase 2: Discover files (or use pre-scanned list from job queue)
+  // Phase 2: Discover files (or use pre-scanned list from job queue). An empty
+  // pre-scanned list isn't trusted: it would mark every source track missing.
   let files: string[];
-  if (preScannedFiles) {
+  if (preScannedFiles && preScannedFiles.length > 0) {
     files = preScannedFiles;
     progress({ phase: 'discovering', current: files.length, total: files.length, message: `Using ${files.length} pre-scanned files` });
   } else {
     progress({ phase: 'discovering', current: 0, total: 0, message: 'Discovering audio files...' });
     files = await walkAudioDir(libraryRoot, {
       skipHidden: true,
+      signal,
       onProgress: (count) => {
         progress({ phase: 'discovering', current: count, total: 0, message: `Found ${count} audio files...` });
       }
@@ -391,9 +421,10 @@ async function matchTracksAgainstLibrary(
       total,
       message: `Scanning: ${percent}% (${processed}/${total})`
     });
-  });
+  }, signal);
 
-  // Build lookup maps
+  // Build lookup maps (and the per-track normalized strings for fuzzy scoring)
+  const preparedLibrary = libraryTracks.map(prepareTrack);
   const libraryMap = new Map<string, TrackRecord>();
   const normalizedLibraryMap = new Map<string, TrackRecord>();
   for (const track of libraryTracks) {
@@ -412,10 +443,11 @@ async function matchTracksAgainstLibrary(
   const uncertainMatches: UncertainMatch[] = [];
 
   for (let i = 0; i < sourceTracks.length; i++) {
+    if (signal?.aborted) throw new Error('Cancelled');
     const sourceTrack = sourceTracks[i];
 
     // Use fuzzy matching to find top candidates
-    const candidates = findTopMatches(sourceTrack, libraryTracks, libraryMap, normalizedLibraryMap);
+    const candidates = findTopMatches(sourceTrack, preparedLibrary, libraryMap, normalizedLibraryMap);
     const bestMatch = candidates[0]?.track ?? null;
     const confidence = candidates[0]?.confidence ?? 0;
 
@@ -479,7 +511,7 @@ async function matchTracksAgainstLibrary(
   };
 }
 
-export async function checkLibrary({ libraryRoot, csvPath, onProgress, preScannedFiles }: CheckParams): Promise<CheckResult> {
+export async function checkLibrary({ libraryRoot, csvPath, onProgress, preScannedFiles, signal }: CheckParams): Promise<CheckResult> {
   const progress = onProgress || (() => {});
 
   const libraryStat = await fs.stat(libraryRoot);
@@ -526,14 +558,14 @@ export async function checkLibrary({ libraryRoot, csvPath, onProgress, preScanne
 
   progress({ phase: 'csv', current: 1, total: 1, message: `Found ${csvTracks.length} tracks in CSV` });
 
-  return matchTracksAgainstLibrary(csvTracks, libraryRoot, progress, preScannedFiles);
+  return matchTracksAgainstLibrary(csvTracks, libraryRoot, progress, preScannedFiles, signal);
 }
 
 /**
  * Check library using a pre-built track list (e.g. from Spotify playlist).
  * Skips CSV parsing and goes straight to matching.
  */
-export async function checkLibraryFromTracks({ libraryRoot, tracks, onProgress, preScannedFiles }: CheckFromTracksParams): Promise<CheckResult> {
+export async function checkLibraryFromTracks({ libraryRoot, tracks, onProgress, preScannedFiles, signal }: CheckFromTracksParams): Promise<CheckResult> {
   const progress = onProgress || (() => {});
 
   const libraryStat = await fs.stat(libraryRoot);
@@ -545,7 +577,7 @@ export async function checkLibraryFromTracks({ libraryRoot, tracks, onProgress, 
     throw new Error('No tracks provided.');
   }
 
-  return matchTracksAgainstLibrary(tracks, libraryRoot, progress, preScannedFiles);
+  return matchTracksAgainstLibrary(tracks, libraryRoot, progress, preScannedFiles, signal);
 }
 
 /**
@@ -620,13 +652,9 @@ export async function previewCsv(csvPath: string, maxRows = 10): Promise<CsvPrev
   const previewRows = records.slice(0, maxRows);
 
   // Check for required columns
-  const lowerColumns = columns.map(c => c.toLowerCase().trim());
-  const hasArtistColumn = lowerColumns.some(c =>
-    ['artist', 'artists', 'performer'].includes(c)
-  );
-  const hasTitleColumn = lowerColumns.some(c =>
-    ['title', 'track', 'name', 'song'].includes(c)
-  );
+  const normalizedColumns = columns.map(normalizeCsvHeader);
+  const hasArtistColumn = normalizedColumns.some(c => CSV_ARTIST_HEADERS.includes(c));
+  const hasTitleColumn = normalizedColumns.some(c => CSV_TITLE_HEADERS.includes(c));
 
   return {
     columns,

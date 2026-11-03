@@ -20,10 +20,30 @@ type OrganizeTracksParams = {
   onProgress?: ProgressFn;
 };
 
-function normalizeArtist(value: string) {
-  const first = value.split(/[;\\/,&]+/)[0]?.trim() ?? '';
-  const safe = first.replace(/[\\/]/g, '-').trim();
+/**
+ * Folder name for an artist tag. Only unambiguous multi-artist separators split
+ * (';' and feat./ft./featuring): '&', ',' and '/' belong to names like
+ * "Above & Beyond", "Earth, Wind & Fire" and "AC/DC". The result is NFC, free
+ * of characters exFAT/Windows reject, has no leading dots (a hidden folder would
+ * vanish from scans) or trailing dots/spaces, and stays well under 255 chars.
+ */
+export function normalizeArtist(value: string): string {
+  const first = value.normalize('NFC')
+    .split(/\s*;\s*|\s+(?:feat\.?|ft\.?|featuring)\s+/i)[0] ?? '';
+  const safe = first
+    .replace(/[<>:"/\\|?*\u0000-\u001f]/g, '-')
+    .replace(/-{2,}/g, '-')
+    .replace(/^[\s.]+/, '')
+    .replace(/[\s.]+$/, '')
+    .slice(0, 200)
+    .trim();
   return safe || 'Unknown Artist';
+}
+
+/** Case- and Unicode-form-insensitive key, so "Dj Koze" reuses "DJ Koze" and an
+ *  NFD "Beyoncé" reuses the NFC folder instead of creating a twin. */
+function folderKey(name: string): string {
+  return name.normalize('NFC').toLowerCase();
 }
 
 async function getConflictFileInfo(filePath: string): Promise<OrganizeConflictFile> {
@@ -59,6 +79,13 @@ export async function organizeTracks({ tracks, rootDir, log, onProgress }: Organ
 
   const results: OrganizeResult[] = [];
   const total = tracks.length;
+
+  // Existing artist folders by folded name, so new tracks join the folder that's
+  // already there whatever its case or Unicode form.
+  const existingFolders = new Map<string, string>();
+  for (const entry of await fs.readdir(rootDir, { withFileTypes: true }).catch(() => [])) {
+    if (entry.isDirectory()) existingFolders.set(folderKey(entry.name), entry.name);
+  }
 
   for (let i = 0; i < tracks.length; i++) {
     const track = tracks[i];
@@ -123,7 +150,9 @@ export async function organizeTracks({ tracks, rootDir, log, onProgress }: Organ
       continue;
     }
 
-    const artistFolder = normalizeArtist(artist);
+    const wanted = normalizeArtist(artist);
+    const artistFolder = existingFolders.get(folderKey(wanted)) ?? wanted;
+    existingFolders.set(folderKey(artistFolder), artistFolder);
     const targetDir = path.join(rootDir, artistFolder);
 
     try {
@@ -131,13 +160,20 @@ export async function organizeTracks({ tracks, rootDir, log, onProgress }: Organ
       const targetPath = path.join(targetDir, fileName);
 
       // Check if a file already exists at the destination
-      let existsAtTarget = false;
-      try {
-        await fs.access(targetPath);
-        existsAtTarget = true;
-      } catch { /* doesn't exist — good */ }
+      const targetStat = await fs.stat(targetPath).catch(() => null);
+      if (targetStat) {
+        // The "existing" file may be this very file (already organized, or the
+        // same path in another case/Unicode form). That's not a conflict: a
+        // conflict prompt here would offer to delete the only copy.
+        const srcStat = await fs.stat(track.filePath).catch(() => null);
+        if (srcStat && srcStat.ino === targetStat.ino && srcStat.dev === targetStat.dev) {
+          log(`Already organized: '${fileName}'\n`);
+          finish({ filePath: track.filePath, success: true, resultPath: track.filePath }, 'success');
+          continue;
+        }
+      }
 
-      if (existsAtTarget) {
+      if (targetStat) {
         log(`Conflict: '${fileName}' already exists in '${targetDir}'\n`, 'stderr');
         const [incoming, existing] = await Promise.all([
           getConflictFileInfo(track.filePath),

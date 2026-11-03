@@ -26,6 +26,9 @@ type NormTrack = {
   /** Version-STRIPPED (remix/edit/feat removed) — fuzzy "same song?" scoring. */
   nArtist: string;
   nTitle: string;
+  /** Primary artist only ("The X", "X feat. Y", "X, Y" and "X & Y" all → "x"),
+   *  so spelling/credit variants of the same act still sort and score together. */
+  pArtist: string;
   /** Version-PRESERVING — tells an original apart from a remix/edit. */
   vArtist: string;
   vTitle: string;
@@ -36,12 +39,24 @@ type NormTrack = {
 /** Precompute both normalized forms once per track. findDuplicates compares each
  *  track against up to ~50 neighbours, so recomputing these regexes per-pair was
  *  the hot path. */
+/** Primary-artist key: drop a leading "The", feat. credits and co-artists. */
+function primaryArtistKey(artist: string): string {
+  const first = artist
+    .split(/\s*(?:,|;|&|\/|\s+x\s+|\s+vs\.?\s+|\s+and\s+)\s*/i)[0] ?? '';
+  return normalizeForComparison(first).replace(/^the\s+/, '');
+}
+
+/** Exact artist+title pairs whose lengths differ by more than this are different
+ *  recordings that happen to share tags (two "Intro"s), not duplicates. */
+const EXACT_MATCH_MAX_DURATION_DIFF_SEC = 5;
+
 function normalizeTrack(track: TrackForDuplicateCheck): NormTrack {
   const nTitle = normalizeForComparison(track.title);
   return {
     track,
     nArtist: normalizeForComparison(track.artist),
     nTitle,
+    pArtist: primaryArtistKey(track.artist),
     vArtist: normalizeTrackKey(track.artist),
     vTitle: normalizeTrackKey(track.title),
     titleStart: nTitle.substring(0, 3),
@@ -58,24 +73,28 @@ function calculateTrackSimilarity(
   const { track: track1, nArtist: artist1, nTitle: title1, vArtist: vArtist1, vTitle: vTitle1 } = a;
   const { track: track2, nArtist: artist2, nTitle: title2, vArtist: vArtist2, vTitle: vTitle2 } = b;
 
+  const durationDiff = (track1.duration && track2.duration)
+    ? Math.abs(track1.duration - track2.duration)
+    : null;
+
   // True exact match: the version-preserving keys agree (and are non-empty).
   if (vArtist1 === vArtist2 && vTitle1 === vTitle2 && vArtist1 !== '' && vTitle1 !== '') {
+    if (durationDiff !== null && durationDiff > EXACT_MATCH_MAX_DURATION_DIFF_SEC) {
+      return { similarity: 0.8, reason: 'Same artist and title, but different length' };
+    }
     return { similarity: 1.0, reason: 'Exact match (artist + title)' };
   }
 
   // Calculate fuzzy similarity. Guard empty normalized strings: non-Latin/symbol-only
   // titles normalize to '' and stringSimilarity('','') is 1.0, which would otherwise
   // score two unrelated tracks as a perfect match and invite a destructive delete.
-  const artistSim = (artist1 === '' || artist2 === '') ? 0 : stringSimilarity(artist1, artist2);
+  const fullArtistSim = (artist1 === '' || artist2 === '') ? 0 : stringSimilarity(artist1, artist2);
+  const primaryArtistSim = (a.pArtist === '' || b.pArtist === '') ? 0 : stringSimilarity(a.pArtist, b.pArtist);
+  const artistSim = Math.max(fullArtistSim, primaryArtistSim);
   const titleSim = (title1 === '' || title2 === '') ? 0 : stringSimilarity(title1, title2);
 
   // Title is more important for matching
   const weightedSim = titleSim * 0.6 + artistSim * 0.4;
-
-  // Duration check - if durations are very close, boost confidence
-  const durationDiff = (track1.duration && track2.duration)
-    ? Math.abs(track1.duration - track2.duration)
-    : null;
   let durationBonus = 0;
   if (durationDiff !== null) {
     if (durationDiff < 1) {
@@ -136,76 +155,81 @@ export function findDuplicates(
   threshold = 0.85
 ): DuplicatePair[] {
   const duplicates: DuplicatePair[] = [];
+  const seenPairs = new Set<string>();
 
-  // Sort tracks by artist+title for more efficient comparison
-  const sortedTracks = [...tracks].sort((a, b) => {
-    const keyA = `${a.artist}-${a.title}`.toLowerCase();
-    const keyB = `${b.artist}-${b.title}`.toLowerCase();
-    return keyA.localeCompare(keyB);
-  });
-  // Normalize each track ONCE up front (the window scan below would otherwise
+  // Normalize each track ONCE up front (the window scans below would otherwise
   // recompute these regexes for every neighbour comparison).
-  const normed = sortedTracks.map(normalizeTrack);
+  const normed = tracks.map(normalizeTrack);
 
-  for (let i = 0; i < sortedTracks.length; i++) {
-    const n1 = normed[i];
-    const track1 = n1.track;
+  // Two windowed passes over differently sorted lists: by primary artist + title
+  // (variants like "The X" / "X feat. Y" land together), then by title + artist
+  // (catches the same song under an artist spelling the first sort split apart).
+  const byArtist = [...normed].sort((a, b) =>
+    `${a.pArtist} ${a.nTitle}`.localeCompare(`${b.pArtist} ${b.nTitle}`));
+  const byTitle = [...normed].sort((a, b) =>
+    `${a.nTitle} ${a.pArtist}`.localeCompare(`${b.nTitle} ${b.pArtist}`));
 
-    // Only compare with nearby tracks (optimization)
-    // Since sorted, similar tracks should be close together.
-    // The window ensures each (i, j) pair is visited at most once, so no
-    // separate "checked pairs" set is needed.
-    const searchWindow = Math.min(50, sortedTracks.length - i);
+  for (const sorted of [byArtist, byTitle]) {
+    for (let i = 0; i < sorted.length; i++) {
+      const n1 = sorted[i];
+      const track1 = n1.track;
 
-    for (let j = i + 1; j < i + searchWindow && j < sortedTracks.length; j++) {
-      const n2 = normed[j];
-      const track2 = n2.track;
+      // Only compare with nearby tracks: similar tracks sort close together.
+      for (let j = i + 1; j < i + 50 && j < sorted.length; j++) {
+        const n2 = sorted[j];
+        const track2 = n2.track;
 
-      // Skip if same file
-      if (track1.filePath === track2.filePath) continue;
+        // Skip if same file
+        if (track1.filePath === track2.filePath) continue;
+        const pairKey = track1.filePath < track2.filePath
+          ? `${track1.filePath}\u0000${track2.filePath}`
+          : `${track2.filePath}\u0000${track1.filePath}`;
+        if (seenPairs.has(pairKey)) continue;
 
-      // Quick check - if first characters of normalized titles don't match, skip
-      if (n1.titleStart !== n2.titleStart && stringSimilarity(n1.titleStart, n2.titleStart) < 0.5) {
-        continue;
-      }
+        // Quick check - if first characters of normalized titles don't match, skip
+        if (n1.titleStart !== n2.titleStart && stringSimilarity(n1.titleStart, n2.titleStart) < 0.5) {
+          continue;
+        }
+        seenPairs.add(pairKey);
 
-      const { similarity, reason } = calculateTrackSimilarity(n1, n2);
+        const { similarity, reason } = calculateTrackSimilarity(n1, n2);
 
-      if (similarity >= threshold) {
-        duplicates.push({
-          track1: {
-            filePath: track1.filePath,
-            fileName: path.basename(track1.filePath),
-            artist: track1.artist,
-            title: track1.title,
-            format: track1.format,
-            bitRate: track1.bitRate,
-            duration: track1.duration,
-            album: track1.album,
-            year: track1.year,
-            genre: track1.genre,
-            hasAlbumArt: track1.hasAlbumArt,
-            tagCompleteness: track1.tagCompleteness,
-            dateAdded: track1.dateAdded
-          },
-          track2: {
-            filePath: track2.filePath,
-            fileName: path.basename(track2.filePath),
-            artist: track2.artist,
-            title: track2.title,
-            format: track2.format,
-            bitRate: track2.bitRate,
-            duration: track2.duration,
-            album: track2.album,
-            year: track2.year,
-            genre: track2.genre,
-            hasAlbumArt: track2.hasAlbumArt,
-            tagCompleteness: track2.tagCompleteness,
-            dateAdded: track2.dateAdded
-          },
-          similarity,
-          reason
-        });
+        if (similarity >= threshold) {
+          duplicates.push({
+            track1: {
+              filePath: track1.filePath,
+              fileName: path.basename(track1.filePath),
+              artist: track1.artist,
+              title: track1.title,
+              format: track1.format,
+              bitRate: track1.bitRate,
+              duration: track1.duration,
+              album: track1.album,
+              year: track1.year,
+              genre: track1.genre,
+              hasAlbumArt: track1.hasAlbumArt,
+              tagCompleteness: track1.tagCompleteness,
+              dateAdded: track1.dateAdded
+            },
+            track2: {
+              filePath: track2.filePath,
+              fileName: path.basename(track2.filePath),
+              artist: track2.artist,
+              title: track2.title,
+              format: track2.format,
+              bitRate: track2.bitRate,
+              duration: track2.duration,
+              album: track2.album,
+              year: track2.year,
+              genre: track2.genre,
+              hasAlbumArt: track2.hasAlbumArt,
+              tagCompleteness: track2.tagCompleteness,
+              dateAdded: track2.dateAdded
+            },
+            similarity,
+            reason
+          });
+        }
       }
     }
   }

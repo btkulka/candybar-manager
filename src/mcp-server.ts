@@ -15,15 +15,29 @@ import { convertToAiff, reencodeToMp3, deleteOriginalAfterConversion } from './l
 import * as mm from 'music-metadata';
 import path from 'path';
 import fs from 'fs/promises';
+import fsSync from 'fs';
 import os from 'os';
 import { readConfig, setSecretsPath } from './lib/config';
 import url from 'url';
 
-import { initWriteJournal } from './lib/writeJournal';
+import { initWriteJournal, recordWrite } from './lib/writeJournal';
+
+/** The Electron app's userData directory, worked out without Electron: the
+ *  platform's app-data folder plus the app name ('candybar-manager'), exactly
+ *  as app.getPath('userData') resolves it. */
+function appUserDataDir(): string {
+  const home = os.homedir();
+  const name = 'candybar-manager';
+  if (os.platform() === 'darwin') return path.join(home, 'Library', 'Application Support', name);
+  if (os.platform() === 'win32') return path.join(process.env.APPDATA || path.join(home, 'AppData', 'Roaming'), name);
+  return path.join(process.env.XDG_CONFIG_HOME || path.join(home, '.config'), name);
+}
+
+const USER_DATA_DIR = appUserDataDir();
 
 // Share the Electron app's write journal so conversions/deletes driven via MCP
-// land in the same recovery log (userData for app name 'candybar-manager').
-initWriteJournal(path.join(os.homedir(), 'Library', 'Application Support', 'candybar-manager'));
+// land in the same recovery log.
+initWriteJournal(USER_DATA_DIR);
 
 const server = new McpServer({
   name: 'candybar-audio-tools',
@@ -218,24 +232,20 @@ server.tool(
 // ---------------------------------------------------------------------------
 
 function getConfigPaths(): { primary: string; fallback: string } {
-  const platform = os.platform();
-  const home = os.homedir();
-  let userData: string;
-  if (platform === 'darwin') {
-    userData = path.join(home, 'Library', 'Application Support', 'candybar-manager');
-  } else if (platform === 'win32') {
-    userData = path.join(home, 'AppData', 'Roaming', 'candybar-manager');
-  } else {
-    userData = path.join(home, '.config', 'candybar-manager');
-  }
   return {
-    primary: path.join(userData, 'config.json'),
+    primary: path.join(USER_DATA_DIR, 'config.json'),
     fallback: path.join(__dirname, '..', '..', 'config.json')
   };
 }
 
-// Secrets file lives next to the repo-root config.json (untracked).
-setSecretsPath(path.join(__dirname, '..', '..', 'secrets.json'));
+// Secrets live in userData beside config.json (the app moves them there on its
+// first launch after the change). Until that has happened, the old repo-root
+// copy is still the one with the credentials, so fall back to it.
+const USER_SECRETS_PATH = path.join(USER_DATA_DIR, 'secrets.json');
+const REPO_SECRETS_PATH = path.join(__dirname, '..', '..', 'secrets.json');
+setSecretsPath(
+  fsSync.existsSync(USER_SECRETS_PATH) || !fsSync.existsSync(REPO_SECRETS_PATH) ? USER_SECRETS_PATH : REPO_SECRETS_PATH
+);
 
 // The sourcing engine lives in `lib/sourcing/*.mjs` (plain ESM, no build step)
 // so the Electron app, this server, and the playlist-sourcing skill all share
@@ -249,6 +259,43 @@ const esmImport = new Function('p', 'return import(p)') as (p: string) => Promis
 const SOURCING_ROOT = path.join(__dirname, '..', '..');
 const sourcingModule = (name: string) =>
   esmImport(url.pathToFileURL(path.join(SOURCING_ROOT, 'lib', 'sourcing', `${name}.mjs`)).href);
+
+// ---------------------------------------------------------------------------
+// One browser window per store, one tool at a time
+// ---------------------------------------------------------------------------
+//
+// Every store tool used to launch Chrome, open a window and quit it again. The
+// launcher now keeps one context per profile for the life of the server (closed
+// after ten idle minutes), and tool calls that drive a browser are queued so two
+// never steer the same window — or fight over the same profile — at once.
+// The same module URL the sourcing modules import, so they share its state.
+const launcherModule = () =>
+  esmImport(url.pathToFileURL(path.join(SOURCING_ROOT, 'lib', 'launchBrowser.mjs')).href) as Promise<{
+    enableSharedBrowsers: (opts?: { idleMs?: number }) => void;
+    closeSharedBrowsers: () => Promise<void>;
+  }>;
+
+let sharedBrowsersReady: Promise<void> | null = null;
+function ensureSharedBrowsers(): Promise<void> {
+  sharedBrowsersReady ??= launcherModule().then(m => m.enableSharedBrowsers({ idleMs: 10 * 60_000 }));
+  return sharedBrowsersReady;
+}
+
+let browserQueue: Promise<unknown> = Promise.resolve();
+function oneAtATime<T>(fn: () => Promise<T>): Promise<T> {
+  const run = browserQueue.then(async () => {
+    await ensureSharedBrowsers();
+    return fn();
+  });
+  browserQueue = run.catch(() => {});
+  return run;
+}
+
+/** Child scripts launch their own Chrome on the same profiles, which a profile
+ *  directory another Chrome holds would refuse — so hand them over first. */
+async function releaseSharedBrowsers(): Promise<void> {
+  await (await launcherModule()).closeSharedBrowsers();
+}
 
 // Store accounts are reached by driving the user's real logged-in Chrome — see
 // lib/sourcing/storeSession.mjs. There are deliberately no stored credentials
@@ -274,6 +321,43 @@ const SIGN_IN_HINT = (store: string) =>
 function sanitizeFilename(name: string): string {
   return name.replace(/[<>:"/\\|?*]/g, '-').replace(/\s+/g, ' ').trim();
 }
+
+/** The container a downloaded file really is, from its first bytes. Store
+ *  download URLs often carry no extension, and the old guess ("Qobuz means
+ *  FLAC") would have named an MP3 `.flac`. */
+async function sniffAudioExtension(filePath: string): Promise<string | null> {
+  const fh = await fs.open(filePath, 'r');
+  try {
+    const buf = Buffer.alloc(12);
+    await fh.read(buf, 0, 12, 0);
+    const ascii = (start: number, end: number) => buf.toString('latin1', start, end);
+    if (ascii(0, 4) === 'fLaC') return 'flac';
+    if (ascii(0, 4) === 'RIFF' && ascii(8, 12) === 'WAVE') return 'wav';
+    if (ascii(0, 4) === 'FORM' && (ascii(8, 12) === 'AIFF' || ascii(8, 12) === 'AIFC')) return 'aiff';
+    if (ascii(4, 8) === 'ftyp') return 'm4a';
+    if (ascii(0, 3) === 'ID3' || (buf[0] === 0xff && (buf[1] & 0xe0) === 0xe0)) return 'mp3';
+    if (ascii(0, 4) === 'OggS') return 'ogg';
+    return null;
+  } finally {
+    await fh.close();
+  }
+}
+
+/** Move `src` to `dest` without ever replacing an existing file (link + unlink
+ *  fails with EEXIST instead of clobbering), and journal it. */
+async function moveNoClobber(src: string, dest: string, context: string, detail?: Record<string, unknown>): Promise<void> {
+  const bytes = (await fs.stat(src).catch(() => null))?.size;
+  try {
+    await fs.link(src, dest);
+    await fs.unlink(src);
+    recordWrite({ op: 'move', src, dest, bytes, context, outcome: 'ok', detail });
+  } catch (err) {
+    recordWrite({ op: 'move', src, dest, bytes, context, outcome: 'error', error: (err as Error).message, detail });
+    throw err;
+  }
+}
+
+const AUDIO_EXTS_FOR_NAME = ['aif', 'aiff', 'wav', 'flac', 'mp3', 'm4a'];
 
 // ---------------------------------------------------------------------------
 // Tools 6-10: the stores
@@ -322,7 +406,7 @@ server.tool(
     artist: z.string().describe('Artist name'),
     title: z.string().describe('Track title'),
   },
-  async ({ artist, title }) => {
+  async ({ artist, title }) => oneAtATime(async () => {
     const bp = await sourcingModule('beatport');
     const session = await bp.openBeatport();
     try {
@@ -330,7 +414,7 @@ server.tool(
       const search = bp.makeSearcher({ page: session.page, token });
       const match = await bp.bestBeatportMatch(search, { artist, title });
       return {
-        content: [{ type: 'text', text: JSON.stringify({
+        content: [{ type: 'text' as const, text: JSON.stringify({
           query: `${artist} - ${title}`,
           signedIn: Boolean(token),
           match: match && {
@@ -344,7 +428,7 @@ server.tool(
     } finally {
       await session.close();
     }
-  }
+  })
 );
 
 server.tool(
@@ -354,7 +438,7 @@ server.tool(
     source: z.enum(['qobuz', 'beatport', 'both']).default('both').describe('Which store(s) to read'),
     hoursAgo: z.number().optional().describe('Only return purchases from the last N hours'),
   },
-  async ({ source, hoursAgo }) => {
+  async ({ source, hoursAgo }) => oneAtATime(async () => {
     const cutoff = hoursAgo ? Date.now() - hoursAgo * 3600 * 1000 : 0;
     const out: Record<string, unknown> = {};
     const all: any[] = [];
@@ -381,8 +465,8 @@ server.tool(
     const history = await sourcingModule('history');
     history.recordEvents(all.map((t: any) => history.eventFromPurchase(t)));
 
-    return { content: [{ type: 'text', text: JSON.stringify({ stores: out, totalFound: all.length, purchases: all }, null, 2) }] };
-  }
+    return { content: [{ type: 'text' as const, text: JSON.stringify({ stores: out, totalFound: all.length, purchases: all }, null, 2) }] };
+  })
 );
 
 server.tool(
@@ -392,14 +476,14 @@ server.tool(
     store: z.enum(['qobuz', 'beatport', 'soundcloud']).describe('Which store to sign in to'),
     timeoutSeconds: z.number().optional().describe('How long to wait for sign-in (default 300)'),
   },
-  async ({ store, timeoutSeconds }) => {
+  async ({ store, timeoutSeconds }) => oneAtATime(async () => {
     const timeoutMs = (timeoutSeconds || 300) * 1000;
     if (store === 'soundcloud') {
       const sc = await sourcingModule('soundcloud');
       const session = await sc.openSoundCloud();
       try {
         const ok = await sc.waitForSoundCloudLogin(session.page, { timeoutMs });
-        return { content: [{ type: 'text', text: JSON.stringify({ store, signedIn: ok, note: ok ? 'SoundCloud session saved.' : 'No sign-in detected before the timeout.' }) }] };
+        return { content: [{ type: 'text' as const, text: JSON.stringify({ store, signedIn: ok, note: ok ? 'SoundCloud session saved.' : 'No sign-in detected before the timeout.' }) }] };
       } finally {
         await session.close();
       }
@@ -409,7 +493,7 @@ server.tool(
       const session = await bp.openBeatport();
       try {
         const token = await bp.waitForLogin(session.page, { timeoutMs });
-        return { content: [{ type: 'text', text: JSON.stringify({ store, signedIn: Boolean(token), note: token ? 'Beatport session saved.' : 'No sign-in detected before the timeout.' }) }] };
+        return { content: [{ type: 'text' as const, text: JSON.stringify({ store, signedIn: Boolean(token), note: token ? 'Beatport session saved.' : 'No sign-in detected before the timeout.' }) }] };
       } finally {
         await session.close();
       }
@@ -418,16 +502,16 @@ server.tool(
     const session = await mod.openQobuz();
     try {
       const ok = await mod.waitForQobuzLogin(session.page, { timeoutMs });
-      return { content: [{ type: 'text', text: JSON.stringify({ store, signedIn: ok, note: ok ? 'Qobuz session saved.' : 'No sign-in detected before the timeout.' }) }] };
+      return { content: [{ type: 'text' as const, text: JSON.stringify({ store, signedIn: ok, note: ok ? 'Qobuz session saved.' : 'No sign-in detected before the timeout.' }) }] };
     } finally {
       await session.close();
     }
-  }
+  })
 );
 
 server.tool(
   'download_track',
-  'Download an already-purchased track through the user\'s signed-in browser session, convert it to AIFF, and save it to the organize source directory. Requires a signed-in store profile (use store_login first) — this reads the download from the store\'s own page rather than replaying a private API with stored credentials.',
+  'Download an already-purchased track through the user\'s signed-in browser session and save it to the organize source directory, converted to AIFF when it is lossless. A lossy file (e.g. MP3) is never converted: it is kept under lossy/ and flagged. Never overwrites an existing file. Requires a signed-in store profile (use store_login first) — this reads the download from the store\'s own page rather than replaying a private API with stored credentials.',
   {
     source: z.enum(['qobuz', 'beatport']).describe('Which store the track was bought from'),
     trackId: z.string().describe('Track ID from the store'),
@@ -435,17 +519,30 @@ server.tool(
     title: z.string().describe('Track title (for the filename)'),
     destDir: z.string().optional().describe('Destination directory (defaults to organizeSourceDir from config)'),
   },
-  async ({ source, trackId, artist, title, destDir }) => {
+  async ({ source, trackId, artist, title, destDir }) => oneAtATime(async () => {
+    const reply = (body: unknown) => ({ content: [{ type: 'text' as const, text: JSON.stringify(body) }] });
     const { primary, fallback } = getConfigPaths();
     const config = await readConfig(primary, fallback);
     const outputDir = destDir || config.organizeSourceDir;
     if (!outputDir) {
-      return { content: [{ type: 'text', text: JSON.stringify({ error: 'No destination directory. Set organizeSourceDir in settings or pass destDir.' }) }] };
+      return reply({ error: 'No destination directory. Set organizeSourceDir in settings or pass destDir.' });
     }
     await fs.mkdir(outputDir, { recursive: true });
 
+    // Refuse up front if this track is already sitting there under any audio extension.
+    const base = sanitizeFilename(`${artist} - ${title}`);
+    const lossyDir = path.join(outputDir, 'lossy');
+    for (const dir of [outputDir, lossyDir]) {
+      for (const ext of AUDIO_EXTS_FOR_NAME) {
+        const existing = path.join(dir, `${base}.${ext}`);
+        if (fsSync.existsSync(existing)) return reply({ error: `Already there, not overwritten: ${existing}` });
+      }
+    }
+    // Download under a hidden temp name (scans skip it), then move into place.
+    const partialPath = path.join(outputDir, `.${base}.${Date.now()}.partial`);
+
     try {
-      const result = await withStore<{ rawPath?: string; error?: string }>(source, async (page, mod) => {
+      const result = await withStore<{ downloaded?: true; error?: string }>(source, async (page, mod) => {
         // Ask the store for this track's download URL from inside its own
         // origin, so the request carries the live session and a real browser
         // fingerprint — no token handling on our side.
@@ -478,31 +575,53 @@ server.tool(
 
         if (!resolved?.url) return { error: `${SIGN_IN_HINT(source)} (No download URL came back for track ${trackId} — it may also not be in this account's purchases.)` };
 
-        const ext = (resolved.url.match(/\.(wav|aiff|aif|mp3|flac)(?:\?|$)/i)?.[1] || (source === 'qobuz' ? 'flac' : 'wav')).toLowerCase();
-        const rawPath = path.join(outputDir, sanitizeFilename(`${artist} - ${title}.${ext}`));
-        await mod.downloadViaBrowser(page, resolved.url, rawPath);
-        return { rawPath };
+        await mod.downloadViaBrowser(page, resolved.url, partialPath);
+        return { downloaded: true };
       });
 
-      if ('error' in result && result.error) {
-        return { content: [{ type: 'text', text: JSON.stringify({ error: result.error }) }] };
+      if (result.error) return reply({ error: result.error });
+
+      // What actually arrived — by its bytes, not the URL — and whether it's
+      // lossless. Only a confirmed-lossless file goes into the intake folder
+      // and gets converted; anything else is kept aside, never made into an AIFF.
+      const ext = (await sniffAudioExtension(partialPath)) ?? 'bin';
+      const typedPartial = `${partialPath}.${ext}`;
+      await fs.rename(partialPath, typedPartial);
+      const health = await checkTrackHealth(typedPartial).catch(() => null);
+      const lossless = health?.format.lossless === true;
+      const finalDir = lossless ? outputDir : lossyDir;
+      await fs.mkdir(finalDir, { recursive: true });
+      const rawPath = path.join(finalDir, `${base}.${ext}`);
+      try {
+        await moveNoClobber(typedPartial, rawPath, 'mcp-download', { source, trackId, lossless });
+      } catch (err) {
+        return reply({ error: `Downloaded, but ${rawPath} already exists, so nothing was overwritten. The download is at ${typedPartial}. (${(err as Error).message})` });
       }
 
-      const rawPath = (result as { rawPath: string }).rawPath;
-      const rawExt = path.extname(rawPath).toLowerCase();
-      if (rawExt !== '.aiff' && rawExt !== '.aif') {
+      if (!lossless) {
+        return reply({
+          success: true, lossy: true, path: rawPath, format: ext.toUpperCase(),
+          codec: health?.format.codec ?? null,
+          note: health
+            ? 'The store sent a lossy file. It was kept under lossy/ and not converted — lossless only for the library.'
+            : 'Couldn’t confirm the file is lossless, so it was kept under lossy/ and not converted.',
+        });
+      }
+      if (ext !== 'aiff') {
         const conv = await convertToAiff(rawPath);
         if (conv.success && conv.outputPath) {
           await deleteOriginalAfterConversion(rawPath, conv.outputPath);
-          return { content: [{ type: 'text', text: JSON.stringify({ success: true, path: conv.outputPath, format: 'AIFF' }) }] };
+          return reply({ success: true, path: conv.outputPath, format: 'AIFF' });
         }
-        return { content: [{ type: 'text', text: JSON.stringify({ success: true, path: rawPath, format: rawExt.replace('.', '').toUpperCase(), note: 'AIFF conversion failed; original kept.' }) }] };
+        return reply({ success: true, path: rawPath, format: ext.toUpperCase(), note: `AIFF conversion failed; original kept. ${conv.errorMessage ?? ''}`.trim() });
       }
-      return { content: [{ type: 'text', text: JSON.stringify({ success: true, path: rawPath, format: 'AIFF' }) }] };
+      return reply({ success: true, path: rawPath, format: 'AIFF' });
     } catch (err) {
-      return { content: [{ type: 'text', text: JSON.stringify({ error: (err as Error).message }) }] };
+      // A half-finished download is our own temp file, not the user's audio.
+      await fs.unlink(partialPath).catch(() => {});
+      return reply({ error: (err as Error).message });
     }
-  }
+  })
 );
 
 // ---------------------------------------------------------------------------
@@ -547,9 +666,9 @@ server.tool(
     prefer: z.enum(['hires', 'cd']).optional().describe('Which lossless Qobuz tier to link (default hires)'),
     skipBeatport: z.boolean().optional().describe('Qobuz only — no browser launch'),
   },
-  async ({ playlistUrl, csvPath, limit, prefer, skipBeatport }) => {
+  async ({ playlistUrl, csvPath, limit, prefer, skipBeatport }) => oneAtATime(async () => {
     if (!playlistUrl && !csvPath) {
-      return { content: [{ type: 'text', text: JSON.stringify({ error: 'Provide playlistUrl or csvPath' }) }] };
+      return { content: [{ type: 'text' as const, text: JSON.stringify({ error: 'Provide playlistUrl or csvPath' }) }] };
     }
     const args = [path.join(SOURCING_ROOT, 'bin', 'source-playlist.mjs')];
     if (playlistUrl) args.push('--playlist', playlistUrl);
@@ -558,6 +677,8 @@ server.tool(
     if (prefer) args.push('--prefer', prefer);
     if (skipBeatport) args.push('--skip-beatport');
 
+    // The script launches Chrome on the same store profiles; let go of ours first.
+    await releaseSharedBrowsers();
     const { execFile } = await import('child_process');
     const { promisify } = await import('util');
     const execFileAsync = promisify(execFile);
@@ -573,7 +694,7 @@ server.tool(
       const sessionPath = stdout.trim().split('\n').pop() || '';
       const session = JSON.parse(await fs.readFile(sessionPath, 'utf8'));
       return {
-        content: [{ type: 'text', text: JSON.stringify({
+        content: [{ type: 'text' as const, text: JSON.stringify({
           sessionPath,
           stats: session.stats,
           buy: session.buy.map((r: any) => ({
@@ -589,9 +710,9 @@ server.tool(
       };
     } catch (err) {
       const e = err as { message?: string; stderr?: string };
-      return { content: [{ type: 'text', text: JSON.stringify({ error: e.message, stderr: (e.stderr || '').slice(-2000) }) }] };
+      return { content: [{ type: 'text' as const, text: JSON.stringify({ error: e.message, stderr: (e.stderr || '').slice(-2000) }) }] };
     }
-  }
+  })
 );
 
 server.tool(
@@ -645,7 +766,7 @@ server.tool(
     comment: z.string().optional().describe('Comment text for gates that ask for one (default "dis shit nasty" — the user\'s standing choice)'),
     resume: z.string().optional().describe('Path of an earlier session JSON; its pending rows are fetched and gates that stalled are retried'),
   },
-  async ({ user, set, limit, since, listOnly, noGates, dropLossy, dest, assistSeconds, email, scActions, comment, resume }) => {
+  async ({ user, set, limit, since, listOnly, noGates, dropLossy, dest, assistSeconds, email, scActions, comment, resume }) => oneAtATime(async () => {
     const args = [path.join(SOURCING_ROOT, 'bin', 'source-soundcloud-likes.mjs')];
     if (user) args.push('--user', user);
     for (const u of ([] as string[]).concat(set || [])) args.push('--set', u);
@@ -661,6 +782,8 @@ server.tool(
     if (comment) args.push('--comment', comment);
     if (resume) args.push('--resume', resume);
 
+    // The script launches Chrome on the same store profiles; let go of ours first.
+    await releaseSharedBrowsers();
     const { execFile } = await import('child_process');
     const { promisify } = await import('util');
     const execFileAsync = promisify(execFile);
@@ -675,7 +798,7 @@ server.tool(
       const session = JSON.parse(await fs.readFile(sessionPath, 'utf8'));
       const brief = (r: any) => ({ artist: r.artist, title: r.title, url: r.url, free: r.free?.kind, gate: r.free?.gate?.host || null, status: r.outcome?.status || 'pending', reason: r.outcome?.reason || null, files: (r.outcome?.files || []).map((f: any) => ({ path: f.path, codec: f.codec || f.ext, lossless: f.lossless })) });
       return {
-        content: [{ type: 'text', text: JSON.stringify({
+        content: [{ type: 'text' as const, text: JSON.stringify({
           sessionPath,
           destDir: session.destDir,
           source: session.source,
@@ -691,9 +814,9 @@ server.tool(
       };
     } catch (err) {
       const e = err as { message?: string; stderr?: string };
-      return { content: [{ type: 'text', text: JSON.stringify({ error: e.message, stderr: (e.stderr || '').slice(-2000) }) }] };
+      return { content: [{ type: 'text' as const, text: JSON.stringify({ error: e.message, stderr: (e.stderr || '').slice(-2000) }) }] };
     }
-  }
+  })
 );
 
 // ---------------------------------------------------------------------------
@@ -702,6 +825,14 @@ server.tool(
 async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
+
+  // Close the shared store windows when the client goes away.
+  const shutdown = () => {
+    void releaseSharedBrowsers().catch(() => {}).finally(() => process.exit(0));
+  };
+  process.stdin.on('end', shutdown);
+  process.on('SIGINT', shutdown);
+  process.on('SIGTERM', shutdown);
 }
 
 main().catch((err) => {

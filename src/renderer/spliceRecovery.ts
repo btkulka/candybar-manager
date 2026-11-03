@@ -1,4 +1,5 @@
 import { escapeHtml, showToast, getErrorMessage } from './shared';
+import { confirmAction } from './confirmDialog';
 import type {
   SpliceLoginStatus,
   SpliceScanResult,
@@ -21,6 +22,11 @@ let loginStatus: SpliceLoginStatus | null = null;
 let scanResult: SpliceScanResult | null = null;
 let buckets: SpliceBuckets | null = null;
 let downloadReport: SpliceDownloadReport | null = null;
+// Each scan gets a token. Back bumps it, so a scan that finishes after the user
+// left is dropped instead of pulling them into Review with stale buckets.
+let scanToken = 0;
+// Main can't cancel a Splice search, so a new scan waits for the last one to settle.
+let classifyInFlight = false;
 
 // DOM lookups (lazy — page may not be in DOM at module-load time on hot reload)
 function $(id: string) { return document.getElementById(id); }
@@ -102,13 +108,18 @@ async function startLogin() {
 function updateScanButton() {
   const btn = $('splice-to-scan') as HTMLButtonElement | null;
   if (!btn) return;
-  btn.disabled = !alsPath || !loginStatus?.connected;
+  btn.disabled = !alsPath || !loginStatus?.connected || classifyInFlight;
+  btn.dataset.tooltipDisabled = classifyInFlight
+    ? 'Still finishing the last search on Splice. This unlocks in a moment.'
+    : 'Pick a project and sign in to Splice first';
 }
 
 // --- Scan stage ----------------------------------------------------------
 
 async function runScan() {
-  if (!alsPath) return;
+  if (!alsPath || classifyInFlight) return;
+  const token = ++scanToken;
+  const projectPath = alsPath;
   setStage('scan');
   const title = $('splice-scan-title');
   const counts = $('splice-scan-counts');
@@ -120,7 +131,8 @@ async function runScan() {
   if (current) current.textContent = '—';
   if (progress) progress.style.width = '0%';
 
-  const scanRes = await window.candybar.spliceScan(alsPath);
+  const scanRes = await window.candybar.spliceScan(projectPath);
+  if (token !== scanToken) return;
   if (!scanRes.success || !scanRes.result) {
     showToast('error', 'Scan Failed', scanRes.error || 'Could not parse .als');
     setStage('configure');
@@ -135,20 +147,22 @@ async function runScan() {
       current.textContent = `All ${scanResult.totalRefs} samples are present on disk.`;
     }
     buckets = { owned: [], credits: [], notFound: [] };
-    setTimeout(() => renderReview(), 800);
+    setTimeout(() => { if (token === scanToken) renderReview(); }, 800);
     return;
   }
 
   // Now classify — listen to progress events
   if (title) title.textContent = `Searching ${scanResult.missing.length} samples on Splice…`;
   const offProgress = window.candybar.onSpliceProgress((p) => {
-    if (p.phase !== 'searching') return;
+    if (token !== scanToken || p.phase !== 'searching') return;
     if (progress) progress.style.width = `${Math.round(((p.index + 1) / p.total) * 100)}%`;
     if (current) current.textContent = `[${p.index + 1}/${p.total}] ${p.sample.basename}${p.result ? ` — ${p.result}` : ''}`;
   });
 
+  classifyInFlight = true;
   try {
     const classifyRes = await window.candybar.spliceClassify(scanResult.missing);
+    if (token !== scanToken) return;
     if (!classifyRes.success || !classifyRes.buckets) {
       showToast('error', 'Search Failed', classifyRes.error || 'Splice search failed');
       setStage('configure');
@@ -157,8 +171,18 @@ async function runScan() {
     buckets = classifyRes.buckets;
     renderReview();
   } finally {
+    classifyInFlight = false;
+    updateScanButton();
     offProgress?.();
   }
+}
+
+// Back from the scan: drop whatever this scan returns. The search itself keeps
+// running in main until it finishes, so Scan stays locked until then.
+function cancelScan() {
+  scanToken++;
+  setStage('configure');
+  updateScanButton();
 }
 
 // --- Review stage --------------------------------------------------------
@@ -175,10 +199,10 @@ function renderReview() {
   if (notFoundCount) notFoundCount.textContent = String(buckets.notFound.length);
 
   const ownedList = $('splice-owned-list');
-  if (ownedList) ownedList.innerHTML = renderOwnedList(buckets.owned);
+  if (ownedList) { ownedList.innerHTML = renderOwnedList(buckets.owned); wireCoverFallbacks(ownedList); }
 
   const creditsList = $('splice-credits-list');
-  if (creditsList) creditsList.innerHTML = renderCreditsList(buckets.credits);
+  if (creditsList) { creditsList.innerHTML = renderCreditsList(buckets.credits); wireCoverFallbacks(creditsList); }
 
   const notFoundList = $('splice-notfound-list');
   if (notFoundList) notFoundList.innerHTML = renderNotFoundList(buckets.notFound);
@@ -224,11 +248,21 @@ function packNameFromPath(p: string): string | null {
   return m ? m[1].replace(/_/g, ' ') : null;
 }
 
-// Cover art rendered as <img> with broken-image fallback to a transparent
-// placeholder so a 404'd cover doesn't show the browser's default icon.
+// Cover art rendered as <img>; wireCoverFallbacks swaps a 404'd cover for the
+// empty placeholder so the browser's broken-image icon never shows.
 function renderCover(url: string | null): string {
   if (!url) return '<div class="splice-bucket-cover splice-bucket-cover-empty"></div>';
-  return `<img class="splice-bucket-cover" src="${escapeHtml(url)}" alt="" loading="lazy" onerror="this.classList.add('splice-bucket-cover-empty');this.removeAttribute('src');">`;
+  return `<img class="splice-bucket-cover" src="${escapeHtml(url)}" alt="" loading="lazy">`;
+}
+
+// Listeners, not inline onerror: the page CSP (script-src 'self') blocks inline handlers.
+function wireCoverFallbacks(container: HTMLElement) {
+  container.querySelectorAll<HTMLImageElement>('img.splice-bucket-cover').forEach((img) => {
+    img.addEventListener('error', () => {
+      img.classList.add('splice-bucket-cover-empty');
+      img.removeAttribute('src');
+    }, { once: true });
+  });
 }
 
 function renderOwnedList(items: SpliceOwnedItem[]): string {
@@ -362,14 +396,26 @@ async function runBuyAll() {
 
   // Confirm before spending credits — once licensed, you can't get a refund.
   const count = buckets.credits.length;
-  const balanceLine = creditsBalance !== null
-    ? `\n\nYou have ${creditsBalance} credits. After this purchase: ${creditsBalance - count}.`
-    : '';
   if (creditsBalance !== null && creditsBalance < count) {
     showToast('error', 'Not enough credits', `You have ${creditsBalance} credits but ${count} are needed. Top up on Splice and retry.`);
     return;
   }
-  const ok = window.confirm(`Spend ${count} credit${count === 1 ? '' : 's'} to license and download these samples?${balanceLine}`);
+  const plural = count === 1 ? '' : 's';
+  const ok = await confirmAction({
+    title: `Spend ${count} Splice credit${plural}?`,
+    message: `Each sample costs one credit. Once spent, Splice doesn't refund credits.`,
+    details: [
+      { label: 'Samples', value: String(count) },
+      ...(creditsBalance !== null
+        ? [{ label: 'Credits now', value: String(creditsBalance) },
+           { label: 'Credits after', value: String(creditsBalance - count) }]
+        : []),
+    ],
+    safetyNote: 'You keep these samples for good. They download into your Splice folder where the project expects them.',
+    confirmLabel: `Spend ${count} credit${plural}`,
+    tone: 'caution',
+    armMs: 1500,
+  });
   if (!ok) return;
 
   setStage('download');
@@ -497,7 +543,7 @@ export function initSpliceRecovery() {
   $('splice-status-pill')?.addEventListener('click', () => { if (!loginStatus?.connected) void startLogin(); });
   $('splice-connect-btn')?.addEventListener('click', () => void startLogin());
   $('splice-to-scan')?.addEventListener('click', () => void runScan());
-  $('splice-scan-back')?.addEventListener('click', () => setStage('configure'));
+  $('splice-scan-back')?.addEventListener('click', () => cancelScan());
   $('splice-review-back')?.addEventListener('click', () => setStage('configure'));
   $('splice-download-owned')?.addEventListener('click', () => void runDownload());
   $('splice-buy-all')?.addEventListener('click', () => void runBuyAll());

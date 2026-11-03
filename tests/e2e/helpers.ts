@@ -42,6 +42,11 @@ export async function launchApp(): Promise<LaunchedApp> {
   await page.waitForLoadState('domcontentloaded');
   await page.waitForTimeout(500);
 
+  // A machine with no config yet gets the first-run tour, which makes the rest
+  // of the app inert until it's dismissed.
+  const skipTour = page.locator('.tour-skip');
+  if (await skipTour.isVisible()) await skipTour.click();
+
   return {
     app,
     page,
@@ -58,5 +63,6 @@ export const NAV_PAGES = [
   { key: 'organize',   pageId: 'page-organize',   nav: '[data-page="organize"]' },
   { key: 'check',      pageId: 'page-check',      nav: '[data-page="check"]' },
   { key: 'source',     pageId: 'page-source',     nav: '[data-page="source"]' },
+  { key: 'upgrade',    pageId: 'page-upgrade',    nav: '[data-page="upgrade"]' },
   { key: 'usb-health', pageId: 'page-usb-health', nav: '[data-page="usb-health"]' },
 ] as const;

@@ -3,14 +3,32 @@ import fs from 'fs';
 import path from 'path';
 import { createScopedLogger } from './logger';
 import { checkAiffIntegrity } from './audioIntegrityCheck';
+import { diagnoseAiffHeader } from './aiffRepair';
 import type { SuggestedAction, HealthIssue, HealthSummary } from '../types';
 
 const log = createScopedLogger('TrackHealth');
 
 // XDJ-RX3 / CDJ compatibility requirements
 const SUPPORTED_CONTAINERS = ['WAVE', 'AIFF', 'MPEG', 'MP4']; // MP4 for AAC
-const SUPPORTED_CODECS = ['PCM', 'MP3', 'AAC'];
 const SUPPORTED_SAMPLE_RATES = [32000, 44100, 48000];
+
+// AIFC compressionType FourCCs that hold plain (uncompressed) PCM: big-endian
+// NONE/twos and little-endian sowt. music-metadata reports every AIFC as
+// container 'AIFF-C' with lossless=false, which mislabelled these as lossy.
+const AIFC_PCM_TYPES = new Set(['NONE', 'twos', 'sowt']);
+const AIFC_FLOAT_TYPES = new Set(['fl32', 'FL32', 'fl64', 'FL64']);
+
+// music-metadata names MP4 files by their ftyp brands ('M4A/isom/iso2',
+// 'mp42/isom', 'isom/iso2/mp41', ...), never plain 'MP4'.
+const MP4_BRAND_RE = /^(M4A|M4B|M4P|MP4\d?|MP41|MP42|ISOM|ISO\d|AVC1|DASH|F4A|3GP\d*|3G2\w*)\b/;
+
+/** Canonical container name for the compatibility checks: 'MP4' for any ftyp brand list. */
+export function canonicalContainer(container: string | undefined): string | undefined {
+  if (!container) return undefined;
+  const upper = container.toUpperCase();
+  if (MP4_BRAND_RE.test(upper)) return 'MP4';
+  return upper;
+}
 const SUPPORTED_BIT_DEPTHS = [16, 24]; // For lossless formats
 const MIN_SAMPLE_RATE = 32000; // Hz - below this is too low
 const MAX_BIT_RATE = 320; // kbps for lossy formats
@@ -30,6 +48,7 @@ export type TrackHealth = {
   isHealthy: boolean;
   issues: HealthIssue[];
   dateAdded: number | null;
+  bpm: number | null;
   format: {
     container: string | null;
     codec: string | null;
@@ -56,6 +75,7 @@ export async function checkTrackHealth(filePath: string): Promise<TrackHealth> {
     genre: '',
     hasAlbumArt: false,
     dateAdded: null,
+    bpm: null,
     isHealthy: true,
     issues: [],
     format: {
@@ -70,8 +90,9 @@ export async function checkTrackHealth(filePath: string): Promise<TrackHealth> {
     }
   };
 
-  // Check if file exists
-  if (!fs.existsSync(filePath)) {
+  // One stat answers both "does it exist" and "when was it added".
+  const stat = await fs.promises.stat(filePath).catch(() => null);
+  if (!stat) {
     issues.push({
       code: 'FILE_NOT_FOUND',
       severity: 'error',
@@ -83,12 +104,7 @@ export async function checkTrackHealth(filePath: string): Promise<TrackHealth> {
     health.isHealthy = false;
     return health;
   }
-
-  // Get file birthtime for date added
-  try {
-    const stat = await fs.promises.stat(filePath);
-    health.dateAdded = stat.birthtimeMs;
-  } catch { /* ignore */ }
+  health.dateAdded = stat.birthtimeMs;
 
   try {
     const metadata = await mm.parseFile(filePath);
@@ -101,6 +117,21 @@ export async function checkTrackHealth(filePath: string): Promise<TrackHealth> {
     health.year = metadata.common.year || null;
     health.genre = metadata.common.genre?.[0] || '';
     health.hasAlbumArt = !!(metadata.common.picture && metadata.common.picture.length > 0);
+    const bpm = Number(metadata.common.bpm);
+    health.bpm = Number.isFinite(bpm) && bpm > 0 ? bpm : null;
+
+    let container = canonicalContainer(fmt.container);
+    let lossless: boolean | undefined = fmt.lossless;
+    // AIFF-C holding plain PCM (or float) is lossless AIFF in every way that matters
+    // here; only a genuinely compressed AIFC (ulaw/alaw/ima4...) is lossy.
+    if (container === 'AIFF-C') {
+      const diag = await diagnoseAiffHeader(filePath).catch(() => null);
+      const type = diag?.currentCompressionType;
+      if (type && (AIFC_PCM_TYPES.has(type) || AIFC_FLOAT_TYPES.has(type))) {
+        container = 'AIFF';
+        lossless = true;
+      }
+    }
 
     // Populate format info
     health.format = {
@@ -111,11 +142,10 @@ export async function checkTrackHealth(filePath: string): Promise<TrackHealth> {
       bitRate: fmt.bitrate ? Math.round(fmt.bitrate / 1000) : null,
       channels: fmt.numberOfChannels || null,
       duration: fmt.duration || null,
-      lossless: fmt.lossless ?? null
+      lossless: lossless ?? null
     };
 
     // Check container/format support
-    const container = fmt.container?.toUpperCase();
     if (!container) {
       issues.push({
         code: 'UNKNOWN_CONTAINER',
@@ -141,7 +171,7 @@ export async function checkTrackHealth(filePath: string): Promise<TrackHealth> {
         suggestedAction: 'archive'
       });
     } else if (!SUPPORTED_CONTAINERS.includes(container)) {
-      const isLossy = fmt.lossless === false;
+      const isLossy = lossless === false;
       issues.push({
         code: 'UNSUPPORTED_FORMAT',
         severity: 'error',
@@ -153,9 +183,22 @@ export async function checkTrackHealth(filePath: string): Promise<TrackHealth> {
       });
     }
 
+    // MP4 is supported for AAC only (ALAC and friends still need converting).
+    if (container === 'MP4' && fmt.codec && !/AAC/i.test(fmt.codec)) {
+      issues.push({
+        code: 'UNSUPPORTED_FORMAT',
+        severity: 'error',
+        message: `Unsupported MP4 codec: ${fmt.codec}`,
+        detail: lossless === false
+          ? 'Only AAC is supported in MP4/M4A files. Replace with a lossless source.'
+          : 'Only AAC is supported in MP4/M4A files. Convert to AIFF to preserve quality.',
+        suggestedAction: lossless === false ? 'archive' : 'convert_aiff'
+      });
+    }
+
     // Check sample rate
     if (fmt.sampleRate && !SUPPORTED_SAMPLE_RATES.includes(fmt.sampleRate)) {
-      const isLossy = fmt.lossless === false;
+      const isLossy = lossless === false;
       issues.push({
         code: fmt.sampleRate < MIN_SAMPLE_RATE ? 'LOW_SAMPLE_RATE' : 'INVALID_SAMPLE_RATE',
         severity: 'error',
@@ -169,9 +212,9 @@ export async function checkTrackHealth(filePath: string): Promise<TrackHealth> {
       });
     }
 
-    // Check bit depth for lossless formats
-    if (fmt.lossless && fmt.bitsPerSample) {
-      if (!SUPPORTED_BIT_DEPTHS.includes(fmt.bitsPerSample)) {
+    // Check bit depth for lossless formats (32-bit gets its own, clearer code below)
+    if (lossless && fmt.bitsPerSample) {
+      if (!SUPPORTED_BIT_DEPTHS.includes(fmt.bitsPerSample) && fmt.bitsPerSample !== 32) {
         issues.push({
           code: 'INVALID_BIT_DEPTH',
           severity: 'error',
@@ -192,8 +235,9 @@ export async function checkTrackHealth(filePath: string): Promise<TrackHealth> {
       }
     }
 
-    // Check bit rate for lossy formats
-    if (!fmt.lossless && fmt.bitrate) {
+    // Check bit rate for lossy formats. Only MP3/AAC have a meaningful encoder
+    // bitrate; a PCM file's 1411 kbps must never read as "re-encode to MP3".
+    if (lossless === false && (container === 'MPEG' || container === 'MP4') && fmt.bitrate) {
       const kbps = Math.round(fmt.bitrate / 1000);
       if (kbps < MIN_BIT_RATE) {
         issues.push({
@@ -216,7 +260,7 @@ export async function checkTrackHealth(filePath: string): Promise<TrackHealth> {
     }
 
     // Warn about lossy formats (not lossless) - suggest archiving for quality-conscious users
-    if (fmt.lossless === false) {
+    if (lossless === false) {
       const codec = fmt.codec?.toUpperCase() || container;
       issues.push({
         code: 'LOSSY_FORMAT',
@@ -229,7 +273,7 @@ export async function checkTrackHealth(filePath: string): Promise<TrackHealth> {
 
     // Check channels
     if (fmt.numberOfChannels && fmt.numberOfChannels > 2) {
-      const isLossy = fmt.lossless === false;
+      const isLossy = lossless === false;
       issues.push({
         code: 'MULTICHANNEL',
         severity: 'error',
@@ -241,10 +285,11 @@ export async function checkTrackHealth(filePath: string): Promise<TrackHealth> {
       });
     }
 
-    // Check codec for PCM in WAV/AIFF
+    // Check codec for PCM in WAV/AIFF. AIFC names its PCM codec descriptively
+    // ('PCM (byte swapped)', 'not compressed PCM ...'), so match on PCM, not equality.
     if ((container === 'WAVE' || container === 'AIFF') && fmt.codec) {
       const codec = fmt.codec.toUpperCase();
-      if (codec !== 'PCM') {
+      if (container === 'WAVE' ? codec !== 'PCM' : !/\bPCM\b/.test(codec)) {
         issues.push({
           code: 'NON_PCM_CODEC',
           severity: 'error',
@@ -260,12 +305,11 @@ export async function checkTrackHealth(filePath: string): Promise<TrackHealth> {
       // We can't directly check the wFormatTag without reading raw bytes,
       // but we can flag WAV files as potentially problematic
       // especially if they're from certain sources
-      const stats = await fs.promises.stat(filePath);
       if (fmt.duration && fmt.sampleRate && fmt.numberOfChannels && fmt.bitsPerSample) {
         // Calculate expected file size for PCM
         const expectedSize =
           fmt.duration * fmt.sampleRate * fmt.numberOfChannels * (fmt.bitsPerSample / 8) + 44; // 44 bytes for header
-        const actualSize = stats.size;
+        const actualSize = stat.size;
         const sizeDiff = Math.abs(actualSize - expectedSize) / expectedSize;
 
         // If file is significantly different from expected, might have extra metadata
@@ -357,9 +401,17 @@ export async function checkTrackHealth(filePath: string): Promise<TrackHealth> {
     });
   }
 
+  // Lossless audio must never be routed to the MP3 re-encoder; the AIFF
+  // converter fixes the same problems without throwing detail away.
+  if (health.format.lossless !== false) {
+    for (const issue of issues) {
+      if (issue.suggestedAction === 'reencode_mp3') issue.suggestedAction = 'convert_aiff';
+    }
+  }
+
   // Byte-swap integrity check for AIFF/AIFC — catches the static-audio
-  // corruption produced by the old WAV→AIFF tag-write bug. Cheap (~64KB read
-  // + a handful of ints of math per track), so it's safe to run on every scan.
+  // corruption produced by the old WAV→AIFF tag-write bug. Cheap (a 12-byte
+  // header, the chunk table and 16KB of PCM), so it's safe to run on every parse.
   const ext = path.extname(filePath).toLowerCase();
   if (ext === '.aiff' || ext === '.aif' || ext === '.aifc') {
     const integrity = await checkAiffIntegrity(filePath);

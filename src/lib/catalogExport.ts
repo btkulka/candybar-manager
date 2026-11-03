@@ -1,7 +1,7 @@
 import fs from 'fs/promises';
 import path from 'path';
 import { parseFile } from 'music-metadata';
-import { AUDIO_EXTENSIONS } from './constants';
+import { walkAudioDir } from './fileUtils';
 import { makeTrackKey } from './stringUtils';
 
 const CONCURRENCY = 8;
@@ -18,36 +18,11 @@ type ProgressFn = (current: number, total: number, message: string) => void;
 
 type LogFn = (text: string, stream?: 'stdout' | 'stderr' | 'status') => void;
 
-async function walkDir(root: string, onProgress?: (count: number) => void): Promise<string[]> {
-  const files: string[] = [];
-  const stack = [root];
-
-  while (stack.length > 0) {
-    const dir = stack.pop()!;
-    const entries = await fs.readdir(dir, { withFileTypes: true });
-
-    for (const entry of entries) {
-      const fullPath = path.join(dir, entry.name);
-      if (entry.isDirectory() && !entry.name.startsWith('.')) {
-        stack.push(fullPath);
-      } else if (entry.isFile() && !entry.name.startsWith('.')) {
-        const ext = path.extname(entry.name).toLowerCase();
-        if (AUDIO_EXTENSIONS.has(ext)) {
-          files.push(fullPath);
-          if (onProgress && files.length % 100 === 0) {
-            onProgress(files.length);
-          }
-        }
-      }
-    }
-  }
-
-  return files;
-}
-
 async function extractMetadata(filePath: string): Promise<CatalogEntry | null> {
   try {
-    const metadata = await parseFile(filePath, { duration: true });
+    // duration:false still reads it from the header (Xing/VBRI, or a CBR
+    // estimate); `true` would scan every frame of every MP3.
+    const metadata = await parseFile(filePath, { duration: false, skipCovers: true });
     const artist = metadata.common.artist || metadata.common.artists?.[0] || '';
     const title = metadata.common.title || '';
 
@@ -70,7 +45,8 @@ export async function exportCatalog(
   outputPath: string,
   log: LogFn,
   onProgress?: ProgressFn,
-  preScannedFiles?: string[]
+  preScannedFiles?: string[],
+  signal?: AbortSignal
 ): Promise<{ total: number; exported: number; skipped: number }> {
   const stat = await fs.stat(libraryRoot);
   if (!stat.isDirectory()) {
@@ -79,13 +55,14 @@ export async function exportCatalog(
 
   // Use pre-scanned files from job queue, or discover them
   let files: string[];
-  if (preScannedFiles) {
+  if (preScannedFiles && preScannedFiles.length > 0) {
     files = preScannedFiles;
     log(`Using ${files.length} pre-scanned files`, 'stdout');
   } else {
     log('Discovering audio files...', 'status');
-    files = await walkDir(libraryRoot, (count) => {
-      onProgress?.(count, 0, `Found ${count} audio files...`);
+    files = await walkAudioDir(libraryRoot, {
+      signal,
+      onProgress: (count) => onProgress?.(count, 0, `Found ${count} audio files...`),
     });
     log(`Found ${files.length} audio files`, 'stdout');
   }
@@ -96,6 +73,7 @@ export async function exportCatalog(
   let skipped = 0;
 
   for (let i = 0; i < files.length; i += CONCURRENCY) {
+    if (signal?.aborted) throw new Error('Cancelled');
     const batch = files.slice(i, i + CONCURRENCY);
     const batchResults = await Promise.all(batch.map(extractMetadata));
 

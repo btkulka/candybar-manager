@@ -1,5 +1,11 @@
-import type { VolumeInfo, UsbHealthResult, UsbHealthProgress, LibraryHealthTrack } from './shared';
-import { showToast, escapeHtml, getErrorMessage, icons, showContextMenu } from './shared';
+import type { VolumeInfo, UsbHealthResult, LibraryHealthTrack, ContextMenuItem } from './shared';
+import { showToast, escapeHtml, getErrorMessage, icons, showContextMenu, openTagEditor } from './shared';
+import { confirmAction, confirmMoveToTrash } from './confirmDialog';
+import type { JobProgress } from '../types';
+import {
+  type PioneerDevice, PIONEER_DEVICES,
+  containerLabel, countFormats, categoryLabel, deviceReadsFS,
+} from './pioneerDevices';
 import {
   type SortKey,
   issueDescriptions,
@@ -15,95 +21,12 @@ type VolumeEntry = {
   error: string | null;
 };
 
-type PioneerController = {
-  name: string;
-  category: 'flagship' | 'all-in-one' | 'media-player';
-  imageUrl: string;
-  supportedFS: string[];
-  supportedFormats: Set<string>; // uppercase container names: 'WAVE', 'AIFF', 'MPEG', 'MP4', 'FLAC'
-};
-
 type ChecklistItem = {
   label: string;
   passed: boolean;
   severity: 'ok' | 'warning' | 'error';
   detail: string;
 };
-
-// ========== Pioneer Controller Data ==========
-
-const PIONEER_CONTROLLERS: PioneerController[] = [
-  {
-    name: 'CDJ-3000',
-    category: 'flagship',
-    imageUrl: 'https://images.microcms-assets.io/assets/3b9e29ce734e49babfedb3f8d1e728e3/cbe27d4bec5f4302be38b9eee163ffa7/96C2FC9D-EBA6-46DC-BA4D-7F8447AE2EEA.jpg',
-    supportedFS: ['FAT32', 'FAT16', 'HFS+'],
-    supportedFormats: new Set(['WAVE', 'AIFF', 'MPEG', 'MP4', 'FLAC']),
-  },
-  {
-    name: 'CDJ-2000NXS2',
-    category: 'flagship',
-    imageUrl: 'https://alphatheta.com/product-images/1578/f02df8bc-4f62-437d-acee-a7ed625c8755/cdj-2000nxs2_1.png',
-    supportedFS: ['FAT32', 'FAT16', 'HFS+'],
-    supportedFormats: new Set(['WAVE', 'AIFF', 'MPEG', 'MP4', 'FLAC']),
-  },
-  {
-    name: 'OPUS-QUAD',
-    category: 'all-in-one',
-    imageUrl: 'https://product-images.alphatheta.com/139/f6ee44f7-2409-40ea-b78e-643217be9991/opus-quad_1.png',
-    supportedFS: ['FAT32', 'FAT16', 'exFAT', 'HFS+'],
-    supportedFormats: new Set(['WAVE', 'AIFF', 'MPEG', 'MP4', 'FLAC']),
-  },
-  {
-    name: 'XDJ-RX3',
-    category: 'all-in-one',
-    imageUrl: 'https://images.microcms-assets.io/assets/3b9e29ce734e49babfedb3f8d1e728e3/808bfb43-0301-49fb-a220-80ddb5aacffc/xdj-rx3_1.png',
-    supportedFS: ['FAT32', 'FAT16', 'HFS+'],
-    supportedFormats: new Set(['WAVE', 'AIFF', 'MPEG', 'MP4']),
-  },
-  {
-    name: 'XDJ-RX2',
-    category: 'all-in-one',
-    imageUrl: 'https://product-images.alphatheta.com/1838/cd1cf970-9285-4ddc-98a6-e041c67033d3/xdj-rx2_1.png',
-    supportedFS: ['FAT32', 'FAT16', 'HFS+'],
-    supportedFormats: new Set(['WAVE', 'AIFF', 'MPEG', 'MP4']),
-  },
-  {
-    name: 'XDJ-XZ',
-    category: 'all-in-one',
-    imageUrl: 'https://product-images.alphatheta.com/629/595fe353-dd7c-4e60-8091-01f1c306e152/xdj-xz_1.png',
-    supportedFS: ['FAT32', 'FAT16', 'HFS+'],
-    supportedFormats: new Set(['WAVE', 'AIFF', 'MPEG', 'MP4', 'FLAC']),
-  },
-  {
-    name: 'XDJ-1000MK2',
-    category: 'media-player',
-    imageUrl: 'https://product-images.alphatheta.com/599/372dee8c-1a1b-419b-9943-a2c9b63f7c6b/xdj-1000mk2_1.png',
-    supportedFS: ['FAT32', 'FAT16', 'HFS+'],
-    supportedFormats: new Set(['WAVE', 'AIFF', 'MPEG', 'MP4', 'FLAC']),
-  },
-  {
-    name: 'XDJ-700',
-    category: 'media-player',
-    imageUrl: 'https://images.microcms-assets.io/product-images/392/97116f84-9276-4d07-8ea1-1908bc0ff5f7/xdj-700_1.png',
-    supportedFS: ['FAT32', 'FAT16', 'HFS+'],
-    supportedFormats: new Set(['WAVE', 'AIFF', 'MPEG', 'MP4']),
-  },
-  {
-    name: 'DDJ-FLX10',
-    category: 'media-player',
-    imageUrl: 'https://images.microcms-assets.io/assets/3b9e29ce734e49babfedb3f8d1e728e3/87650f9b2b40406784627a3fdaf87d6d/3EAE02FE-9A29-4242-9426-BF1DEA4EB283.jpg',
-    supportedFS: ['FAT32', 'FAT16'],
-    supportedFormats: new Set(['WAVE', 'AIFF', 'MPEG', 'MP4']),
-  },
-  {
-    name: 'DDJ-REV7',
-    category: 'media-player',
-    imageUrl: 'https://images.microcms-assets.io/assets/3b9e29ce734e49babfedb3f8d1e728e3/e17d8824-80ed-4a1b-9957-cfc885cc2cef/DDJ-REV7_1.png',
-    supportedFS: ['FAT32', 'FAT16', 'HFS+'],
-    supportedFormats: new Set(['WAVE', 'AIFF', 'MPEG', 'MP4']),
-  },
-];
 
 // ========== State ==========
 
@@ -130,7 +53,35 @@ const refreshBtn = document.getElementById('cd-refresh') as HTMLButtonElement;
 
 // Path of the volume currently being USB-scanned (for attributing job-progress events)
 let activeScanPath: string | null = null;
+// job-progress carries no context key, and the USB page runs the same job type.
+// Latch the job id from the first event whose file sits under this drive.
+let activeScanJobId: string | null = null;
 let jobProgressListenerRegistered = false;
+
+function isUnderPath(file: unknown, root: string): boolean {
+  if (typeof file !== 'string') return false;
+  const base = root.replace(/\/+$/, '');
+  return file === base || file.startsWith(`${base}/`);
+}
+
+function handleJobProgress(progress: JobProgress) {
+  if (progress.jobType !== 'usb-health-scan' || !activeScanPath) return;
+  if (activeScanJobId === null) {
+    if (!isUnderPath(progress.detail, activeScanPath)) return;
+    activeScanJobId = progress.jobId;
+  } else if (progress.jobId !== activeScanJobId) {
+    return;
+  }
+  const card = volumeListEl.querySelector(`[data-volume-path="${CSS.escape(activeScanPath)}"]`);
+  const summaryEl = card?.querySelector('.cd-volume-summary');
+  if (!summaryEl) return;
+  const total = progress.total ?? 0;
+  const current = progress.current ?? 0;
+  const detail = typeof progress.detail === 'string' ? progress.detail.split('/').pop() : '';
+  summaryEl.textContent = detail
+    ? `Scanning ${current}/${total}: ${detail}`
+    : `Scanning ${current}/${total}…`;
+}
 
 // ========== Helpers ==========
 
@@ -155,25 +106,6 @@ function overallSeverity(entry: VolumeEntry): 'ok' | 'warning' | 'error' {
   if (summary.warnings > 0 || volumeIssues.some(i => i.severity === 'warning'))
     return 'warning';
   return 'ok';
-}
-
-/** Tally container formats across all tracks */
-function countFormats(tracks: LibraryHealthTrack[]): Record<string, number> {
-  const counts: Record<string, number> = {};
-  for (const t of tracks) {
-    const fmt = t.format.container || 'Unknown';
-    counts[fmt] = (counts[fmt] || 0) + 1;
-  }
-  return counts;
-}
-
-/** Friendly label for container names */
-function containerLabel(container: string): string {
-  const map: Record<string, string> = {
-    'WAVE': 'WAV', 'AIFF': 'AIFF', 'MPEG': 'MP3', 'MP4': 'AAC',
-    'FLAC': 'FLAC', 'OGG': 'OGG', 'Unknown': '?',
-  };
-  return map[container] || container;
 }
 
 /** Format container badge color class */
@@ -208,18 +140,6 @@ function formatDuration(seconds: number): string {
   const m = Math.floor((seconds % 3600) / 60);
   if (h > 0) return `${h}h ${m}m`;
   return `${m}m`;
-}
-
-/** Normalize filesystem string to a canonical name for matching */
-function normalizeFS(fs: string): string {
-  const upper = fs.toUpperCase().replace(/[^A-Z0-9]/g, '');
-  if (upper.includes('FAT32') || upper === 'MSDOSFAT32') return 'FAT32';
-  if (upper.includes('FAT16') || upper === 'MSDOSFAT16') return 'FAT16';
-  if (upper.includes('EXFAT')) return 'exFAT';
-  if (upper.includes('HFS') || upper.includes('APFS')) return 'HFS+';
-  if (upper.includes('NTFS')) return 'NTFS';
-  if (upper.includes('FAT')) return 'FAT32'; // generic FAT → FAT32
-  return fs;
 }
 
 // ========== Health Checklist ==========
@@ -302,22 +222,21 @@ function computeChecklist(result: UsbHealthResult): ChecklistItem[] {
 // ========== Controller Compatibility ==========
 
 type ControllerCompat = {
-  controller: PioneerController;
+  controller: PioneerDevice;
   fsCompatible: boolean;
   formatIssues: string[]; // list of incompatible format names found on the drive
   compatible: boolean;
 };
 
 function computeControllerCompat(result: UsbHealthResult): ControllerCompat[] {
-  const volumeFS = normalizeFS(result.volume.fileSystem || '');
   const formatCounts = countFormats(result.tracks);
   const driveFormats = new Set(Object.keys(formatCounts));
 
-  return PIONEER_CONTROLLERS.map(ctrl => {
-    const fsCompatible = ctrl.supportedFS.some(fs => normalizeFS(fs) === volumeFS);
+  return PIONEER_DEVICES.map(ctrl => {
+    const fsCompatible = deviceReadsFS(ctrl, result.volume.fileSystem || '');
     const formatIssues: string[] = [];
     for (const fmt of driveFormats) {
-      if (fmt !== 'Unknown' && !ctrl.supportedFormats.has(fmt)) {
+      if (fmt !== 'UNKNOWN' && !ctrl.supportedFormats.has(fmt)) {
         formatIssues.push(containerLabel(fmt));
       }
     }
@@ -354,17 +273,17 @@ function renderVolumeCard(path: string): HTMLDivElement {
   const fsBadgeClass = vol.isCompatible ? 'ok' : 'error';
   const fsLabel = vol.isCompatible ? 'FAT32' : escapeHtml(vol.fileSystem || 'Unknown FS');
   const libraryBadge = vol.isLibrary
-    ? `<span class="cd-fs-badge ok" title="This volume contains your library root">Library</span>`
+    ? `<span class="cd-fs-badge ok" title="Your music library lives on this drive">Library</span>`
     : '';
   const hideBtn = vol.isLibrary
     ? ''
-    : `<button class="btn-ghost btn-sm cd-hide" data-tooltip="Hide this device (adds to excluded volumes)">Hide</button>`;
+    : `<button class="btn-ghost btn-sm cd-hide" data-tooltip="Stop showing this drive here. Nothing on it is changed.">Hide</button>`;
   const rescanBtn = vol.isLibrary
     ? ''
-    : `<button class="btn-ghost btn-sm cd-rescan" data-tooltip="Re-scan this volume">Re-scan</button>`;
+    : `<button class="btn-ghost btn-sm cd-rescan" data-tooltip="Check this drive again">Re-scan</button>`;
   const collapseIcon = vol.isLibrary
     ? ''
-    : `<span class="cd-collapse-icon">&#x25B8;</span>`;
+    : `<button type="button" class="cd-collapse-icon" aria-expanded="false" aria-label="Show details for ${escapeHtml(vol.name)}">&#x25B8;</button>`;
 
   card.innerHTML = `
     <div class="cd-volume-header">
@@ -372,7 +291,7 @@ function renderVolumeCard(path: string): HTMLDivElement {
         <span class="cd-dot cd-dot-ok"></span>
         <span class="cd-usb-icon">${USB_ICON}</span>
         <span class="cd-volume-name">${escapeHtml(vol.name)}</span>
-        <span class="cd-fs-badge ${fsBadgeClass}">${fsLabel}</span>
+        <span class="cd-fs-badge ${fsBadgeClass}" title="${vol.isCompatible ? 'The drive\'s format. FAT32 is read by every Pioneer player.' : 'The drive\'s format. Some Pioneer players only read FAT32.'}">${fsLabel}</span>
         ${libraryBadge}
         <span class="cd-volume-summary"></span>
       </div>
@@ -401,14 +320,14 @@ function renderVolumeCard(path: string): HTMLDivElement {
           <table class="data-table cd-data-table">
             <thead>
               <tr>
-                <th class="col-checkbox"><input type="checkbox" class="header-checkbox" title="Select all"></th>
+                <th class="col-checkbox"><input type="checkbox" class="header-checkbox" aria-label="Select every track" title="Select every track. Right-click a selected track for actions on all of them."></th>
                 <th class="col-status">Status</th>
                 <th class="col-artist">Artist</th>
                 <th class="col-title">Title</th>
                 <th class="col-format">Format</th>
                 <th class="col-bitrate">Bit Rate</th>
                 <th class="col-issues">Issues</th>
-                <th class="col-row-actions"></th>
+                <th class="col-row-actions"><span class="visually-hidden">Actions</span></th>
               </tr>
             </thead>
             <tbody></tbody>
@@ -422,13 +341,16 @@ function renderVolumeCard(path: string): HTMLDivElement {
   if (!vol.isLibrary) {
     const header = card.querySelector('.cd-volume-header') as HTMLElement;
     const body = card.querySelector('.cd-volume-body') as HTMLElement;
-    const collapseIconEl = card.querySelector('.cd-collapse-icon') as HTMLElement;
+    const collapseIconEl = card.querySelector('.cd-collapse-icon') as HTMLButtonElement;
+    // The whole header toggles for the mouse; the arrow is the keyboard control.
     header.addEventListener('click', (e) => {
       if ((e.target as HTMLElement).closest('.cd-rescan')) return;
       if ((e.target as HTMLElement).closest('.cd-hide')) return;
       const collapsed = body.style.display === 'none';
       body.style.display = collapsed ? 'block' : 'none';
       collapseIconEl.innerHTML = collapsed ? '&#x25BE;' : '&#x25B8;';
+      collapseIconEl.setAttribute('aria-expanded', String(collapsed));
+      collapseIconEl.setAttribute('aria-label', `${collapsed ? 'Hide' : 'Show'} details for ${vol.name}`);
       card.classList.toggle('cd-volume-expanded', collapsed);
     });
   } else {
@@ -457,6 +379,8 @@ function renderVolumeCard(path: string): HTMLDivElement {
       knownVolumes.delete(path);
       card.remove();
       if (knownVolumes.size === 0) section.style.display = 'none';
+    } else {
+      showToast('error', 'Couldn\'t hide drive', 'Try again, or check Settings.');
     }
   });
 
@@ -600,7 +524,7 @@ function updateVolumeCardState(path: string) {
           const colorClass = containerColorClass(fmt);
           return `
             <div class="cd-format-row">
-              <span class="cd-format-name ${colorClass}">${containerLabel(fmt)}</span>
+              <span class="cd-format-name ${colorClass}">${escapeHtml(containerLabel(fmt))}</span>
               <div class="cd-format-bar-track">
                 <div class="cd-format-bar-fill ${colorClass}" style="width:${barW}%"></div>
               </div>
@@ -639,29 +563,32 @@ function updateVolumeCardState(path: string) {
         const badge = c.compatible
           ? `<span class="cd-compat-badge cd-compat-badge-yes">${CHECK_ICON} Ready</span>`
           : `<span class="cd-compat-badge cd-compat-badge-no">${X_ICON} ${!c.fsCompatible ? 'Wrong FS' : c.formatIssues.join(', ')}</span>`;
-        const catLabel = c.controller.category === 'flagship' ? 'Club Standard'
-          : c.controller.category === 'all-in-one' ? 'All-in-One' : 'Standalone';
+        const image = c.controller.imageUrl
+          ? `<img src="${escapeHtml(c.controller.imageUrl)}" alt="${escapeHtml(c.controller.name)}" class="cd-compat-img" loading="lazy" />`
+          : '';
         return `
           <div class="cd-compat-card ${cls}">
             <div class="cd-compat-img-wrap">
-              <img
-                src="${c.controller.imageUrl}"
-                alt="${escapeHtml(c.controller.name)}"
-                class="cd-compat-img"
-                loading="lazy"
-                onerror="this.style.display='none';this.nextElementSibling.style.display='flex'"
-              />
-              <div class="cd-compat-img-fallback" style="display:none">${escapeHtml(c.controller.name)}</div>
+              ${image}
+              <div class="cd-compat-img-fallback" style="display:${image ? 'none' : 'flex'}">${escapeHtml(c.controller.name)}</div>
             </div>
             <div class="cd-compat-info">
               <div class="cd-compat-name">${escapeHtml(c.controller.name)}</div>
-              <div class="cd-compat-cat">${catLabel}</div>
+              <div class="cd-compat-cat">${categoryLabel(c.controller.category)}</div>
               ${badge}
             </div>
           </div>`;
       }).join('')}
     </div>
   `;
+  // Listeners, not inline onerror: the page CSP (script-src 'self') blocks inline handlers.
+  controllerEl.querySelectorAll<HTMLImageElement>('img.cd-compat-img').forEach((img) => {
+    img.addEventListener('error', () => {
+      img.style.display = 'none';
+      const fallback = img.nextElementSibling as HTMLElement | null;
+      if (fallback) fallback.style.display = 'flex';
+    }, { once: true });
+  });
 
   // Track table (only tracks with issues)
   const issuesTracks = entry.result.tracks.filter(t => !t.isHealthy);
@@ -681,6 +608,7 @@ function updateVolumeCardState(path: string) {
     const frag = document.createDocumentFragment();
     sorted.forEach(track => {
       frag.appendChild(createTrackRow(track, {
+        compact: true,
         isSelected: () => false,
         onSelected: () => {},
         onAction: (action, t) => handleUsbTrackAction(action, t, path),
@@ -728,10 +656,14 @@ function updateVolumeCardState(path: string) {
 // ========== Track removal ==========
 
 function removeTrackFromUsbResult(volumePath: string, track: LibraryHealthTrack) {
-  const entry = knownVolumes.get(volumePath);
-  if (!entry?.result) return;
+  removeTracksFromUsbResult(volumePath, new Set([track.filePath]));
+}
 
-  entry.result.tracks = entry.result.tracks.filter(t => t.filePath !== track.filePath);
+function removeTracksFromUsbResult(volumePath: string, filePaths: Set<string>) {
+  const entry = knownVolumes.get(volumePath);
+  if (!entry?.result || filePaths.size === 0) return;
+
+  entry.result.tracks = entry.result.tracks.filter(t => !filePaths.has(t.filePath));
 
   // Recalculate summary
   const summary = entry.result.summary;
@@ -765,12 +697,13 @@ function showMultiContextMenu(tracks: LibraryHealthTrack[], volumePath: string, 
   const archivable = tracks; // all tracks can be archived
   const deletable = tracks;  // all tracks can be deleted
 
-  const items: { label: string; icon: string; action: () => void }[] = [];
+  const items: ContextMenuItem[] = [];
 
   if (convertible.length > 0) {
     items.push({
       label: `Convert ${convertible.length} to AIFF`,
       icon: icons.wrench,
+      hint: 'Asks first. Makes AIFF copies next to the originals, which stay where they are.',
       action: () => bulkConvertToAiff(convertible, volumePath),
     });
   }
@@ -778,74 +711,134 @@ function showMultiContextMenu(tracks: LibraryHealthTrack[], volumePath: string, 
   items.push({
     label: `Archive ${n} tracks`,
     icon: icons.archive,
+    hint: 'Moves them off this drive into your archive folder. Nothing is deleted.',
     action: () => bulkArchive(archivable, volumePath),
   });
 
   items.push({
-    label: `Delete ${n} tracks`,
+    label: `Move ${n} tracks to Trash…`,
     icon: icons.trash,
+    danger: true,
+    hint: 'Asks first. You can put them back from the Trash.',
     action: () => bulkDelete(deletable, volumePath),
   });
 
   showContextMenu(e.clientX, e.clientY, items);
 }
 
+// Volumes with a bulk action in flight, so a second one can't interleave.
+const bulkBusy = new Set<string>();
+
+/** The scan result no longer matches the drive (files were added), so read it again. */
+function rescanVolume(volumePath: string) {
+  const entry = knownVolumes.get(volumePath);
+  if (!entry || entry.scanning) return;
+  entry.result = null;
+  entry.error = null;
+  enqueueScan(volumePath);
+}
+
 async function bulkConvertToAiff(tracks: LibraryHealthTrack[], volumePath: string) {
+  if (tracks.length === 0 || bulkBusy.has(volumePath)) return;
+  const n = tracks.length;
+  const confirmed = await confirmAction({
+    title: `Make AIFF copies of ${n} track${n > 1 ? 's' : ''} on this drive?`,
+    message: 'Each AIFF is written next to its original, so the drive needs room for both.',
+    details: [
+      { label: 'Writes', value: `${n} new file${n > 1 ? 's' : ''} to this drive` },
+      { label: 'Kept', value: 'The originals, untouched' },
+    ],
+    safetyNote: 'Nothing is deleted. Re-export the playlist from Rekordbox afterwards so the players see the AIFF copies.',
+    confirmLabel: `Make ${n} AIFF cop${n > 1 ? 'ies' : 'y'}`,
+    tone: 'info',
+  });
+  if (!confirmed) return;
+
+  bulkBusy.add(volumePath);
   let ok = 0;
   let fail = 0;
-  for (const track of tracks) {
-    try {
-      const result = await window.candybar.fixTrackFile(track.filePath, false);
-      if (result.success) {
-        removeTrackFromUsbResult(volumePath, track);
-        getCheckedSet(volumePath).delete(track.filePath);
-        ok++;
-      } else { fail++; }
-    } catch { fail++; }
+  try {
+    for (const track of tracks) {
+      try {
+        const result = await window.candybar.fixTrackFile(track.filePath, false);
+        if (result.success) {
+          getCheckedSet(volumePath).delete(track.filePath);
+          ok++;
+        } else { fail++; }
+      } catch { fail++; }
+    }
+  } finally {
+    bulkBusy.delete(volumePath);
   }
-  if (ok > 0) showToast('success', 'Bulk Convert', `${ok} track${ok > 1 ? 's' : ''} converted to AIFF.`);
+  if (ok > 0) {
+    showToast('success', 'Bulk Convert', `${ok} AIFF cop${ok > 1 ? 'ies' : 'y'} made. Checking the drive again…`);
+    rescanVolume(volumePath);
+  }
   if (fail > 0) showToast('error', 'Bulk Convert', `${fail} track${fail > 1 ? 's' : ''} failed to convert.`);
 }
 
 async function bulkArchive(tracks: LibraryHealthTrack[], volumePath: string) {
-  let ok = 0;
-  let fail = 0;
-  for (const track of tracks) {
-    try {
-      const result = await window.candybar.archiveTrackFile(track.filePath);
-      if (result.success) {
-        removeTrackFromUsbResult(volumePath, track);
-        getCheckedSet(volumePath).delete(track.filePath);
-        ok++;
-      } else { fail++; }
-    } catch { fail++; }
-  }
+  if (tracks.length === 0 || bulkBusy.has(volumePath)) return;
+  const confirmed = await confirmAction({
+    title: `Archive ${tracks.length} track${tracks.length > 1 ? 's' : ''}?`,
+    message: 'They will be moved off this drive and into your archive folder.',
+    safetyNote: 'Nothing is deleted. You can move them back from the archive folder any time.',
+    confirmLabel: 'Archive',
+    tone: 'info',
+  });
+  if (!confirmed) return;
+
+  const { ok, failed, firstError } = await runBulk(tracks, volumePath, async (t) => {
+    const result = await window.candybar.archiveTrackFile(t.filePath);
+    return { ok: result.success, error: result.errorMessage };
+  });
   if (ok > 0) showToast('success', 'Bulk Archive', `${ok} track${ok > 1 ? 's' : ''} archived.`);
-  if (fail > 0) showToast('error', 'Bulk Archive', `${fail} track${fail > 1 ? 's' : ''} failed to archive.`);
+  if (failed > 0) showToast('error', 'Bulk Archive', `${failed} track${failed > 1 ? 's' : ''} couldn't be archived.${firstError ? ` ${firstError}` : ''}`);
 }
 
 async function bulkDelete(tracks: LibraryHealthTrack[], volumePath: string) {
-  if (tracks.length === 0) return;
-  const confirmed = window.confirm(
-    `Move ${tracks.length} track${tracks.length > 1 ? 's' : ''} from this device to Trash?\n\n` +
-    `The files are moved to the macOS Trash (recoverable).`
-  );
+  if (tracks.length === 0 || bulkBusy.has(volumePath)) return;
+  const confirmed = await confirmMoveToTrash(tracks, {
+    message: 'They will be removed from this drive.',
+  });
   if (!confirmed) return;
 
-  let ok = 0;
-  let fail = 0;
-  for (const track of tracks) {
-    try {
-      const result = await window.candybar.deleteTrackFile(track.filePath);
-      if (result.success) {
-        removeTrackFromUsbResult(volumePath, track);
-        getCheckedSet(volumePath).delete(track.filePath);
-        ok++;
-      } else { fail++; }
-    } catch { fail++; }
+  const { ok, failed, firstError } = await runBulk(tracks, volumePath, async (t) => {
+    const result = await window.candybar.deleteTrackFile(t.filePath);
+    return { ok: result.success, error: result.error };
+  });
+  if (ok > 0) showToast('success', 'Moved to Trash', `${ok} track${ok > 1 ? 's are' : ' is'} in the Trash if you need ${ok > 1 ? 'them' : 'it'} back.`);
+  if (failed > 0) showToast('error', 'Not moved to Trash', `${failed} track${failed > 1 ? 's' : ''} stayed on the drive.${firstError ? ` ${firstError}` : ''}`);
+}
+
+/** Run a file action over the tracks one at a time, then drop the ones that
+ *  left the drive from the card in a single re-render. */
+async function runBulk(
+  tracks: LibraryHealthTrack[],
+  volumePath: string,
+  action: (t: LibraryHealthTrack) => Promise<{ ok: boolean; error?: string }>,
+): Promise<{ ok: number; failed: number; firstError: string | null }> {
+  bulkBusy.add(volumePath);
+  const gone = new Set<string>();
+  let failed = 0;
+  let firstError: string | null = null;
+  try {
+    for (const track of tracks) {
+      try {
+        const res = await action(track);
+        if (res.ok) gone.add(track.filePath);
+        else { failed++; firstError ??= res.error ?? null; }
+      } catch (err) {
+        failed++;
+        firstError ??= getErrorMessage(err);
+      }
+    }
+  } finally {
+    bulkBusy.delete(volumePath);
   }
-  if (ok > 0) showToast('success', 'Bulk Delete', `${ok} track${ok > 1 ? 's' : ''} deleted.`);
-  if (fail > 0) showToast('error', 'Bulk Delete', `${fail} track${fail > 1 ? 's' : ''} failed to delete.`);
+  for (const fp of gone) getCheckedSet(volumePath).delete(fp);
+  removeTracksFromUsbResult(volumePath, gone);
+  return { ok: gone.size, failed, firstError };
 }
 
 async function handleUsbTrackAction(
@@ -854,18 +847,17 @@ async function handleUsbTrackAction(
   volumePath: string
 ) {
   if (action === 'delete') {
-    const confirmed = window.confirm(
-      `Move this file to Trash?\n\n${track.filePath}\n\n` +
-      `The file is moved to the macOS Trash (recoverable).`
-    );
+    const confirmed = await confirmMoveToTrash([track], {
+      message: 'It will be removed from this drive.',
+    });
     if (!confirmed) return;
     try {
       const result = await window.candybar.deleteTrackFile(track.filePath);
       if (result.success) {
-        showToast('success', 'Moved to Trash', `${track.fileName} moved to Trash.`);
+        showToast('success', 'Moved to Trash', `${track.fileName} is in the Trash if you need it back.`);
         removeTrackFromUsbResult(volumePath, track);
       } else {
-        showToast('error', 'Delete Failed', result.error || 'Unknown error deleting file.');
+        showToast('error', 'Not moved to Trash', result.error || 'The file is still on the drive.');
       }
     } catch (err) {
       showToast('error', 'Delete Failed', getErrorMessage(err));
@@ -886,8 +878,9 @@ async function handleUsbTrackAction(
     try {
       const result = await window.candybar.fixTrackFile(track.filePath, false);
       if (result.success) {
-        showToast('success', 'Converted to AIFF', `${track.fileName} has been converted.`);
-        removeTrackFromUsbResult(volumePath, track);
+        // The original stays on the drive next to the new AIFF, so re-read it.
+        showToast('success', 'AIFF copy made', `${track.fileName} now has an AIFF copy next to it. Checking the drive again…`);
+        rescanVolume(volumePath);
       } else {
         showToast('error', 'Conversion Failed', result.errorMessage || 'Unknown error during conversion.');
       }
@@ -898,14 +891,26 @@ async function handleUsbTrackAction(
     try {
       const result = await window.candybar.reencodeTrackFile(track.filePath, false);
       if (result.success) {
-        showToast('success', 'Re-encoded to MP3', `${track.fileName} has been re-encoded at 320kbps.`);
-        removeTrackFromUsbResult(volumePath, track);
+        showToast('success', '320 kbps copy made', `${track.fileName} now has a 320 kbps copy next to it. Checking the drive again…`);
+        rescanVolume(volumePath);
       } else {
         showToast('error', 'Re-encode Failed', result.errorMessage || 'Unknown error during re-encoding.');
       }
     } catch (err) {
       showToast('error', 'Re-encode Failed', getErrorMessage(err));
     }
+  } else if (action === 'edit') {
+    openTagEditor({ ...track, bpm: track.bpm != null ? String(track.bpm) : undefined }, (updated) => {
+      const entry = knownVolumes.get(volumePath);
+      const target = entry?.result?.tracks.find(t => t.filePath === updated.filePath);
+      if (!target) return;
+      target.title = updated.title;
+      target.artist = updated.artist;
+      target.album = updated.album;
+      target.genre = updated.genre;
+      target.hasAlbumArt = !!updated.albumArt;
+      updateVolumeCardState(volumePath);
+    });
   }
 }
 
@@ -971,21 +976,10 @@ async function processQueue() {
     updateVolumeCardState(path);
 
     activeScanPath = path;
-    // Register a single job-progress listener that attributes events by jobType
+    activeScanJobId = null;
     if (!jobProgressListenerRegistered) {
       jobProgressListenerRegistered = true;
-      window.candybar.onJobProgress((progress: { jobType?: string; current?: number; total?: number; detail?: unknown }) => {
-        if (progress.jobType !== 'usb-health-scan' || !activeScanPath) return;
-        const card = volumeListEl.querySelector(`[data-volume-path="${CSS.escape(activeScanPath)}"]`);
-        const summaryEl = card?.querySelector('.cd-volume-summary');
-        if (!summaryEl) return;
-        const total = progress.total ?? 0;
-        const current = progress.current ?? 0;
-        const detail = typeof progress.detail === 'string' ? progress.detail.split('/').pop() : '';
-        summaryEl.textContent = detail
-          ? `Scanning ${current}/${total}: ${detail}`
-          : `Scanning ${current}/${total}…`;
-      });
+      window.candybar.onJobProgress(handleJobProgress);
     }
 
     try {
@@ -1005,6 +999,7 @@ async function processQueue() {
     } finally {
       entry.scanning = false;
       activeScanPath = null;
+      activeScanJobId = null;
       updateVolumeCardState(path);
     }
   }

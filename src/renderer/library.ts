@@ -4,20 +4,21 @@
 // ============================================================
 
 import type {
-  LibraryHealthTrack, DuplicateTrackInfo,
-  DuplicatePair, LibraryHealthResult,
+  LibraryHealthTrack, LibraryHealthResult,
   HealthIssue, SuggestedAction
 } from './shared';
+import type { ConversionResult } from '../types';
 import { addConversionTask, updateConversionTask } from './activity';
 import {
-  showToast, setStatus, escapeHtml, icons, formatDuration, showContextMenu,
-  openTagEditor, getErrorMessage,
+  showToast, setStatus, escapeHtml, icons, actionHints, formatDuration, showContextMenu,
+  openTagEditor, getErrorMessage, plural, trapDialogFocus, captureFocusReturn,
   checkSpotifyConnection as checkSpotifyConnectionFn,
   checkSoundCloudConnection as checkSoundCloudConnectionFn
 } from './shared';
 import { openSettingsTo } from './settings';
 import { openAlbumArtFix } from './albumArtFix';
 import { playFile } from './player';
+import { confirmAction, confirmMoveToTrash } from './confirmDialog';
 import {
   issueDescriptions, issueSeverities, issueTooltips,
   formatHealthFormatInfo, getPrimarySuggestedAction,
@@ -30,10 +31,6 @@ import {
 } from './rightDrawer';
 
 const esc = escapeHtml;
-
-// Stub — duplicate rendering UI lives in health.ts; this keeps library.ts
-// references resolvable at runtime until the duplicates panel is ported here.
-function renderDuplicates(): void {}
 
 // ========== Browse Types ==========
 
@@ -93,19 +90,6 @@ const inspectorFormat = document.getElementById('inspector-format') as HTMLDivEl
 const inspectorIssues = document.getElementById('inspector-issues') as HTMLDivElement;
 const inspectorActions = document.getElementById('inspector-actions') as HTMLDivElement;
 
-// Duplicates section
-const duplicatesSection = document.getElementById('duplicates-section') as HTMLElement;
-const duplicatesList = document.getElementById('duplicates-list') as HTMLDivElement;
-const duplicatesCount = document.getElementById('duplicates-count') as HTMLSpanElement;
-
-// Delete modal
-const deleteModal = document.getElementById('delete-modal') as HTMLDivElement;
-const deleteModalClose = document.getElementById('delete-modal-close') as HTMLButtonElement;
-const deleteModalCancel = document.getElementById('delete-modal-cancel') as HTMLButtonElement;
-const deleteModalConfirm = document.getElementById('delete-modal-confirm') as HTMLButtonElement;
-const deleteFileName = document.getElementById('delete-file-name') as HTMLSpanElement;
-const deleteFilePath = document.getElementById('delete-file-path') as HTMLSpanElement;
-
 // Fix modal
 const fixModal = document.getElementById('fix-modal') as HTMLDivElement;
 const fixModalClose = document.getElementById('fix-modal-close') as HTMLButtonElement;
@@ -114,6 +98,8 @@ const fixModalConfirm = document.getElementById('fix-modal-confirm') as HTMLButt
 const fixFileName = document.getElementById('fix-file-name') as HTMLSpanElement;
 const fixIssuesList = document.getElementById('fix-issues-list') as HTMLDivElement;
 const fixDeleteOriginal = document.getElementById('fix-delete-original') as HTMLInputElement;
+const fixModalTitle = document.getElementById('fix-modal-title') as HTMLHeadingElement;
+const fixModalDesc = document.getElementById('fix-modal-desc') as HTMLParagraphElement;
 
 // ========== State ==========
 
@@ -126,19 +112,10 @@ let backgroundScanRunning = false;
 let pendingAutoRefresh: Promise<LibraryHealthResult | null> | null = null;
 
 let pendingFixTrack: LibraryHealthTrack | null = null;
-const multiSelectedPaths = new Set<string>();
-let dragSelecting = false;
-let dragStartIndex: number | null = null;
-let dragCurrentIndex: number | null = null;
-let dragAnchorSelected = false; // whether the anchor row was already selected (for toggle logic)
-
 let pendingReencodeTrack: LibraryHealthTrack | null = null;
-let pendingDeleteTrack: LibraryHealthTrack | null = null;
-let pendingBatchDelete: LibraryHealthTrack[] | null = null;
 let allTracks: BrowseTrack[] = [];
 let trackLookup: Map<string, LibraryHealthTrack> = new Map();
 
-let searchQuery = '';
 let columnsPanelOpen = false;
 let columns: BrowseColumn[] = [];
 
@@ -164,19 +141,13 @@ function artColorFromArtist(artist: string): string {
   return `hsl(${hue}, 55%, 55%)`;
 }
 
-function clearMultiSelection(): void {
-  multiSelectedPaths.clear();
-  const list = document.getElementById('browse-compact-list');
-  list?.querySelectorAll('.bv4-row.multi-selected').forEach(r => r.classList.remove('multi-selected'));
-}
-
 function highlightFixFlowTrack(): void {
   if (!fixFlow) return;
   const targetPath = fixFlow.trackPaths[fixFlow.currentIndex];
   const list = document.getElementById('browse-compact-list');
   if (!list) return;
   list.querySelectorAll('.bv4-row.fix-flow-focus').forEach(r => r.classList.remove('fix-flow-focus'));
-  const row = list.querySelector<HTMLElement>(`.bv4-row[data-path="${CSS.escape(targetPath)}"]`);
+  const row = list.querySelector<HTMLElement>(`.bv4-row[data-fp="${CSS.escape(targetPath)}"]`);
   if (row) {
     row.classList.add('fix-flow-focus');
     row.scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -193,6 +164,14 @@ interface FixFlowState {
   unsubDrawer: (() => void) | null;
 }
 let fixFlow: FixFlowState | null = null;
+/** A bulk Fill In Tags is running; its button shows progress meanwhile. */
+let bulkPopulateRunning = false;
+
+/** Library folder state, for the empty list and the offline banner.
+ *  'unset': no folder chosen in Settings. 'offline': the folder (usually an
+ *  external drive) isn't there, so the last scan is shown instead. */
+let libraryAvailability: 'ok' | 'unset' | 'offline' = 'ok';
+let offlineRoot: string | null = null;
 
 // ========== Utility Helpers ==========
 
@@ -373,7 +352,7 @@ function rebuildBrowseTracks(): void {
       duration: formatDuration(t.format.duration),
       format: container,
       bitrate: t.format.bitRate ?? 0,
-      bpm: null,
+      bpm: typeof t.bpm === 'number' && t.bpm > 0 ? t.bpm : null,
       artColor: artColorFromArtist(t.artist),
     } satisfies BrowseTrack;
   });
@@ -449,13 +428,34 @@ function inlineActionHtml(t: BrowseTrack): string {
   if (!healthTrack || t.isHealthy) return '';
   const action = getPrimarySuggestedAction(healthTrack.issues);
   if (action === 'none') return '';
-  const title = action === 'convert_aiff' ? 'Convert to AIFF'
-    : action === 'reencode_mp3' ? 'Re-encode to 320kbps'
-    : action === 'populate_tags' ? 'Populate Tags'
-    : action === 'archive' ? 'Archive track'
-    : action === 'delete' ? 'Delete track'
-    : '';
-  return `<button class="bv4-inline-action" data-action="${esc(action)}" data-fp="${esc(t.filePath)}" data-tooltip="${esc(title)}">${esc(title)}</button>`;
+  // Same labels and hints as the fix flow, inspector and right-click menu.
+  const label = getFixActionButton(action).label;
+  const hint = action === 'convert_aiff' ? actionHints.convertAiff
+    : action === 'reencode_mp3' ? actionHints.reencodeMp3
+    : action === 'populate_tags' ? actionHints.populateTags
+    : action === 'archive' ? actionHints.archive
+    : action === 'delete' ? actionHints.trash
+    : label;
+  return `<button class="bv4-inline-action" data-action="${esc(action)}" data-fp="${esc(t.filePath)}" data-tooltip="${esc(hint)}">${esc(label)}</button>`;
+}
+
+/** What the list shows when it has no rows: why, and the way out. */
+function emptyListHtml(): string {
+  if (libraryAvailability === 'unset') {
+    return `<div class="browse-empty">
+      <div class="browse-empty-title">Choose your library folder</div>
+      <div class="browse-empty-hint">Pick the folder your music lives in, and Candy Bar will check every track in it.</div>
+      <button class="btn-primary btn-sm browse-empty-action" data-empty-action="settings">Open Settings</button>
+    </div>`;
+  }
+  if (libraryAvailability === 'offline' && !healthResult) {
+    return `<div class="browse-empty">
+      <div class="browse-empty-title">Your library drive isn't connected</div>
+      <div class="browse-empty-hint">Plug in the drive that holds ${esc(offlineRoot || 'your library')}, then try again.</div>
+      <button class="btn-primary btn-sm browse-empty-action" data-empty-action="retry">Retry</button>
+    </div>`;
+  }
+  return '<div class="browse-empty"><div class="browse-empty-title">No tracks found</div><div class="browse-empty-hint">Adjust your filters or run a library scan.</div></div>';
 }
 
 function renderCompactList(): void {
@@ -468,8 +468,9 @@ function renderCompactList(): void {
     const subtitle = t.album
       ? `${esc(t.artist)}<span class="bv4-sep">&middot;</span>${esc(t.album)}`
       : esc(t.artist);
+    const bpm = t.bpm === null ? '\u2014' : String(Number.isInteger(t.bpm) ? t.bpm : t.bpm.toFixed(1));
     return `
-    <div class="bv4-row${rowHealthClass(t)}${selected}" data-id="${t.id}" data-fp="${esc(t.filePath)}">
+    <div class="bv4-row${rowHealthClass(t)}${selected}" data-id="${t.id}" data-fp="${esc(t.filePath)}" role="button" tabindex="0" aria-label="${esc(`${t.title}${t.artist ? ` by ${t.artist}` : ''}. Open details`)}">
       <span class="bv4-num">${i + 1}</span>
       ${artThumb(t)}
       <div class="bv4-title-group">
@@ -480,11 +481,14 @@ function renderCompactList(): void {
         ${healthDot(t)}
         ${inlineActionHtml(t)}
         ${formatBadge(t.format)}
-        <span class="bv4-bpm">${t.bpm ?? '\u2014'}</span>
+        <span class="bv4-bpm">${bpm}</span>
         <span class="bv4-dur">${esc(t.duration)}</span>
       </div>
     </div>`;
-  }).join('') || '<div class="browse-empty"><div class="browse-empty-title">No tracks found</div><div class="browse-empty-hint">Adjust your filters or run a library scan.</div></div>';
+  }).join('') || emptyListHtml();
+
+  list.querySelector<HTMLButtonElement>('[data-empty-action="settings"]')?.addEventListener('click', () => openSettingsTo('library'));
+  list.querySelector<HTMLButtonElement>('[data-empty-action="retry"]')?.addEventListener('click', () => void autoRefreshLibrary());
 
   setupArtLazyLoad(list);
   wireCompactListEvents(list);
@@ -503,13 +507,25 @@ function wireCompactListEvents(list: HTMLElement): void {
       const healthTrack = trackLookup.get(fp);
       if (healthTrack) openInspector(healthTrack);
     });
+    // Keyboard: Enter/Space opens the details, like a click.
+    row.addEventListener('keydown', (e) => {
+      if (e.target !== row || (e.key !== 'Enter' && e.key !== ' ')) return;
+      e.preventDefault();
+      const healthTrack = trackLookup.get(fp);
+      if (healthTrack) openInspector(healthTrack);
+    });
 
-    // Right-click context menu
+    // Right-click context menu (also the keyboard's menu key / Shift+F10,
+    // which fire it with no pointer position: open it at the row instead)
     row.addEventListener('contextmenu', (e) => {
       e.preventDefault();
       e.stopPropagation();
       const healthTrack = trackLookup.get(fp);
       if (!healthTrack) return;
+      const rect = row.getBoundingClientRect();
+      const fromKeyboard = e.clientX === 0 && e.clientY === 0;
+      const menuX = fromKeyboard ? rect.left + 24 : e.clientX;
+      const menuY = fromKeyboard ? rect.bottom : e.clientY;
 
       const container = healthTrack.format.container?.toUpperCase() || '';
       const isAiff = container === 'AIFF' || container === 'AIFF-C';
@@ -520,30 +536,32 @@ function wireCompactListEvents(list: HTMLElement): void {
       const dismissItems = activeIssues.map(issue => ({
         label: `Dismiss: ${issueDescriptions[issue.code] || issue.code}`,
         icon: icons.ignore,
+        hint: actionHints.dismissIssue,
         action: () => handleDismissIssue(healthTrack, issue.code)
       }));
       const dismissAllItem = activeIssues.length > 1
         ? [{
             label: 'Dismiss all issues on this track',
             icon: icons.ignore,
+            hint: 'Stop flagging every problem on this track. You can bring them back from the inspector.',
             action: () => handleDismissAllIssues(healthTrack)
           }]
         : [];
 
       const items = [
-        { label: 'Play track', icon: icons.play, action: () => playFile(healthTrack.filePath, healthTrack.fileName) },
+        { label: 'Play track', icon: icons.play, hint: actionHints.play, action: () => playFile(healthTrack.filePath, healthTrack.fileName) },
         { separator: true, label: '' },
-        ...(!isAiff && !isLossy ? [{ label: 'Convert to AIFF', icon: icons.wrench, action: () => showFixModal(healthTrack) }] : []),
-        ...(isMp3 ? [{ label: 'Re-encode to 320kbps', icon: icons.wrench, action: () => showReencodeModal(healthTrack) }] : []),
-        { label: 'Edit tags', icon: icons.edit, action: () => handleEditTags(healthTrack) },
+        ...(!isAiff && !isLossy ? [{ label: 'Convert to AIFF', icon: icons.wrench, hint: actionHints.convertAiff, action: () => showFixModal(healthTrack) }] : []),
+        ...(isMp3 ? [{ label: 'Re-encode MP3', icon: icons.wrench, hint: actionHints.reencodeMp3, action: () => showReencodeModal(healthTrack) }] : []),
+        { label: 'Edit tags', icon: icons.edit, hint: actionHints.editTags, action: () => handleEditTags(healthTrack) },
         ...(dismissItems.length > 0 || dismissAllItem.length > 0 ? [{ separator: true, label: '' }] : []),
         ...dismissItems,
         ...dismissAllItem,
         ...(dismissItems.length > 0 || dismissAllItem.length > 0 ? [{ separator: true, label: '' }] : []),
-        { label: 'Archive track', icon: icons.archive, action: () => handleArchiveTrack(healthTrack) },
-        { label: 'Delete track', icon: icons.trash, action: () => showDeleteModal(healthTrack) }
+        { label: 'Archive track', icon: icons.archive, hint: actionHints.archive, action: () => handleArchiveTrack(healthTrack) },
+        { label: 'Move to Trash…', icon: icons.trash, danger: true, hint: actionHints.trash, action: () => trashTrack(healthTrack) }
       ];
-      showContextMenu(e.clientX, e.clientY, items);
+      showContextMenu(menuX, menuY, items);
     });
 
     // Inline action button
@@ -558,7 +576,7 @@ function wireCompactListEvents(list: HTMLElement): void {
         else if (action === 'reencode_mp3') showReencodeModal(healthTrack);
         else if (action === 'populate_tags') handlePopulateTags(healthTrack);
         else if (action === 'archive') handleArchiveTrack(healthTrack);
-        else if (action === 'delete') showDeleteModal(healthTrack);
+        else if (action === 'delete') trashTrack(healthTrack);
       });
     }
   });
@@ -578,11 +596,11 @@ function renderColumnStrip(): void {
     el.className = 'browse-column-el';
     el.innerHTML = `
       <span class="col-label">${DIM_LABELS[col.dim]}</span>
-      <button class="browse-column-btn col-collapse-btn" data-tooltip="${col.collapsed ? 'Expand' : 'Collapse'}">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">${chevronPath}</svg>
+      <button class="browse-column-btn col-collapse-btn" aria-label="${col.collapsed ? 'Expand' : 'Collapse'} ${DIM_LABELS[col.dim]} column" data-tooltip="${col.collapsed ? 'Expand' : 'Collapse'}">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">${chevronPath}</svg>
       </button>
-      <button class="browse-column-btn col-remove-btn" data-tooltip="Remove column">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+      <button class="browse-column-btn col-remove-btn" aria-label="Remove ${DIM_LABELS[col.dim]} column" data-tooltip="Remove column">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
           <line x1="18" y1="6" x2="6" y2="18"/>
           <line x1="6" y1="6" x2="18" y2="18"/>
         </svg>
@@ -595,38 +613,10 @@ function renderColumnStrip(): void {
     el.querySelector('.col-remove-btn')?.addEventListener('click', () => {
       columns.splice(i, 1);
       renderColumnStrip();
-      clearMultiSelection();
       renderCompactList();
-    });
-    el.querySelectorAll<HTMLElement>('.col-val-item').forEach(item => {
-      item.addEventListener('click', () => {
-        const val = item.dataset.val || null;
-        columns[i].selected = val;
-        renderColumnStrip();
-        renderCompactList();
-      });
     });
     strip.appendChild(el);
   });
-}
-
-async function handleBatchArchive(tracks: LibraryHealthTrack[]): Promise<void> {
-  showToast('info', 'Batch Archive', `Archiving ${tracks.length} tracks...`);
-  let success = 0;
-  let failed = 0;
-  for (const track of tracks) {
-    try {
-      await window.candybar.archiveTrackFile(track.filePath);
-      success++;
-    } catch {
-      failed++;
-    }
-  }
-  clearMultiSelection();
-  renderCompactList();
-  if (healthResult) renderKpiDashboard(healthResult)();
-  if (failed > 0) showToast('warning', 'Batch Archive', `${success} archived, ${failed} failed`);
-  else showToast('success', 'Batch Archive', `${success} tracks archived`);
 }
 
 // ========== Split Panel ==========
@@ -642,14 +632,20 @@ function renderSplitPanel(): void {
   ul.innerHTML = ['All', ...values].map(v => {
     const isAll = v === 'All';
     const active = isAll ? splitSelected === null : splitSelected === v;
-    return `<li class="bv5-item${active ? ' active' : ''}" data-val="${isAll ? '' : esc(v)}">${esc(v)}</li>`;
+    return `<li class="bv5-item${active ? ' active' : ''}" data-val="${isAll ? '' : esc(v)}" role="button" tabindex="0" aria-pressed="${active}">${esc(v)}</li>`;
   }).join('');
 
-  ul.querySelectorAll('.bv5-item').forEach(el => {
-    el.addEventListener('click', () => {
-      splitSelected = (el as HTMLElement).dataset.val || null;
+  ul.querySelectorAll<HTMLElement>('.bv5-item').forEach(el => {
+    const pick = () => {
+      splitSelected = el.dataset.val || null;
       renderSplitPanel();
       renderCompactList();
+      // Re-rendering replaced the list; keep keyboard focus on the picked item.
+      ul.querySelector<HTMLElement>(`.bv5-item[data-val="${CSS.escape(el.dataset.val ?? '')}"]`)?.focus();
+    };
+    el.addEventListener('click', pick);
+    el.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); pick(); }
     });
   });
 }
@@ -666,6 +662,7 @@ function setColumnsPanelVisibility(): void {
 }
 
 function addColumn(dim: Dimension): void {
+  if (!(dim in DIM_LABELS)) return; // an option this view has no data for
   columns.push({ dim, selected: null, collapsed: false });
   renderColumnStrip();
   renderCompactList();
@@ -677,10 +674,10 @@ function renderKpiDashboard(result: LibraryHealthResult) {
   const { summary } = result;
 
   // Update inline KPI text
-  kpiTotal.textContent = `${summary.total.toLocaleString()} tracks`;
+  kpiTotal.textContent = plural(summary.total, 'track');
   kpiHealthy.textContent = `${summary.healthy.toLocaleString()} healthy`;
-  kpiWarnings.textContent = `${summary.warnings.toLocaleString()} warnings`;
-  kpiErrors.textContent = `${summary.errors.toLocaleString()} errors`;
+  kpiWarnings.textContent = plural(summary.warnings, 'warning');
+  kpiErrors.textContent = plural(summary.errors, 'error');
 
   // Timestamp
   if (result.scannedAt) {
@@ -728,38 +725,48 @@ function renderIssueChips(): void {
     const sev = issueSeverities[code] || 'warning';
     const label = issueDescriptions[code] || code;
     const activeCls = activeIssueCode === code ? ' active' : '';
-    return `<button class="browse-issue-chip ${sev}${activeCls}" data-code="${esc(code)}" data-tooltip="Filter to tracks with this issue">${esc(label)} <span class="chip-count">${count}</span></button>`;
+    return `<button class="browse-issue-chip ${sev}${activeCls}" data-code="${esc(code)}" data-tooltip="${esc(`${issueTooltips[code] ? `${issueTooltips[code]}\n\n` : ''}Click to show only these tracks.`)}" data-tooltip-pos="bottom">${esc(label)} <span class="chip-count">${count}</span></button>`;
   }).join('');
 
   issueListEl.querySelectorAll<HTMLElement>('.browse-issue-chip').forEach(btn => {
+    btn.setAttribute('aria-pressed', String(activeIssueCode === btn.dataset.code));
     btn.addEventListener('click', () => {
       if (fixFlow) exitFixFlow();
       const code = btn.dataset.code!;
       activeIssueCode = activeIssueCode === code ? null : code;
       renderIssueChips();
       renderCompactList();
-      renderFixFlowButton();
     });
   });
 
-  updateMissingArtButton(counts.get('MISSING_ALBUM_ART') ?? 0);
+  // Its count follows the same filters as the chips, so keep it in step.
+  renderFixFlowButton();
+}
+
+/**
+ * The tracks a fix for `code` acts on: the ones the list shows right now
+ * (search, split and column filters applied), with dismissed issues left out.
+ * The Fix button's count, the fix flow, bulk Fill In Tags and the cover-art
+ * fix all use this, so the number on the button is the number that changes.
+ */
+function tracksForIssue(code: string): LibraryHealthTrack[] {
+  const savedIssueCode = activeIssueCode;
+  activeIssueCode = code;
+  const visible = applyAllFilters();
+  activeIssueCode = savedIssueCode;
+  return visible
+    .filter(t => t.issues.some(i => i.code === code)) // BrowseTrack.issues holds active issues only
+    .map(t => trackLookup.get(t.filePath))
+    .filter((t): t is LibraryHealthTrack => !!t);
 }
 
 // ========== Missing Album Art Entry Point ==========
-
-function updateMissingArtButton(count: number): void {
-  const btn = document.getElementById('missing-art-mode') as HTMLButtonElement | null;
-  const countEl = document.getElementById('missing-art-count');
-  if (!btn) return;
-  btn.style.display = count > 0 ? '' : 'none';
-  if (countEl) countEl.textContent = String(count);
-}
+// Reached through the "Missing album art" chip's Fix button (enterFixFlow);
+// the separate toolbar button that duplicated the chip is gone.
 
 function launchAlbumArtFix(): void {
   if (!healthResult) return;
-  const tracks = healthResult.tracks.filter(t =>
-    t.issues.some(i => i.code === 'MISSING_ALBUM_ART')
-  );
+  const tracks = tracksForIssue('MISSING_ALBUM_ART');
   if (tracks.length === 0) {
     showToast('info', 'Missing Art', 'No tracks are missing album art.');
     return;
@@ -783,28 +790,40 @@ function launchAlbumArtFix(): void {
   });
 }
 
+/** The toolbar's Fix button for the active issue chip. index.html ships it
+ *  hidden; it's shown with a label and count while a chip is active. */
 function renderFixFlowButton(): void {
-  let btn = document.getElementById('fix-flow-start');
-  if (!activeIssueCode || !healthResult) {
-    btn?.remove();
-    return;
-  }
-
-  const count = healthResult.tracks.filter(t =>
-    t.issues.some(i => i.code === activeIssueCode)
-  ).length;
-  if (count === 0) { btn?.remove(); return; }
-
+  let btn = document.getElementById('fix-flow-start') as HTMLButtonElement | null;
   if (!btn) {
     btn = document.createElement('button');
     btn.id = 'fix-flow-start';
     btn.className = 'btn-primary btn-sm fix-flow-start-btn';
-    btn.setAttribute('data-tooltip', 'Step through every affected track and fix this issue');
+    btn.style.display = 'none';
     issueListEl.parentElement?.appendChild(btn);
+  }
+  if (!btn.dataset.wired) {
+    btn.dataset.wired = '1';
     btn.addEventListener('click', enterFixFlow);
   }
+
+  const count = activeIssueCode && healthResult ? tracksForIssue(activeIssueCode).length : 0;
+  // Leave a running bulk Fill In Tags' progress label alone.
+  if (bulkPopulateRunning) return;
+  btn.style.display = count > 0 ? '' : 'none';
+  if (count === 0) return;
+
   const isTagIssue = activeIssueCode === 'MISSING_TAGS' || activeIssueCode === 'SPARSE_TAGS';
-  btn.textContent = isTagIssue ? `Populate ${count} Track${count === 1 ? '' : 's'}` : `Fix Flow (${count})`;
+  const tracks = plural(count, 'Track');
+  if (isTagIssue) {
+    btn.textContent = `Fill In Tags for ${tracks}`;
+    btn.setAttribute('data-tooltip', 'Look each track up online and fill in its empty tags. You confirm first, and tags you already have are kept.');
+  } else if (activeIssueCode === 'MISSING_ALBUM_ART') {
+    btn.textContent = `Find Cover Art for ${tracks}`;
+    btn.setAttribute('data-tooltip', 'Search online for cover art, one track at a time. Nothing is saved until you pick an image.');
+  } else {
+    btn.textContent = `Fix ${tracks}…`;
+    btn.setAttribute('data-tooltip', 'Go through the affected tracks one at a time. Nothing changes until you choose a fix for each.');
+  }
 }
 
 function openInspector(track: LibraryHealthTrack): void {
@@ -818,6 +837,9 @@ function openInspector(track: LibraryHealthTrack): void {
   });
 
   inspectorTitle.textContent = track.title || track.fileName;
+  inspectorArtist.textContent = track.artist || 'Unknown Artist';
+  inspectorFormat.textContent = formatHealthFormatInfo(track.format);
+  renderInspectorArt(track);
 
   const metaParts: string[] = [];
   if (track.artist) metaParts.push(`Artist: ${track.artist}`);
@@ -831,14 +853,14 @@ function openInspector(track: LibraryHealthTrack): void {
   // Issues — dismissed issues are shown but visually muted + offer Restore
   inspectorIssues.innerHTML = track.issues.length > 0
     ? track.issues.map(i => `
-      <div class="inspector-issue ${(issueSeverities[i.code] ?? i.severity) || ''}${i.dismissed ? ' dismissed' : ''}" data-code="${escapeHtml(i.code)}">
-        <span class="inspector-issue-code">${i.code}</span>
+      <div class="inspector-issue ${(issueSeverities[i.code] ?? i.severity) || ''}${i.dismissed ? ' dismissed' : ''}" data-code="${escapeHtml(i.code)}" data-tooltip="${escapeHtml(issueTooltips[i.code] || i.message)}" data-tooltip-pos="left">
+        <span class="inspector-issue-code">${escapeHtml(issueDescriptions[i.code] || i.code)}</span>
         <span class="inspector-issue-msg">${escapeHtml(i.message)}</span>
         ${i.detail ? `<span class="inspector-issue-detail">${escapeHtml(i.detail)}</span>` : ''}
         ${i.dismissed
           ? `<span class="inspector-issue-dismissed-badge">Dismissed</span>
-             <button class="btn-ghost btn-sm inspector-issue-restore" data-code="${escapeHtml(i.code)}" data-tooltip="Bring this issue back into the active list">Restore</button>`
-          : `<button class="btn-ghost btn-sm inspector-issue-dismiss" data-code="${escapeHtml(i.code)}" data-tooltip="Hide this issue for this track">Dismiss</button>`
+             <button class="btn-ghost btn-sm inspector-issue-restore" data-code="${escapeHtml(i.code)}" data-tooltip="${escapeHtml(actionHints.restoreIssue)}">Restore</button>`
+          : `<button class="btn-ghost btn-sm inspector-issue-dismiss" data-code="${escapeHtml(i.code)}" data-tooltip="${escapeHtml(actionHints.dismissIssue)}">Dismiss</button>`
         }
       </div>
     `).join('')
@@ -867,17 +889,17 @@ function openInspector(track: LibraryHealthTrack): void {
 
   let actionsHtml = '';
   if (canConvertAiff) {
-    actionsHtml += `<button class="btn-primary btn-sm inspector-action-fix" data-tooltip="Convert to AIFF">Convert to AIFF</button>`;
+    actionsHtml += `<button class="btn-primary btn-sm inspector-action-fix" data-tooltip="${escapeHtml(actionHints.convertAiff)}">Convert to AIFF</button>`;
   }
   if (canReencode) {
-    actionsHtml += `<button class="btn-primary btn-sm inspector-action-reencode" data-tooltip="Re-encode to 320kbps MP3">Re-encode MP3</button>`;
+    actionsHtml += `<button class="btn-primary btn-sm inspector-action-reencode" data-tooltip="${escapeHtml(actionHints.reencodeMp3)}">Re-encode MP3</button>`;
   }
   if (canPopulateTags) {
-    actionsHtml += `<button class="btn-primary btn-sm inspector-action-populate-tags" data-tooltip="Search online and populate missing tags">Populate Tags</button>`;
+    actionsHtml += `<button class="btn-primary btn-sm inspector-action-populate-tags" data-tooltip="${escapeHtml(actionHints.populateTags)}">Fill In Tags</button>`;
   }
-  actionsHtml += `<button class="btn-secondary btn-sm inspector-action-edit-tags" data-tooltip="Edit ID3 tags">Edit Tags</button>`;
-  actionsHtml += `<button class="btn-secondary btn-sm inspector-action-archive${suggestedAction === 'archive' ? ' suggested' : ''}" data-tooltip="Archive track">Archive</button>`;
-  actionsHtml += `<button class="btn-danger btn-sm inspector-action-delete" data-tooltip="Delete track">Delete</button>`;
+  actionsHtml += `<button class="btn-secondary btn-sm inspector-action-edit-tags" data-tooltip="${escapeHtml(actionHints.editTags)}">Edit Tags</button>`;
+  actionsHtml += `<button class="btn-secondary btn-sm inspector-action-archive${suggestedAction === 'archive' ? ' suggested' : ''}" data-tooltip="${escapeHtml(actionHints.archive)}">Archive</button>`;
+  actionsHtml += `<button class="btn-danger btn-sm inspector-action-delete" data-tooltip="${escapeHtml(actionHints.trash)}">Move to Trash</button>`;
 
   inspectorActions.innerHTML = actionsHtml;
 
@@ -887,9 +909,28 @@ function openInspector(track: LibraryHealthTrack): void {
   inspectorActions.querySelector('.inspector-action-populate-tags')?.addEventListener('click', () => handlePopulateTags(track));
   inspectorActions.querySelector('.inspector-action-edit-tags')?.addEventListener('click', () => handleEditTags(track));
   inspectorActions.querySelector('.inspector-action-archive')?.addEventListener('click', () => handleArchiveTrack(track));
-  inspectorActions.querySelector('.inspector-action-delete')?.addEventListener('click', () => showDeleteModal(track));
+  inspectorActions.querySelector('.inspector-action-delete')?.addEventListener('click', () => trashTrack(track));
 
   inspectorPanel.style.display = 'flex';
+}
+
+/** Cover art for the inspector, from the list's cache when it has it. A token
+ *  keeps a slow read for the previous track from landing on this one. */
+let inspectorArtToken = 0;
+function renderInspectorArt(track: LibraryHealthTrack): void {
+  const token = ++inspectorArtToken;
+  const show = (src: string | null) => {
+    if (token !== inspectorArtToken) return;
+    inspectorArt.innerHTML = src ? '<img alt="Album art" />' : icons.albumPlaceholder;
+    const img = inspectorArt.querySelector('img');
+    if (img && src) img.src = src;
+  };
+  if (!track.hasAlbumArt) { show(null); return; }
+  if (artCache.has(track.filePath)) { show(artCache.get(track.filePath) ?? null); return; }
+  inspectorArt.innerHTML = '';
+  window.candybar.getTrackAlbumArt(track.filePath)
+    .then((dataUrl) => { artCache.set(track.filePath, dataUrl); show(dataUrl); })
+    .catch(() => show(null));
 }
 
 function closeInspector() {
@@ -911,10 +952,12 @@ function closeInspector() {
 // ========== Edit Tags ==========
 
 function handleEditTags(track: LibraryHealthTrack) {
-  openTagEditor(track, (updatedTrack) => {
+  // The tag editor's fields are text; the health track keeps BPM as a number.
+  openTagEditor({ ...track, bpm: track.bpm != null ? String(track.bpm) : '' }, (updatedTrack) => {
     if (!healthResult) return;
     const idx = healthResult.tracks.findIndex(t => t.filePath === updatedTrack.filePath);
     if (idx !== -1) {
+      const bpm = parseFloat(updatedTrack.bpm);
       healthResult.tracks[idx] = {
         ...healthResult.tracks[idx],
         title: updatedTrack.title,
@@ -922,6 +965,7 @@ function handleEditTags(track: LibraryHealthTrack) {
         album: updatedTrack.album,
         year: updatedTrack.year ? parseInt(updatedTrack.year, 10) || null : null,
         genre: updatedTrack.genre,
+        bpm: Number.isFinite(bpm) && bpm > 0 ? bpm : null,
         hasAlbumArt: !!updatedTrack.albumArt
       };
       syncHealthState();
@@ -934,8 +978,13 @@ function handleEditTags(track: LibraryHealthTrack) {
   });
 }
 
-async function handlePopulateTags(track: LibraryHealthTrack): Promise<void> {
-  const btn = document.querySelector<HTMLButtonElement>('.inspector-action-populate-tags');
+/** Fill in one track's empty tags. Resolves true when the file was updated. */
+async function handlePopulateTags(track: LibraryHealthTrack): Promise<boolean> {
+  // Only the inspector's button for THIS track shows progress; a run started
+  // from a row's inline button leaves another track's inspector alone.
+  const btn = selectedTrackPath === track.filePath
+    ? inspectorActions.querySelector<HTMLButtonElement>('.inspector-action-populate-tags')
+    : null;
   if (btn) { btn.disabled = true; btn.textContent = 'Searching...'; }
 
   try {
@@ -951,22 +1000,25 @@ async function handlePopulateTags(track: LibraryHealthTrack): Promise<void> {
     }], true);
 
     if (result.error) {
-      showToast('error', 'Populate Failed', result.error);
-      return;
+      showToast('error', 'Fill In Tags Failed', result.error);
+      return false;
     }
     if (!result.updated) {
       showToast('warning', 'No Match', 'Could not find a confident match for this track');
-      return;
+      return false;
     }
 
     await refreshTrackAfterPopulate(track);
 
     showToast('success', 'Tags Updated', `+${result.fieldsPopulated.join(', ')}`);
+    return true;
   } catch (err) {
     const message = getErrorMessage(err);
-    showToast('error', 'Populate Failed', message);
+    showToast('error', 'Fill In Tags Failed', message);
+    return false;
   } finally {
-    if (btn) { btn.disabled = false; btn.textContent = 'Populate Tags'; }
+    // A successful refresh rebuilt the inspector; this only matters when it didn't.
+    if (btn?.isConnected) { btn.disabled = false; btn.textContent = 'Fill In Tags'; }
   }
 }
 
@@ -1037,7 +1089,10 @@ function showFixModal(track: LibraryHealthTrack) {
     ? fixableIssues.map(renderFixIssue).join('')
     : renderFixIssue({ code: 'CONVERT', message: 'Convert to lossless AIFF format' });
   fixDeleteOriginal.checked = true;
-  fixModal.style.display = 'flex';
+  fixModalTitle.textContent = 'Convert to AIFF';
+  fixModalDesc.textContent = actionHints.convertAiff;
+  fixModalConfirm.textContent = 'Convert to AIFF';
+  openFixModal();
 }
 
 function renderFixIssue(issue: { code: string; message: string }): string {
@@ -1049,7 +1104,7 @@ function renderFixIssue(issue: { code: string; message: string }): string {
         <line x1="12" y1="17" x2="12.01" y2="17"/>
       </svg>
       <div class="fix-issue-text">
-        <span class="fix-issue-code">${escapeHtml(issue.code)}</span>
+        <span class="fix-issue-code">${escapeHtml(issueDescriptions[issue.code] || issue.code)}</span>
         <span class="fix-issue-message">${escapeHtml(issue.message)}</span>
       </div>
     </div>
@@ -1067,13 +1122,53 @@ function showReencodeModal(track: LibraryHealthTrack) {
     ? reencodeIssues.map(renderFixIssue).join('')
     : renderFixIssue({ code: 'REENCODE', message: 'Re-encode MP3 at 320kbps' });
   fixDeleteOriginal.checked = true;
+  fixModalTitle.textContent = 'Re-encode MP3';
+  fixModalDesc.textContent = actionHints.reencodeMp3;
+  fixModalConfirm.textContent = 'Re-encode MP3';
+  openFixModal();
+}
+
+// The fix modal is a dialog like Settings: focus moves in on open (to Cancel,
+// so Enter never converts by accident), Tab stays inside, and focus goes back
+// to whatever opened it on close.
+let fixModalFocusReturn: (() => void) | null = null;
+
+function openFixModal() {
+  if (fixModal.style.display === 'none') fixModalFocusReturn = captureFocusReturn();
   fixModal.style.display = 'flex';
+  requestAnimationFrame(() => fixModalCancel.focus());
 }
 
 function hideFixModal() {
+  const wasOpen = fixModal.style.display !== 'none';
   fixModal.style.display = 'none';
   pendingFixTrack = null;
   pendingReencodeTrack = null;
+  if (wasOpen) fixModalFocusReturn?.();
+  fixModalFocusReturn = null;
+}
+
+/**
+ * After a successful convert / re-encode, say where the original went and
+ * keep the list honest: the original leaves the list only when it actually
+ * left the library. It stays when "Move the original to the Trash" was off, or
+ * when main kept it because Rekordbox still points at it.
+ */
+function reportConversion(
+  track: LibraryHealthTrack,
+  result: ConversionResult,
+  deleteOriginal: boolean,
+  title: string,
+): void {
+  const keptForRekordbox = (result as ConversionResult & { keptOriginalForRekordbox?: boolean }).keptOriginalForRekordbox === true;
+  if (deleteOriginal && !keptForRekordbox) {
+    removeTrackFromHealthResult(track);
+    showToast('success', title, `${track.fileName} is done. The original is in the Trash if you need it back.`);
+  } else if (keptForRekordbox) {
+    showToast('success', title, `${track.fileName} is done. The original was kept because Rekordbox still points at it.`);
+  } else {
+    showToast('success', title, `${track.fileName} is done. The original is still in your library.`);
+  }
 }
 
 async function handleFixConfirm() {
@@ -1088,8 +1183,7 @@ async function handleFixConfirm() {
     const result = await window.candybar.fixTrackFile(track.filePath, deleteOriginal);
     if (result.success) {
       updateConversionTask(taskId, 'completed', result.outputPath);
-      removeTrackFromHealthResult(track);
-      showToast('success', 'Converted to AIFF', `${track.fileName} has been converted.`);
+      reportConversion(track, result, deleteOriginal, 'Converted to AIFF');
     } else {
       updateConversionTask(taskId, 'failed');
       showToast('error', 'Conversion Failed', result.errorMessage || 'Unknown error during conversion.');
@@ -1113,8 +1207,7 @@ async function handleReencodeConfirm() {
     const result = await window.candybar.reencodeTrackFile(track.filePath, deleteOriginal);
     if (result.success) {
       updateConversionTask(taskId, 'completed', result.outputPath);
-      removeTrackFromHealthResult(track);
-      showToast('success', 'Re-encoded to MP3', `${track.fileName} has been re-encoded at 320kbps.`);
+      reportConversion(track, result, deleteOriginal, 'Re-encoded at 320 kbps');
     } else {
       updateConversionTask(taskId, 'failed');
       showToast('error', 'Re-encode Failed', result.errorMessage || 'Unknown error during re-encoding.');
@@ -1126,57 +1219,48 @@ async function handleReencodeConfirm() {
   }
 }
 
-function showDeleteModal(track: LibraryHealthTrack) {
-  pendingDeleteTrack = track;
-  deleteFileName.textContent = track.fileName;
-  deleteFilePath.textContent = track.filePath;
-  deleteModal.style.display = 'flex';
-}
-
-function hideDeleteModal() {
-  deleteModal.style.display = 'none';
-  pendingDeleteTrack = null;
-  pendingBatchDelete = null;
-}
-
-async function handleDeleteConfirm() {
-  if (!pendingDeleteTrack) return;
-  const track = pendingDeleteTrack;
-  hideDeleteModal();
+/** Every Library delete: confirm, move to the Trash, report. Resolves true
+ *  only when the file is in the Trash. A failure (including main refusing to
+ *  delete anything it can't trash) is shown, never swallowed. */
+async function trashTrack(track: LibraryHealthTrack): Promise<boolean> {
+  if (!(await confirmMoveToTrash([{ fileName: track.fileName, filePath: track.filePath }]))) return false;
 
   try {
     const result = await window.candybar.deleteTrackFile(track.filePath);
     if (result.success) {
-      showToast('success', 'Track Deleted', `${track.fileName} has been deleted.`);
+      showToast('success', 'Moved to Trash', `${track.fileName} is in the Trash if you need it back.`);
       removeTrackFromHealthResult(track);
-    } else {
-      showToast('error', 'Delete Failed', result.error || 'Unknown error deleting file.');
+      return true;
     }
+    showToast('error', "Couldn't Move to Trash", result.error || 'Unknown error moving the file to the Trash.');
   } catch (err) {
-    const message = getErrorMessage(err);
-    showToast('error', 'Delete Failed', message);
+    showToast('error', "Couldn't Move to Trash", getErrorMessage(err));
   }
+  return false;
 }
 
-async function handleArchiveTrack(track: LibraryHealthTrack) {
+/** Resolves true once the file is in the archive folder. */
+async function handleArchiveTrack(track: LibraryHealthTrack): Promise<boolean> {
   try {
     const result = await window.candybar.archiveTrackFile(track.filePath);
     if (result.success) {
       showToast('success', 'Track Archived', `${track.fileName} moved to archive.`);
       removeTrackFromHealthResult(track);
-    } else {
-      showToast('error', 'Archive Failed', result.errorMessage || 'Unknown error archiving file.');
+      return true;
     }
+    showToast('error', 'Archive Failed', result.errorMessage || 'Unknown error archiving file.');
   } catch (err) {
     const message = getErrorMessage(err);
     showToast('error', 'Archive Failed', message);
   }
+  return false;
 }
 
 // ========== Dismiss / Restore Health Issues ==========
 
-async function applyDismissalChanges(track: LibraryHealthTrack, codes: string[], dismissed: boolean): Promise<void> {
-  if (!healthResult || codes.length === 0) return;
+/** Resolves true when every change was saved; a failure toasts and resolves false. */
+async function applyDismissalChanges(track: LibraryHealthTrack, codes: string[], dismissed: boolean): Promise<boolean> {
+  if (!healthResult || codes.length === 0) return false;
   const libraryRoot = healthResult.libraryRoot;
   try {
     await Promise.all(codes.map(code => dismissed
@@ -1192,14 +1276,16 @@ async function applyDismissalChanges(track: LibraryHealthTrack, codes: string[],
     renderCompactList();
     renderKpiDashboard(healthResult)();
     if (selectedTrackPath === track.filePath) openInspector(track);
+    return true;
   } catch (err) {
     const verb = dismissed ? 'Dismiss' : 'Restore';
     showToast('error', `${verb} Failed`, getErrorMessage(err));
+    return false;
   }
 }
 
 async function handleDismissIssue(track: LibraryHealthTrack, code: string): Promise<void> {
-  await applyDismissalChanges(track, [code], true);
+  if (!(await applyDismissalChanges(track, [code], true))) return;
   const label = issueDescriptions[code] || code;
   showToast('info', 'Issue Dismissed', `${label} hidden for ${track.fileName}.`);
 }
@@ -1207,83 +1293,73 @@ async function handleDismissIssue(track: LibraryHealthTrack, code: string): Prom
 async function handleDismissAllIssues(track: LibraryHealthTrack): Promise<void> {
   const codes = Array.from(new Set(track.issues.filter(i => !i.dismissed).map(i => i.code)));
   if (codes.length === 0) return;
-  await applyDismissalChanges(track, codes, true);
-  showToast('info', 'Issues Dismissed', `${codes.length} issue${codes.length === 1 ? '' : 's'} hidden for ${track.fileName}.`);
+  if (!(await applyDismissalChanges(track, codes, true))) return;
+  showToast('info', 'Issues Dismissed', `${plural(codes.length, 'issue')} hidden for ${track.fileName}.`);
 }
 
 async function handleRestoreIssue(track: LibraryHealthTrack, code: string): Promise<void> {
-  await applyDismissalChanges(track, [code], false);
+  if (!(await applyDismissalChanges(track, [code], false))) return;
   const label = issueDescriptions[code] || code;
   showToast('info', 'Issue Restored', `${label} re-enabled for ${track.fileName}.`);
 }
 
-// ========== Duplicates ==========
+// ========== Library Folder Availability ==========
+// A missing library folder (an unplugged external drive, usually) isn't an
+// error to toast about: the last scan stays on screen under a calm banner
+// with a Retry, and the empty list says what to do instead of "No tracks".
 
-async function removeDuplicatePair(pair: DuplicatePair, persist = true) {
-  if (!healthResult) return;
-  healthResult.duplicates = healthResult.duplicates.filter(d => d !== pair);
-  renderDuplicates();
-  syncHealthState();
-  if (persist) {
-    try {
-      await window.candybar.dismissDuplicate(
-        pair.track1.artist, pair.track1.title,
-        pair.track2.artist, pair.track2.title
-      );
-    } catch {
-      showToast('error', 'Dismiss Failed', 'Could not save dismissal to database.');
-    }
-  }
+const availabilityBanner = document.getElementById('browse-health-summary') as HTMLElement | null;
+
+function isLibraryMissingError(message: string): boolean {
+  return /Library directory not found/i.test(message);
 }
 
-async function keepTrack(pair: DuplicatePair, keep: 'track1' | 'track2') {
-  const toDelete = keep === 'track1' ? pair.track2 : pair.track1;
-  const toKeep = keep === 'track1' ? pair.track1 : pair.track2;
+function setLibraryAvailability(state: typeof libraryAvailability, root: string | null = null): void {
+  libraryAvailability = state;
+  offlineRoot = root;
+  renderAvailabilityBanner();
+  renderCompactList(); // the empty state depends on it
+}
 
+function renderAvailabilityBanner(): void {
+  if (!availabilityBanner) return;
+  if (libraryAvailability === 'ok') {
+    availabilityBanner.hidden = true;
+    availabilityBanner.innerHTML = '';
+    return;
+  }
+  const lastScan = healthResult?.scannedAt
+    ? new Date(healthResult.scannedAt).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
+    : null;
+  const text = libraryAvailability === 'unset'
+    ? 'Choose your library folder in Settings to check your tracks.'
+    : lastScan
+      ? `Your library drive isn't connected — showing the last scan from ${lastScan}.`
+      : "Your library drive isn't connected.";
+  const action = libraryAvailability === 'unset'
+    ? '<button class="btn-secondary btn-sm" data-availability-action="settings">Open Settings</button>'
+    : '<button class="btn-secondary btn-sm" data-availability-action="retry">Retry</button>';
+  availabilityBanner.innerHTML = `
+    <div class="library-availability-banner" role="status">
+      <span class="library-availability-text"></span>
+      ${action}
+    </div>`;
+  (availabilityBanner.querySelector('.library-availability-text') as HTMLElement).textContent = text;
+  if (offlineRoot) availabilityBanner.querySelector<HTMLElement>('.library-availability-text')!.title = offlineRoot;
+  availabilityBanner.querySelector('[data-availability-action="settings"]')?.addEventListener('click', () => openSettingsTo('library'));
+  availabilityBanner.querySelector('[data-availability-action="retry"]')?.addEventListener('click', () => void autoRefreshLibrary());
+  availabilityBanner.hidden = false;
+}
+
+/** After a failed scan: is the folder unset, or set but not there? */
+async function noteLibraryMissing(message: string): Promise<void> {
+  const root = message.replace(/^.*Library directory not found:\s*/i, '').trim() || null;
+  let unset = false;
   try {
-    const result = await window.candybar.deleteTrackFile(toDelete.filePath);
-    if (result.success) {
-      showToast('success', 'Duplicate Resolved', `Kept "${toKeep.fileName}", deleted "${toDelete.fileName}".`);
-      removeDuplicatePair(pair);
-    } else {
-      showToast('error', 'Delete Failed', result.error || 'Unknown error deleting file.');
-    }
-  } catch (err) {
-    const message = getErrorMessage(err);
-    showToast('error', 'Delete Failed', message);
-  }
+    unset = !(await window.candybar.getConfig()).libraryRoot;
+  } catch { /* treat as offline */ }
+  setLibraryAvailability(unset ? 'unset' : 'offline', root);
 }
-
-function renderTagCompleteness(track: DuplicateTrackInfo): string {
-  const pct = Math.round(track.tagCompleteness * 100);
-  const level = pct >= 80 ? 'high' : pct >= 50 ? 'med' : 'low';
-  return `<span class="tag-completeness tag-${level}" title="ID3 tag completeness: ${pct}%">${pct}%</span>`;
-}
-
-function renderDuplicateTrackHtml(track: DuplicateTrackInfo, trackKey: string): string {
-  const tagDetails: string[] = [];
-  if (track.album) tagDetails.push(`Album: ${escapeHtml(track.album)}`);
-  if (track.year) tagDetails.push(`Year: ${track.year}`);
-  if (track.genre) tagDetails.push(`Genre: ${escapeHtml(track.genre)}`);
-  const tagLine = tagDetails.length > 0 ? tagDetails.join(' / ') : '';
-
-  return `
-    <div class="duplicate-track-card" data-key="${esc(trackKey)}">
-      <div class="duplicate-track-header">
-        <span class="duplicate-track-name">${esc(track.fileName)}</span>
-        ${renderTagCompleteness(track)}
-      </div>
-      <div class="duplicate-track-meta">
-        <span class="duplicate-track-format">${esc(track.format || '')}</span>
-        ${tagLine ? `<span class="duplicate-tag-line">${esc(tagLine)}</span>` : ''}
-      </div>
-      <div class="duplicate-track-path">${esc(track.filePath)}</div>
-      <button class="btn-sm duplicate-keep" data-tooltip="Keep this copy and remove the others">Keep This</button>
-    </div>
-  `;
-}
-
-
 
 // ========== Public Data Load API ==========
 
@@ -1293,6 +1369,7 @@ export async function loadLibraryData(result: LibraryHealthResult): Promise<void
   }
   lastLoadedLibraryRoot = result.libraryRoot;
   healthResult = result;
+  if (libraryAvailability !== 'ok') { libraryAvailability = 'ok'; offlineRoot = null; renderAvailabilityBanner(); }
   await annotateDismissedIssues();
   recalculateSummary();
   rebuildBrowseTracks();
@@ -1366,16 +1443,19 @@ async function runLibraryAutoRefresh(opts: { silent?: boolean }): Promise<Librar
       refreshedResult = response.result;
 
       await loadLibraryData(healthResult);
-      renderDuplicates();
 
       if (!opts.silent) {
         const s = response.result.summary;
-        showToast('success', 'Scan Complete', `${s.total} tracks · ${s.errors} errors · ${s.warnings} warnings`);
+        showToast('success', 'Scan Complete', `${plural(s.total, 'track')} · ${plural(s.errors, 'error')} · ${plural(s.warnings, 'warning')}`);
       }
     }
   } catch (err) {
     const message = getErrorMessage(err);
-    showToast('error', 'Auto-Refresh Failed', message);
+    if (isLibraryMissingError(message)) {
+      await noteLibraryMissing(message); // banner + empty state, no error toast
+    } else {
+      showToast('error', 'Library Scan Failed', message);
+    }
   } finally {
     backgroundScanRunning = false;
     runLibraryScanBtn.disabled = false;
@@ -1389,13 +1469,25 @@ async function runLibraryAutoRefresh(opts: { silent?: boolean }): Promise<Librar
 
 function getFixActionDescription(action: SuggestedAction): string {
   switch (action) {
-    case 'convert_aiff': return 'Convert to lossless AIFF format and delete the original file.';
-    case 'reencode_mp3': return 'Re-encode as 320kbps MP3 and delete the original file.';
-    case 'populate_tags': return 'Search Spotify/SoundCloud for metadata and fill missing tags.';
-    case 'search_art': return 'Search online for album art and embed it.';
-    case 'archive': return 'Move the file to the archive folder.';
-    case 'delete': return 'Permanently delete the file.';
-    case 'none': return 'No automated fix available. Skip or edit tags manually.';
+    case 'convert_aiff': return 'Make a lossless AIFF version that Pioneer players read reliably. The old file goes to the Trash.';
+    case 'reencode_mp3': return 'Rebuild it as a standard 320 kbps MP3 that Pioneer players accept. The old file goes to the Trash.';
+    case 'populate_tags': return 'Look the track up on Spotify and SoundCloud and fill in any empty tags.';
+    case 'search_art': return 'Search online for cover art and save it into the file.';
+    case 'archive': return 'Move the file to your archive folder. Nothing is deleted.';
+    case 'delete': return 'Move the file to the Trash. You can put it back from Finder.';
+    case 'none': return 'There\'s no automatic fix for this one. Skip it, or edit the tags yourself.';
+  }
+}
+
+function getFixActionButton(action: SuggestedAction): { label: string; cls: string } {
+  switch (action) {
+    case 'convert_aiff': return { label: 'Convert to AIFF', cls: 'btn-primary' };
+    case 'reencode_mp3': return { label: 'Re-encode MP3', cls: 'btn-primary' };
+    case 'populate_tags': return { label: 'Fill In Tags', cls: 'btn-primary' };
+    case 'search_art': return { label: 'Find Cover Art', cls: 'btn-primary' };
+    case 'archive': return { label: 'Archive', cls: 'btn-primary' };
+    case 'delete': return { label: 'Move to Trash', cls: 'btn-danger' };
+    case 'none': return { label: 'Skip', cls: 'btn-primary' };
   }
 }
 
@@ -1417,18 +1509,18 @@ function renderFixFlowDrawer(): void {
   if (!track) {
     // Show completion state
     const pct = fixFlow.trackPaths.length > 0 ? Math.round((fixFlow.fixedCount / fixFlow.trackPaths.length) * 100) : 100;
-    setDrawerTitle('Fix Flow');
+    setDrawerTitle('Fix Tracks');
     setDrawerContent(`
       <div class="fix-flow-content">
         <div class="fix-flow-complete">
           <div class="fix-flow-complete-icon">${icons.success}</div>
           <div class="fix-flow-complete-text">
-            All done! Fixed ${fixFlow.fixedCount} of ${fixFlow.trackPaths.length} tracks.
+            All done! Fixed ${fixFlow.fixedCount} of ${plural(fixFlow.trackPaths.length, 'track')}.
           </div>
           <div class="fix-flow-progress">
             <div class="fix-flow-progress-bar"><div class="fix-flow-progress-fill" style="width:${pct}%"></div></div>
           </div>
-          <button class="btn-secondary btn-sm fix-flow-done" style="margin-top:12px" data-tooltip="Close the fix flow">Close</button>
+          <button class="btn-secondary btn-sm fix-flow-done" style="margin-top:12px" data-tooltip="Close this panel">Close</button>
         </div>
       </div>
     `);
@@ -1452,8 +1544,9 @@ function renderFixFlowDrawer(): void {
   const pct = Math.round((done / total) * 100);
 
   const isNone = action === 'none';
+  const applyBtn = getFixActionButton(action);
 
-  setDrawerTitle('Fix Flow');
+  setDrawerTitle('Fix Tracks');
   setDrawerContent(`
     <div class="fix-flow-content">
       <div class="fix-flow-progress">
@@ -1479,15 +1572,15 @@ function renderFixFlowDrawer(): void {
 
       <div class="fix-flow-buttons">
         ${isNone
-          ? `<button class="btn-primary fix-flow-skip-primary" data-tooltip="Skip this track — nothing to fix">Skip</button>`
-          : `<button class="btn-primary fix-flow-apply" data-tooltip="Apply the suggested fix to this track">Apply Fix</button>
-             <button class="btn-ghost fix-flow-skip" data-tooltip="Skip this track without applying the fix">Skip</button>`
+          ? `<button class="btn-primary fix-flow-skip-primary" data-tooltip="Move on to the next track">Skip</button>`
+          : `<button class="${applyBtn.cls} fix-flow-apply" data-tooltip="Do this for this track only, then show the next one">${applyBtn.label}</button>
+             <button class="btn-ghost fix-flow-skip" data-tooltip="Leave this track as it is and show the next one">Skip</button>`
         }
       </div>
 
       <div class="fix-flow-nav">
-        <button class="btn-ghost btn-sm fix-flow-prev" ${fixFlow.currentIndex === 0 ? 'disabled' : ''} data-tooltip="Go back to the previous track">Previous</button>
-        <button class="btn-ghost btn-sm fix-flow-next" data-tooltip="Go to the next track">Next</button>
+        <button class="btn-ghost btn-sm fix-flow-prev" ${fixFlow.currentIndex === 0 ? 'disabled' : ''} data-tooltip="Go back to the previous track" data-tooltip-disabled="This is the first track">Previous</button>
+        <button class="btn-ghost btn-sm fix-flow-next" data-tooltip="Show the next track without changing this one">Next</button>
       </div>
     </div>
   `);
@@ -1504,26 +1597,39 @@ function renderFixFlowDrawer(): void {
 
 
 async function launchBulkPopulate(issueCode: 'MISSING_TAGS' | 'SPARSE_TAGS'): Promise<void> {
-  if (!healthResult) return;
+  if (!healthResult || bulkPopulateRunning) return;
 
-  const tracks = healthResult.tracks.filter(t => t.issues.some(i => i.code === issueCode));
+  // The tracks the button counted: visible, with this issue not dismissed.
+  const tracks = tracksForIssue(issueCode);
   if (tracks.length === 0) {
     showToast('info', 'No Tracks', 'No tracks match this issue filter.');
     return;
   }
 
-  const fixBtn = document.getElementById('fix-flow-start') as HTMLButtonElement | null;
-  if (fixBtn) { fixBtn.disabled = true; fixBtn.textContent = `Populating 0 / ${tracks.length}...`; }
-  setStatus(`Autopopulating (0/${tracks.length})...`);
+  const n = tracks.length;
+  const hasWavOrFlac = tracks.some(t => /\.(wav|flac)$/i.test(t.filePath));
+  const ok = await confirmAction({
+    title: `Fill in tags for ${plural(n, 'track')}?`,
+    message: 'Each track is looked up on Spotify, SoundCloud and Beatport, and any empty artist, album, year, genre, key or BPM is saved into the file.',
+    safetyNote: hasWavOrFlac
+      ? 'Tags you already have are kept. WAV and FLAC files are saved as AIFF copies (same sound), and the originals go to the Trash.'
+      : 'Tags you already have are kept.',
+    confirmLabel: 'Fill in tags',
+    tone: 'info',
+  });
+  if (!ok) return;
 
-  const offProgress = (() => {
-    const handler = (p: { current: number; total: number; filePath: string }) => {
-      setStatus(`Autopopulating (${p.current}/${p.total})...`);
-      if (fixBtn) fixBtn.textContent = `Populating ${p.current} / ${p.total}...`;
-    };
-    window.candybar.onAutopopulateProgress(handler);
-    return () => {}; // preload registers but doesn't expose an unsubscribe; handler is idempotent.
-  })();
+  bulkPopulateRunning = true;
+  const fixBtn = document.getElementById('fix-flow-start') as HTMLButtonElement | null;
+  if (fixBtn) { fixBtn.disabled = true; fixBtn.textContent = `Filling in tags 0 / ${tracks.length}…`; }
+  setStatus(`Filling in tags (0/${tracks.length})...`);
+
+  // Unsubscribed in finally, so a later single-track Fill In Tags doesn't
+  // drive this run's button and status text.
+  const offProgress = window.candybar.onAutopopulateProgress((p) => {
+    setStatus(`Filling in tags (${p.current}/${p.total})...`);
+    if (fixBtn) fixBtn.textContent = `Filling in tags ${p.current} / ${p.total}…`;
+  });
 
   try {
     const input = tracks.map(t => ({
@@ -1552,20 +1658,20 @@ async function launchBulkPopulate(issueCode: 'MISSING_TAGS' | 'SPARSE_TAGS'): Pr
     const tone = updated > 0 ? 'success' : 'warning';
     showToast(
       tone,
-      'Populate Complete',
-      `${updated} updated · ${noMatch} no match${errored > 0 ? ` · ${errored} errored` : ''}`
+      'Fill In Tags Complete',
+      `${updated} updated · ${noMatch} no match${errored > 0 ? ` · ${errored} failed` : ''}`
     );
     setStatus('Idle');
   } catch (err) {
     const message = getErrorMessage(err);
-    showToast('error', 'Populate Failed', message);
+    showToast('error', 'Fill In Tags Failed', message);
     setStatus('Error');
   } finally {
     offProgress();
+    bulkPopulateRunning = false;
     if (fixBtn) { fixBtn.disabled = false; }
     // Re-render the Fix Flow button (count may have dropped to zero)
     renderIssueChips();
-    renderFixFlowButton();
   }
 }
 
@@ -1586,9 +1692,7 @@ function enterFixFlow(): void {
     return;
   }
 
-  const filtered = applyAllFilters().filter(t =>
-    t.issues.some(i => i.code === activeIssueCode)
-  );
+  const filtered = tracksForIssue(activeIssueCode);
   if (filtered.length === 0) {
     showToast('info', 'No Tracks', 'No tracks match this issue filter.');
     return;
@@ -1650,7 +1754,7 @@ function skipToNextExisting(direction: 1 | -1): boolean {
 }
 
 function fixFlowAdvance(direction: 1 | -1): void {
-  if (!fixFlow) return;
+  if (!fixFlow || fixFlow.applying) return;
 
   fixFlow.currentIndex += direction;
 
@@ -1682,78 +1786,58 @@ async function fixFlowApply(): Promise<void> {
   const action = getActionForIssueCode(track, fixFlow.issueCode);
   if (action === 'none') { fixFlowAdvance(1); return; }
 
+  // Lock the drawer's buttons too: a Next/Skip mid-apply would move on, and
+  // then the apply finishing would move on again past an unseen track.
   fixFlow.applying = true;
-  const applyBtn = getDrawerBody().querySelector('.fix-flow-apply') as HTMLButtonElement | null;
-  if (applyBtn) { applyBtn.disabled = true; applyBtn.textContent = 'Applying...'; }
+  const body = getDrawerBody();
+  body.querySelectorAll<HTMLButtonElement>('.fix-flow-buttons button, .fix-flow-nav button').forEach(b => { b.disabled = true; });
+  const applyBtn = body.querySelector('.fix-flow-apply') as HTMLButtonElement | null;
+  if (applyBtn) applyBtn.textContent = 'Applying...';
 
+  let success = false;
   try {
-    let success = false;
     switch (action) {
-      case 'convert_aiff': {
-        const taskId = addConversionTask(track.fileName, 'aiff');
-        const result = await window.candybar.fixTrackFile(track.filePath, true);
-        if (result.success) {
-          updateConversionTask(taskId, 'completed', result.outputPath);
-          removeTrackFromHealthResult(track);
-          showToast('success', 'Converted to AIFF', `${track.fileName}`);
-          success = true;
-        } else {
-          updateConversionTask(taskId, 'failed');
-          showToast('error', 'Conversion Failed', result.errorMessage || 'Unknown error.');
-        }
-        break;
-      }
+      case 'convert_aiff':
       case 'reencode_mp3': {
-        const taskId = addConversionTask(track.fileName, 'mp3');
-        const result = await window.candybar.reencodeTrackFile(track.filePath, true);
+        const aiff = action === 'convert_aiff';
+        const taskId = addConversionTask(track.fileName, aiff ? 'aiff' : 'mp3');
+        const result = aiff
+          ? await window.candybar.fixTrackFile(track.filePath, true)
+          : await window.candybar.reencodeTrackFile(track.filePath, true);
         if (result.success) {
           updateConversionTask(taskId, 'completed', result.outputPath);
-          removeTrackFromHealthResult(track);
-          showToast('success', 'Re-encoded to 320kbps', `${track.fileName}`);
+          reportConversion(track, result, true, aiff ? 'Converted to AIFF' : 'Re-encoded at 320 kbps');
           success = true;
         } else {
           updateConversionTask(taskId, 'failed');
-          showToast('error', 'Re-encode Failed', result.errorMessage || 'Unknown error.');
+          showToast('error', aiff ? 'Conversion Failed' : 'Re-encode Failed', result.errorMessage || 'Unknown error.');
         }
         break;
       }
-      case 'archive': {
-        const result = await window.candybar.archiveTrackFile(track.filePath);
-        if (result.success) {
-          removeTrackFromHealthResult(track);
-          showToast('success', 'Archived', `${track.fileName}`);
-          success = true;
-        } else {
-          showToast('error', 'Archive Failed', result.errorMessage || 'Unknown error.');
-        }
+      case 'archive':
+        success = await handleArchiveTrack(track);
         break;
-      }
-      case 'delete': {
-        const result = await window.candybar.deleteTrackFile(track.filePath);
-        if (result.success) {
-          removeTrackFromHealthResult(track);
-          showToast('success', 'Deleted', `${track.fileName}`);
-          success = true;
-        } else {
-          showToast('error', 'Delete Failed', result.error || 'Unknown error.');
-        }
+      case 'delete':
+        // Same confirm as every other Move to Trash.
+        success = await trashTrack(track);
         break;
-      }
-      case 'populate_tags': {
-        await handlePopulateTags(track);
-        success = true;
+      case 'populate_tags':
+        success = await handlePopulateTags(track);
         break;
-      }
     }
-    if (success) fixFlow!.fixedCount++;
   } catch (err) {
     showToast('error', 'Fix Failed', getErrorMessage(err));
   }
 
-  if (fixFlow) {
-    fixFlow.applying = false;
-    fixFlowAdvance(1);
-  }
+  // The flow may have been closed while this ran (Escape, the drawer's close
+  // button, an issue chip); the file work above still counts, the flow doesn't.
+  if (!fixFlow) return;
+  if (success) fixFlow.fixedCount++;
+  fixFlow.applying = false;
+  // A cancelled (or failed) Move to Trash stays on this track instead of
+  // skipping past it.
+  if (action === 'delete' && !success) renderFixFlowDrawer();
+  else fixFlowAdvance(1);
 }
 
 export function initLibrary(): void {
@@ -1818,15 +1902,6 @@ export function initLibrary(): void {
   // Connected devices auto-detection
   initConnectedDevices();
 
-  // Duplicates drawer toggle
-  const toggleDuplicatesDrawer = () => {
-    const section = document.getElementById('duplicates-section');
-    if (!section) return;
-    section.style.display = section.style.display === 'none' ? '' : 'none';
-  };
-  document.getElementById('toggle-duplicates')?.addEventListener('click', toggleDuplicatesDrawer);
-  document.getElementById('duplicates-close')?.addEventListener('click', toggleDuplicatesDrawer);
-
   // Manual library rescan
   runLibraryScanBtn?.addEventListener('click', () => {
     void autoRefreshLibrary();
@@ -1835,52 +1910,27 @@ export function initLibrary(): void {
   // Wire scan progress events to the inline progress bar + spinner
   window.candybar.onHealthScanProgress(updateScanProgress);
 
-  // Missing Album Art — launch dedicated fix overlay
-  document.getElementById('missing-art-mode')?.addEventListener('click', launchAlbumArtFix);
-
   // Initial render
   renderCompactList();
 
+  inspectorClose.addEventListener('click', () => {
+    const fp = selectedTrackPath;
+    closeInspector();
+    // Back to the row the details were for, for keyboard users.
+    if (fp) document.querySelector<HTMLElement>(`#browse-compact-list .bv4-row[data-fp="${CSS.escape(fp)}"]`)?.focus();
+  });
 
-// ========== Batch Delete (internal, kept for modal confirm) ==========
-
-async function handleBatchDeleteConfirm() {
-  if (!pendingBatchDelete) return;
-  const tracks = pendingBatchDelete;
-  const count = tracks.length;
-  pendingBatchDelete = null;
-  hideDeleteModal();
-
-  showToast('info', 'Batch Delete', `Deleting ${count} tracks...`);
-  let success = 0;
-  let failed = 0;
-
-  for (const track of tracks) {
-    try {
-      const result = await window.candybar.deleteTrackFile(track.filePath);
-      if (result.success) {
-        removeTrackFromHealthResult(track);
-        success++;
-      } else {
-        failed++;
-      }
-    } catch {
-      failed++;
+  // Escape closes the fix modal and Tab stays inside it (a confirm opened over
+  // it handles those keys first and stops or marks them).
+  document.addEventListener('keydown', (e) => {
+    if (e.defaultPrevented || fixModal.style.display === 'none') return;
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      hideFixModal();
+    } else if (e.key === 'Tab') {
+      trapDialogFocus(fixModal.querySelector<HTMLElement>('.modal') ?? fixModal, e);
     }
-  }
-
-  syncHealthState();
-  rebuildBrowseTracks();
-  renderCompactList();
-  if (healthResult) renderKpiDashboard(healthResult)();
-  clearMultiSelection();
-
-  if (failed > 0) {
-    showToast('warning', 'Batch Delete', `${success} deleted, ${failed} failed`);
-  } else {
-    showToast('success', 'Batch Delete', `${success} tracks deleted`);
-  }
-}
+  });
 
   // Fix modal events
   fixModalClose.addEventListener('click', hideFixModal);
@@ -1893,22 +1943,8 @@ async function handleBatchDeleteConfirm() {
     }
   });
 
-  // Delete modal events
-  deleteModalClose.addEventListener('click', hideDeleteModal);
-  deleteModalCancel.addEventListener('click', hideDeleteModal);
-  deleteModalConfirm.addEventListener('click', () => {
-    if (pendingBatchDelete) {
-      handleBatchDeleteConfirm();
-    } else {
-      handleDeleteConfirm();
-    }
-  });
-
-  // Close modals on overlay click
+  // Close modal on overlay click
   fixModal.addEventListener('click', (e) => {
     if (e.target === fixModal) hideFixModal();
-  });
-  deleteModal.addEventListener('click', (e) => {
-    if (e.target === deleteModal) hideDeleteModal();
   });
 }

@@ -27,6 +27,7 @@ function makeHealth(overrides: Partial<TrackHealth> & { filePath?: string }): Tr
     isHealthy: true,
     issues: [],
     dateAdded: null,
+    bpm: null,
     format: {
       container: 'AIFF',
       codec: 'PCM',
@@ -38,7 +39,7 @@ function makeHealth(overrides: Partial<TrackHealth> & { filePath?: string }): Tr
       lossless: true,
     },
     ...overrides,
-  };
+  } as TrackHealth;
 }
 
 function makeIssue(code: string, severity: 'error' | 'warning'): HealthIssue {

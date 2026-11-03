@@ -73,9 +73,14 @@ function clampWidth(w: number): number {
 }
 
 function setWidth(w: number, persist = true): void {
-  panelWidth = clampWidth(w);
-  document.documentElement.style.setProperty('--store-panel-width', `${panelWidth}px`);
-  if (persist) localStorage.setItem(LS_WIDTH, String(panelWidth));
+  const width = clampWidth(w);
+  document.documentElement.style.setProperty('--store-panel-width', `${width}px`);
+  // A window-shrink re-clamp (persist=false) narrows only the live width, so
+  // the panel grows back to the chosen width when the window does.
+  if (persist) {
+    panelWidth = width;
+    localStorage.setItem(LS_WIDTH, String(panelWidth));
+  }
 }
 
 function setZoomLabel(): void {

@@ -93,11 +93,17 @@ function wireEvents(): void {
   document.addEventListener('keydown', (e) => {
     if (!session) return;
     if (e.key === 'Escape') { close(); return; }
-    if (e.key === 'ArrowLeft' && e.shiftKey) { previousTrack(); return; }
-    if (e.key === 'ArrowLeft') { previousSuggestion(); return; }
-    if (e.key === 'ArrowRight' && e.shiftKey) { skipTrack(); return; }
-    if (e.key === 'ArrowRight') { nextSuggestion(); return; }
-    if (e.key === 'Enter') { void apply(); }
+    if (e.key === 'Tab') { trapFocus(e); return; }
+    // A focused button handles Enter/Space itself: Enter on Skip must skip.
+    const onButton = (e.target as Element | null)?.closest?.('button');
+    if (e.key === 'Enter') {
+      if (!onButton) { e.preventDefault(); void apply(); }
+      return;
+    }
+    if (e.key === 'ArrowLeft' && e.shiftKey) { e.preventDefault(); previousTrack(); return; }
+    if (e.key === 'ArrowLeft') { e.preventDefault(); previousSuggestion(); return; }
+    if (e.key === 'ArrowRight' && e.shiftKey) { e.preventDefault(); skipTrack(); return; }
+    if (e.key === 'ArrowRight') { e.preventDefault(); nextSuggestion(); return; }
   });
   prevBtn?.addEventListener('click', previousSuggestion);
   nextBtn?.addEventListener('click', nextSuggestion);
@@ -105,6 +111,20 @@ function wireEvents(): void {
   skipBtn?.addEventListener('click', skipTrack);
   applyBtn?.addEventListener('click', () => { void apply(); });
   wired = true;
+}
+
+let focusBeforeOpen: HTMLElement | null = null;
+
+function trapFocus(e: KeyboardEvent): void {
+  if (!overlay) return;
+  const focusables = Array.from(overlay.querySelectorAll<HTMLElement>('button:not([disabled])'))
+    .filter((el) => el.offsetParent !== null);
+  if (focusables.length === 0) return;
+  const first = focusables[0];
+  const last = focusables[focusables.length - 1];
+  const inside = overlay.contains(document.activeElement);
+  if (e.shiftKey && (document.activeElement === first || !inside)) { e.preventDefault(); last.focus(); }
+  else if (!e.shiftKey && (document.activeElement === last || !inside)) { e.preventDefault(); first.focus(); }
 }
 
 export function openAlbumArtFix(opts: OpenAlbumArtFixOptions): void {
@@ -131,9 +151,11 @@ export function openAlbumArtFix(opts: OpenAlbumArtFixOptions): void {
     onClose: opts.onClose,
   };
 
+  focusBeforeOpen = document.activeElement instanceof HTMLElement ? document.activeElement : null;
   overlay.hidden = false;
   document.body.classList.add('aaf-open');
   renderTrack();
+  skipBtn?.focus();
 }
 
 function close(): void {
@@ -142,6 +164,8 @@ function close(): void {
   session = null;
   if (overlay) overlay.hidden = true;
   document.body.classList.remove('aaf-open');
+  focusBeforeOpen?.focus();
+  focusBeforeOpen = null;
   onClose?.();
 }
 
@@ -313,25 +337,25 @@ function renderSuggestion(): void {
 }
 
 function previousSuggestion(): void {
-  if (!session || session.suggestions.length <= 1) return;
+  if (!session || session.applying || session.suggestions.length <= 1) return;
   session.suggestionIndex = (session.suggestionIndex - 1 + session.suggestions.length) % session.suggestions.length;
   renderSuggestion();
 }
 
 function nextSuggestion(): void {
-  if (!session || session.suggestions.length <= 1) return;
+  if (!session || session.applying || session.suggestions.length <= 1) return;
   session.suggestionIndex = (session.suggestionIndex + 1) % session.suggestions.length;
   renderSuggestion();
 }
 
 function previousTrack(): void {
-  if (!session || session.index === 0) return;
+  if (!session || session.applying || session.index === 0) return;
   session.index--;
   renderTrack();
 }
 
 function skipTrack(): void {
-  if (!session) return;
+  if (!session || session.applying) return;
   session.index++;
   renderTrack();
 }
@@ -342,9 +366,11 @@ async function apply(): Promise<void> {
   const suggestion = session.suggestions[session.suggestionIndex];
   if (!track || !suggestion) return;
 
-  session.applying = true;
+  const current = session;
+  current.applying = true;
   if (applyBtn) { applyBtn.disabled = true; applyBtn.textContent = 'Applying…'; }
   if (skipBtn) skipBtn.disabled = true;
+  if (backBtn) backBtn.disabled = true;
 
   try {
     const dataUrl = await fetchImageAsDataUrl(suggestion.imageUrl);
@@ -354,18 +380,21 @@ async function apply(): Promise<void> {
     if (!track.genre && suggestion.genre) params.genre = suggestion.genre;
 
     await updateTrackTagsWithRepair(params, track.title || track.fileName);
-    session.fixedCount++;
-    session.onTrackUpdated(track, params);
+    current.fixedCount++;
+    current.onTrackUpdated(track, params);
     showToast('success', 'Art Applied', `Album art saved for ${track.title || track.fileName}`);
-    session.applying = false;
-    session.index++;
+    current.applying = false;
+    // Closed mid-apply: the art is saved, but there's no queue to advance.
+    if (session !== current) return;
+    current.index++;
     renderTrack();
   } catch (err) {
+    current.applying = false;
     showToast('error', 'Apply Failed', getErrorMessage(err));
-    if (session) {
-      session.applying = false;
+    if (session === current) {
       if (applyBtn) { applyBtn.disabled = false; applyBtn.textContent = 'Apply Album Art'; }
       if (skipBtn) skipBtn.disabled = false;
+      if (backBtn) backBtn.disabled = current.index === 0;
     }
   }
 }

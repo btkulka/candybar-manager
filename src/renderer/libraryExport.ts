@@ -6,7 +6,7 @@
 // and surfaces success/failure with a toast. Keep these pure w.r.t. state:
 // the caller supplies a tracks array and the helper does the rest.
 
-import { showToast } from './shared';
+import { showToast, plural, getErrorMessage } from './shared';
 
 export type LibraryMatchedTrack = {
   artist: string;
@@ -40,11 +40,15 @@ export async function exportM3u8(tracks: LibraryMatchedTrack[]): Promise<void> {
   const filePath = await window.candybar.showSaveDialogM3u8(defaultName);
   if (!filePath) return;
 
-  const result = await window.candybar.exportPlaylistM3u8(usable, filePath);
-  if (result.success) {
-    showToast('success', 'Playlist Exported', `Saved ${result.trackCount} tracks organized by artist.`);
-  } else {
-    showToast('error', 'Export Failed', result.error || 'Unknown error');
+  try {
+    const result = await window.candybar.exportPlaylistM3u8(usable, filePath);
+    if (result.success) {
+      showToast('success', 'Playlist Exported', `Saved ${plural(result.trackCount ?? usable.length, 'track')} organized by artist.`);
+    } else {
+      showToast('error', 'Export Failed', result.error || 'Unknown error');
+    }
+  } catch (err) {
+    showToast('error', 'Export Failed', getErrorMessage(err));
   }
 }
 
@@ -63,15 +67,19 @@ export async function exportRekordbox(tracks: LibraryMatchedTrack[]): Promise<vo
   if (!filePath) return;
 
   const playlistName = filePath.split('/').pop()?.replace(/\.xml$/i, '') || 'Playlist';
-  const result = await window.candybar.exportPlaylistRekordbox(usable, filePath, playlistName);
-  if (result.success) {
-    showToast(
-      'success',
-      'Rekordbox Playlist Exported',
-      `Saved ${result.trackCount} tracks. In Rekordbox: Preferences → Advanced → Database → set the rekordbox xml path to this file.`
-    );
-  } else {
-    showToast('error', 'Export Failed', result.error || 'Unknown error');
+  try {
+    const result = await window.candybar.exportPlaylistRekordbox(usable, filePath, playlistName);
+    if (result.success) {
+      showToast(
+        'success',
+        'Rekordbox Playlist Exported',
+        `Saved ${plural(result.trackCount ?? usable.length, 'track')}. In Rekordbox: Preferences → Advanced → Database → set the rekordbox xml path to this file.`
+      );
+    } else {
+      showToast('error', 'Export Failed', result.error || 'Unknown error');
+    }
+  } catch (err) {
+    showToast('error', 'Export Failed', getErrorMessage(err));
   }
 }
 
@@ -88,10 +96,14 @@ export async function exportCsv(tracks: CsvTrackRow[], basename = 'library-track
   const filePath = await window.candybar.showSaveDialog(defaultName);
   if (!filePath) return;
 
-  const result = await window.candybar.exportTracksCsv(tracks, filePath);
-  if (result.success) {
-    showToast('success', 'Export Complete', `Saved ${tracks.length} tracks to CSV.`);
-  } else {
-    showToast('error', 'Export Failed', result.error || 'Unknown error');
+  try {
+    const result = await window.candybar.exportTracksCsv(tracks, filePath);
+    if (result.success) {
+      showToast('success', 'Export Complete', `Saved ${plural(tracks.length, 'track')} to CSV.`);
+    } else {
+      showToast('error', 'Export Failed', result.error || 'Unknown error');
+    }
+  } catch (err) {
+    showToast('error', 'Export Failed', getErrorMessage(err));
   }
 }

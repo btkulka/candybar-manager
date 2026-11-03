@@ -9,9 +9,10 @@ window.addEventListener('unhandledrejection', (event) => {
 
 import { setActiveTab, setValue, initNavigation, initTagEditor, initArtViewer, checkSpotifyConnection, checkSoundCloudConnection, checkStoreConnections } from './renderer/shared';
 import { initOrganize, restoreOrganizeState } from './renderer/organize';
-import { initSource, setSourceCsvFile, restoreSourceSpotifyUrl } from './renderer/source';
-import { initLibrary, loadLibraryData, restoreLibraryResults, autoRefreshLibrary, showHealthSkeleton, hideHealthSkeleton } from './renderer/library';
-import { initSettings, setCurrentArchivePath, setFloatingConsoleEnabled, setLibraryRootDisplay, setStoreCredentials, setRekordboxEnabled } from './renderer/settings';
+import { initSource, setSourceCsvFile, restoreSourceSpotifyUrl, hasRestoredSourcesSession } from './renderer/source';
+import { initLibrary, restoreLibraryResults, autoRefreshLibrary, showHealthSkeleton, hideHealthSkeleton } from './renderer/library';
+import { initSettings, setCurrentArchivePath, setFloatingConsoleEnabled, setLibraryRootDisplay, setStoreCredentials, setRekordboxEnabled, setShowAdvancedTools } from './renderer/settings';
+import { initTooltips } from './renderer/tooltips';
 import { initActivity } from './renderer/activity';
 import { initPlayer } from './renderer/player';
 import { initUsbHealth } from './renderer/usbHealth';
@@ -19,6 +20,8 @@ import { initRestore } from './renderer/restore';
 import { initSpliceRecovery } from './renderer/spliceRecovery';
 import { initRightDrawer } from './renderer/rightDrawer';
 import { initStorePanel } from './renderer/storePanel';
+import { initTour, startTour } from './renderer/tour';
+import { initUpgrade } from './renderer/upgrade';
 
 // Re-export types that were previously exported from this file
 export type { SuggestedAction, HealthIssue } from './renderer/shared';
@@ -65,25 +68,34 @@ async function loadConfig() {
   setFloatingConsoleEnabled(config.floatingConsoleEnabled ?? true);
   const rekordboxEnabled = config.rekordboxEnabled ?? true;
   setRekordboxEnabled(rekordboxEnabled);
+  setShowAdvancedTools(config.showAdvancedTools ?? false);
   await setStoreCredentials(config);
 
   // Restore active tab. `check` was merged into `source` — redirect silently
   // so users whose last session ended on Check land on the merged tab instead
-  // of a 404. If Restore was last active but rekordbox is disabled on this
-  // machine, fall back to organize.
+  // of a 404. If Restore or Upgrades was last active but rekordbox is disabled
+  // on this machine, fall back to organize.
   if (config.activeTab) {
     let resolvedTab = config.activeTab === 'check' ? 'source' : config.activeTab;
-    if (resolvedTab === 'restore' && !rekordboxEnabled) resolvedTab = 'organize';
+    if ((resolvedTab === 'restore' || resolvedTab === 'upgrade') && !rekordboxEnabled) resolvedTab = 'organize';
     setActiveTab(resolvedTab);
   }
+
+  // First launch on this machine. Started after the tab restore above so it
+  // can't yank the page out from under the tour.
+  if (!config.tutorialCompleted) startTour();
 
   // Restore persisted input (CSV path or Spotify playlist URL) into the
   // Source tab. The config keys are still `checkCsvPath` / `checkSpotifyPlaylistUrl`
   // for back-compat — they're just internal and don't warrant a migration.
-  if (config.checkSpotifyPlaylistUrl) {
-    restoreSourceSpotifyUrl(config.checkSpotifyPlaylistUrl);
-  } else if (config.checkCsvPath) {
-    await setSourceCsvFile(config.checkCsvPath);
+  // Nothing writes them any more, so a saved Sources session (which also holds
+  // SoundCloud links) is newer and wins; these only seed a first launch.
+  if (!hasRestoredSourcesSession()) {
+    if (config.checkSpotifyPlaylistUrl) {
+      restoreSourceSpotifyUrl(config.checkSpotifyPlaylistUrl);
+    } else if (config.checkCsvPath) {
+      await setSourceCsvFile(config.checkCsvPath);
+    }
   }
 
   // Restore cached scan results
@@ -117,10 +129,10 @@ async function restoreCachedResults(config: Awaited<ReturnType<typeof window.can
   // library-check on-disk cache under the hood for fast phase-1 repeats.
   await Promise.all([restoreOrganizeCache(), restoreHealthCache()]);
 
-  // Always run a write-through background scan to keep health data fresh
-  void autoRefreshLibrary({ silent: true }).then(result => {
-    if (result) void loadLibraryData(result);
-  });
+  // Always run a write-through background scan to keep health data fresh.
+  // It loads its own result into the Library view, and a missing library
+  // drive shows the Library page's banner rather than an error toast.
+  void autoRefreshLibrary({ silent: true });
 }
 
 // ========== Initialize ==========
@@ -132,11 +144,13 @@ function safeInit(name: string, fn: () => void) {
 }
 
 function initApp() {
+  safeInit('initTooltips', initTooltips);
   safeInit('initNavigation', initNavigation);
   safeInit('initTagEditor', initTagEditor);
   safeInit('initArtViewer', initArtViewer);
   safeInit('initOrganize', initOrganize);
   safeInit('initSource', initSource);
+  safeInit('initUpgrade', initUpgrade);
   safeInit('initLibrary', initLibrary);
   safeInit('initSettings', initSettings);
   safeInit('initBrowseButtons', initBrowseButtons);
@@ -147,6 +161,7 @@ function initApp() {
   safeInit('initSpliceRecovery', initSpliceRecovery);
   safeInit('initRightDrawer', initRightDrawer);
   safeInit('initStorePanel', initStorePanel);
+  safeInit('initTour', initTour);
 
   loadConfig().catch((err) => console.error('[Renderer] loadConfig failed:', err));
   checkSpotifyConnection(false).catch((err) => console.error('[Renderer] checkSpotifyConnection failed:', err));

@@ -4,7 +4,7 @@
  */
 
 import type { SuggestedAction, HealthIssue, LibraryHealthTrack, HealthSummary } from './shared';
-import { escapeHtml, icons, formatDuration, showContextMenu } from './shared';
+import { escapeHtml, icons, actionHints, formatDuration, showContextMenu } from './shared';
 
 // ========== Types ==========
 
@@ -20,6 +20,9 @@ export interface TrackRowHandlers {
   onCheckToggle?: (track: LibraryHealthTrack, e: MouseEvent) => void;
   onContextMenuMulti?: (tracks: LibraryHealthTrack[], e: MouseEvent) => void;
   getCheckedTracks?: () => LibraryHealthTrack[];
+  /** Drop the sample-rate, duration and date-added cells (narrow tables). The
+   *  table's <thead> must leave out the same columns. */
+  compact?: boolean;
 }
 
 export interface FilterOpts {
@@ -76,27 +79,27 @@ export const issueDescriptions: Record<string, string> = {
 };
 
 export const issueTooltips: Record<string, string> = {
-  FILE_NOT_FOUND: 'The file no longer exists on disk.\nFix: Delete the entry from the library.',
-  UNKNOWN_CONTAINER: 'The audio container format could not be identified.\nFix: Archive and replace with a known format.',
-  UNSUPPORTED_FORMAT: 'This format (e.g. FLAC, OGG) is not supported by the XDJ-RX3.\nFix: Convert to AIFF for lossless playback.',
-  INVALID_SAMPLE_RATE: 'The sample rate is not compatible with the XDJ-RX3 (requires 32/44.1/48 kHz).\nFix: Convert to AIFF at 44.1 kHz.',
-  LOW_SAMPLE_RATE: 'The sample rate is below 32 kHz, which may cause playback issues.\nFix: Convert to AIFF at 44.1 kHz.',
-  INVALID_BIT_DEPTH: 'The bit depth is not 16-bit or 24-bit as required by the XDJ-RX3.\nFix: Convert to AIFF at 24-bit.',
-  BIT_DEPTH_32: '32-bit float audio is not supported by the XDJ-RX3.\nFix: Convert to 24-bit AIFF.',
-  LOW_BITRATE: 'MP3 bitrate is below 320kbps, which may sound audibly worse.\nFix: Re-encode to 320kbps or replace with a higher-quality source.',
-  HIGH_BITRATE: 'MP3 bitrate exceeds 320kbps, which is non-standard.\nFix: Re-encode to 320kbps CBR.',
-  LOSSY_FORMAT: 'This is a lossy format (MP3/AAC). Lossless is preferred for DJing.\nFix: Archive and replace with a lossless source.',
-  MULTICHANNEL: 'Audio has more than 2 channels. The XDJ-RX3 expects stereo.\nFix: Convert to stereo AIFF.',
-  NON_PCM_CODEC: 'WAV/AIFF file uses a non-PCM codec (e.g. compressed).\nFix: Convert to standard PCM AIFF.',
-  WAV_METADATA_WARNING: 'WAV files can cause E-8305 errors on Pioneer gear due to metadata handling.\nFix: Convert to AIFF to avoid issues.',
-  LONG_DURATION: 'Track is unusually long (e.g. a DJ mix or recording error).\nNo automated fix — review manually.',
-  SHORT_DURATION: 'Track is very short and may be an incomplete file or snippet.\nFix: Archive if not needed.',
-  PARSE_ERROR: 'The file metadata could not be read — the file may be corrupt.\nFix: Archive and replace with a working copy.',
-  MISSING_ALBUM_ART: 'No album artwork is embedded in the file.\nUse the inspector to search and apply cover art.',
-  MISSING_TAGS: 'Core tags (title or artist) are missing.\nFix: Populate tags from Spotify/SoundCloud.',
-  SPARSE_TAGS: 'Some metadata fields (album, year, genre) are empty.\nFix: Populate tags from Spotify/SoundCloud.',
-  PATH_TOO_DEEP: 'The file path is deeply nested and may cause issues on some devices.\nNo automated fix — move to a shallower folder.',
-  BROKEN_AUDIO: 'The audio samples are stored in the wrong byte order — the file plays back as static. Caused by an earlier buggy WAV→AIFF tag write.\nFix: Re-import from the original WAV/FLAC source.'
+  FILE_NOT_FOUND: 'The file isn\'t where the library expects it. It may have been moved, renamed or deleted.\nFix: Remove it from the library, or put the file back.',
+  UNKNOWN_CONTAINER: 'We couldn\'t tell what kind of audio file this is, so players may not open it.\nFix: Archive it and get a fresh copy.',
+  UNSUPPORTED_FORMAT: 'Pioneer players can\'t open this file type (for example FLAC or OGG).\nFix: Convert to AIFF. It sounds identical.',
+  INVALID_SAMPLE_RATE: 'This file was saved at a sample rate Pioneer players don\'t accept (they need 32, 44.1 or 48 kHz).\nFix: Convert to AIFF at 44.1 kHz.',
+  LOW_SAMPLE_RATE: 'This file was saved at a low sample rate (under 32 kHz) and may not play.\nFix: Convert to AIFF at 44.1 kHz.',
+  INVALID_BIT_DEPTH: 'This file uses a bit depth Pioneer players don\'t accept (they need 16- or 24-bit).\nFix: Convert to 24-bit AIFF.',
+  BIT_DEPTH_32: '32-bit files won\'t play on Pioneer players.\nFix: Convert to 24-bit AIFF. You won\'t hear a difference.',
+  LOW_BITRATE: 'This MP3 is below 320 kbps, so it may sound dull or harsh on a big system.\nFix: Buy a better copy. Re-encoding keeps it playable but can\'t add back lost detail.',
+  HIGH_BITRATE: 'This MP3 uses a non-standard bitrate above 320 kbps, which some players reject.\nFix: Re-encode to 320 kbps.',
+  LOSSY_FORMAT: 'This is a compressed file (like MP3 or AAC), so some detail was thrown away when it was made.\nFix: Archive it and buy a lossless (WAV, AIFF or FLAC) copy.',
+  MULTICHANNEL: 'This file has more than two channels. DJ players expect stereo.\nFix: Convert to stereo AIFF.',
+  NON_PCM_CODEC: 'This WAV or AIFF is stored in an unusual compressed form that players may not read.\nFix: Convert to a standard AIFF.',
+  WAV_METADATA_WARNING: 'WAV files can trigger "E-8305" errors on Pioneer gear because of how they store track info.\nFix: Convert to AIFF. It sounds identical.',
+  LONG_DURATION: 'This track is unusually long, which can mean it\'s a whole DJ mix or a recording that didn\'t stop.\nNo automatic fix. Have a listen and decide.',
+  SHORT_DURATION: 'This track is very short, which can mean it\'s a snippet or an incomplete download.\nFix: Archive it if you don\'t need it.',
+  PARSE_ERROR: 'We couldn\'t read this file\'s details. The file may be damaged.\nFix: Archive it and get a fresh copy.',
+  MISSING_ALBUM_ART: 'There\'s no cover art saved in this file.\nFix: Use Missing Art to find and add a cover.',
+  MISSING_TAGS: 'The title or artist is missing, so the track is hard to find and can\'t be organized.\nFix: Fill in tags from Spotify and SoundCloud.',
+  SPARSE_TAGS: 'Some details (album, year or genre) are empty.\nFix: Fill in tags from Spotify and SoundCloud.',
+  PATH_TOO_DEEP: 'This file is buried in too many folders, which some players can\'t handle.\nNo automatic fix. Move it to a folder closer to the top.',
+  BROKEN_AUDIO: 'This file plays back as static. An older version of this app scrambled the audio while saving its tags.\nFix: Re-import it from the original WAV or FLAC.'
 };
 
 export const issueSeverities: Record<string, 'error' | 'warning'> = {
@@ -273,10 +276,10 @@ export function renderKpiDashboard(
           const description = issueDescriptions[code] || code;
           const tooltip = issueTooltips[code] || '';
           return `
-            <div class="issue-row ${severity}" data-issue-code="${code}" title="${escapeHtml(tooltip)}">
+            <div class="issue-row ${severity}" data-issue-code="${escapeHtml(code)}" title="${escapeHtml(tooltip)}"${onIssueCodeSelected ? ' role="button" tabindex="0"' : ''}>
               <div class="issue-info">
-                <span class="issue-code-badge">${code}</span>
-                <span class="issue-description">${description}</span>
+                <span class="issue-code-badge">${escapeHtml(code)}</span>
+                <span class="issue-description">${escapeHtml(description)}</span>
               </div>
               <span class="issue-count">${count}</span>
             </div>
@@ -285,10 +288,11 @@ export function renderKpiDashboard(
         .join('');
 
       if (onIssueCodeSelected) {
-        elements.issueList.querySelectorAll('.issue-row').forEach((row) => {
-          row.addEventListener('click', () => {
-            const code = (row as HTMLElement).dataset.issueCode || null;
-            onIssueCodeSelected(code);
+        elements.issueList.querySelectorAll<HTMLElement>('.issue-row').forEach((row) => {
+          const select = () => onIssueCodeSelected(row.dataset.issueCode || null);
+          row.addEventListener('click', select);
+          row.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); select(); }
           });
         });
       }
@@ -378,15 +382,15 @@ export function createTrackRow(
   const showCheckbox = !!handlers.isChecked;
   const showActions = !!handlers.onAction;
   tr.innerHTML = `
-    ${showCheckbox ? `<td class="col-checkbox"><input type="checkbox" class="row-checkbox" ${handlers.isChecked!(track.filePath) ? 'checked' : ''}></td>` : ''}
+    ${showCheckbox ? `<td class="col-checkbox"><input type="checkbox" class="row-checkbox" aria-label="Select ${escapeHtml(track.title || track.fileName)}" ${handlers.isChecked!(track.filePath) ? 'checked' : ''}></td>` : ''}
     <td class="col-status"><span class="dt-status-icon ${iconClass}">${icon}</span></td>
     <td class="col-artist" title="${escapeHtml(track.artist || 'Unknown Artist')}">${escapeHtml(track.artist || 'Unknown Artist')}</td>
     <td class="col-title" title="${escapeHtml(track.title || track.fileName)}">${escapeHtml(track.title || track.fileName)}</td>
     <td class="col-format"><span class="dt-format-badge">${escapeHtml(track.format.container || '?')}</span></td>
-    <td class="col-sample-rate">${formatSampleRateCell(track.format.sampleRate)}</td>
+    ${handlers.compact ? '' : `<td class="col-sample-rate">${formatSampleRateCell(track.format.sampleRate)}</td>`}
     <td class="col-bitrate">${formatBitRateCell(track.format)}</td>
-    <td class="col-duration">${track.format.duration ? formatDuration(track.format.duration) : '\u2014'}</td>
-    <td class="col-date-added">${formatDateAdded(track.dateAdded)}</td>
+    ${handlers.compact ? '' : `<td class="col-duration">${track.format.duration ? formatDuration(track.format.duration) : '\u2014'}</td>`}
+    ${handlers.compact ? '' : `<td class="col-date-added">${formatDateAdded(track.dateAdded)}</td>`}
     <td class="col-issues">${issueBadges}${artIndicator}</td>
     ${showActions ? '<td class="col-row-actions"></td>' : ''}
   `;
@@ -407,14 +411,16 @@ export function createTrackRow(
     if (suggestedAction === 'convert_aiff') {
       const btn = document.createElement('button');
       btn.className = 'btn-icon row-action-btn';
-      btn.setAttribute('data-tooltip', 'Convert to AIFF');
+      btn.setAttribute('data-tooltip', actionHints.convertAiff);
+      btn.setAttribute('aria-label', 'Convert to AIFF');
       btn.innerHTML = icons.wrench;
       btn.addEventListener('click', (e) => { e.stopPropagation(); handlers.onAction!('fix', track); });
       actionsCell.appendChild(btn);
     } else if (suggestedAction === 'reencode_mp3') {
       const btn = document.createElement('button');
       btn.className = 'btn-icon row-action-btn';
-      btn.setAttribute('data-tooltip', 'Re-encode to 320 kbps');
+      btn.setAttribute('data-tooltip', actionHints.reencodeMp3);
+      btn.setAttribute('aria-label', 'Re-encode to 320 kbps');
       btn.innerHTML = icons.wrench;
       btn.addEventListener('click', (e) => { e.stopPropagation(); handlers.onAction!('reencode', track); });
       actionsCell.appendChild(btn);
@@ -422,14 +428,16 @@ export function createTrackRow(
 
     const editBtn = document.createElement('button');
     editBtn.className = 'btn-icon row-action-btn';
-    editBtn.setAttribute('data-tooltip', 'Edit tags');
+    editBtn.setAttribute('data-tooltip', actionHints.editTags);
+    editBtn.setAttribute('aria-label', 'Edit tags');
     editBtn.innerHTML = icons.edit;
     editBtn.addEventListener('click', (e) => { e.stopPropagation(); handlers.onAction!('edit', track); });
     actionsCell.appendChild(editBtn);
 
     const archiveBtn = document.createElement('button');
     archiveBtn.className = 'btn-icon row-action-btn row-action-danger';
-    archiveBtn.setAttribute('data-tooltip', 'Archive track');
+    archiveBtn.setAttribute('data-tooltip', actionHints.archive);
+    archiveBtn.setAttribute('aria-label', 'Archive track');
     archiveBtn.innerHTML = icons.archive;
     archiveBtn.addEventListener('click', (e) => { e.stopPropagation(); handlers.onAction!('archive', track); });
     actionsCell.appendChild(archiveBtn);
@@ -453,11 +461,11 @@ export function createTrackRow(
       const isLossy = track.format.lossless === false;
       const isMp3 = container === 'MPEG' || track.filePath.toLowerCase().endsWith('.mp3');
       const items = [
-        ...(!isAiff && !isLossy ? [{ label: 'Convert to AIFF', icon: icons.wrench, action: () => handlers.onAction!('fix', track) }] : []),
-        ...(isMp3 ? [{ label: 'Re-encode to 320kbps', icon: icons.wrench, action: () => handlers.onAction!('reencode', track) }] : []),
-        { label: 'Edit tags', icon: icons.edit, action: () => handlers.onAction!('edit', track) },
-        { label: 'Archive track', icon: icons.archive, action: () => handlers.onAction!('archive', track) },
-        { label: 'Delete track', icon: icons.trash, action: () => handlers.onAction!('delete', track) }
+        ...(!isAiff && !isLossy ? [{ label: 'Convert to AIFF', icon: icons.wrench, hint: actionHints.convertAiff, action: () => handlers.onAction!('fix', track) }] : []),
+        ...(isMp3 ? [{ label: 'Re-encode to 320kbps', icon: icons.wrench, hint: actionHints.reencodeMp3, action: () => handlers.onAction!('reencode', track) }] : []),
+        { label: 'Edit tags', icon: icons.edit, hint: actionHints.editTags, action: () => handlers.onAction!('edit', track) },
+        { label: 'Archive track', icon: icons.archive, hint: actionHints.archive, action: () => handlers.onAction!('archive', track) },
+        { label: 'Move to Trash…', icon: icons.trash, danger: true, hint: actionHints.trash, action: () => handlers.onAction!('delete', track) }
       ];
       showContextMenu(e.clientX, e.clientY, items);
     });

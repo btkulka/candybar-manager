@@ -75,7 +75,20 @@ export function initRightDrawer() {
   collapseBtn.addEventListener('click', collapseDrawer);
   hideBtn.addEventListener('click', hideDrawer);
 
+  // Capture phase, so this sees the page before any other Escape handler
+  // closes its overlay: Escape belongs to whatever sits on top, and the drawer
+  // (which ends a running fix flow) only closes when nothing does.
   document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && currentState !== 'hidden') hideDrawer();
-  });
+    if (e.key !== 'Escape' || currentState === 'hidden' || e.defaultPrevented) return;
+    if (overlayOpen()) return;
+    hideDrawer();
+  }, true);
+}
+
+const OVERLAYS = '.modal-overlay, .drawer-overlay, .art-viewer-overlay, .aaf-overlay, .source-cart-drawer, .context-menu, .tour-card';
+
+/** A modal, editor, menu or slide-over is showing above the drawer. */
+function overlayOpen(): boolean {
+  return [...document.querySelectorAll<HTMLElement>(OVERLAYS)]
+    .some(el => !el.hidden && getComputedStyle(el).display !== 'none');
 }

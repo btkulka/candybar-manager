@@ -23,7 +23,8 @@ import os
 import sqlite3
 import sys
 
-CANDYBAR_DB = os.path.expanduser(
+# The app passes its own candybar.db when its user-data folder isn't the default.
+CANDYBAR_DB = os.environ.get("CANDYBAR_DB") or os.path.expanduser(
     "~/Library/Application Support/candybar-manager/candybar.db"
 )
 
@@ -37,6 +38,13 @@ def read_rekordbox():
     from pyrekordbox import Rekordbox6Database
 
     db = Rekordbox6Database()
+    try:
+        return rekordbox_rows(db)
+    finally:
+        db.close()
+
+
+def rekordbox_rows(db):
     out = []
     for c in db.get_content():
         # rb_local_deleted rows are tombstones; skip them.
@@ -136,7 +144,8 @@ def main():
             stats["disk_only"] += 1
 
     tracks = [t for t in by_path.values() if t["artist"] or t["title"]]
-    json.dump({"tracks": tracks, "ignored": ignored, "stats": stats}, sys.stdout)
+    # One write of a finished document: never half a JSON object on stdout.
+    sys.stdout.write(json.dumps({"tracks": tracks, "ignored": ignored, "stats": stats}))
 
 
 if __name__ == "__main__":

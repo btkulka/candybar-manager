@@ -163,4 +163,38 @@ describe('findDuplicates', () => {
     expect(dupes).toHaveLength(1);
     expect(dupes[0].similarity).toBe(1.0);
   });
+
+  it('does not call two same-titled tracks of clearly different length an exact duplicate', () => {
+    const tracks = [
+      makeTrack({ filePath: '/music/a.aif', artist: 'Artist', title: 'Intro', duration: 90 }),
+      makeTrack({ filePath: '/music/b.aif', artist: 'Artist', title: 'Intro', duration: 185 }),
+    ];
+    expect(findDuplicates(tracks, 0.85)).toHaveLength(0);
+  });
+
+  it('matches artist credit variants ("The X" vs "X", feat. credits)', () => {
+    const tracks = [
+      makeTrack({ filePath: '/music/a.aif', artist: 'The Martinez Brothers', title: 'Debbie Downer' }),
+      makeTrack({ filePath: '/music/b.aif', artist: 'Martinez Brothers', title: 'Debbie Downer' }),
+      makeTrack({ filePath: '/music/c.aif', artist: 'Four Tet', title: 'Baby' }),
+      makeTrack({ filePath: '/music/d.aif', artist: 'Four Tet feat. Ellie Goulding', title: 'Baby' }),
+    ];
+    const pairs = findDuplicates(tracks, 0.85).map(d => [d.track1.filePath, d.track2.filePath].sort().join(' + '));
+    expect(pairs).toContain('/music/a.aif + /music/b.aif');
+    expect(pairs).toContain('/music/c.aif + /music/d.aif');
+  });
+
+  it('finds the same song across distant artist spellings via the title-sorted pass', () => {
+    // 60 unrelated tracks by "M..." artists sit between the two spellings when
+    // sorted by artist, pushing them outside a 50-wide window.
+    const filler = Array.from({ length: 60 }, (_, i) =>
+      makeTrack({ filePath: `/music/f${i}.aif`, artist: `M Artist ${String(i).padStart(2, '0')}`, title: `Filler ${i}` }));
+    const tracks = [
+      makeTrack({ filePath: '/music/x.aif', artist: 'Adam Beyer', title: 'Your Mind' }),
+      ...filler,
+      makeTrack({ filePath: '/music/y.aif', artist: 'Zadam Beyer', title: 'Your Mind' }),
+    ];
+    const pairs = findDuplicates(tracks, 0.85).map(d => [d.track1.filePath, d.track2.filePath].sort().join(' + '));
+    expect(pairs).toContain('/music/x.aif + /music/y.aif');
+  });
 });

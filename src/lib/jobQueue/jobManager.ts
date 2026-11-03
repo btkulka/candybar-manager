@@ -132,10 +132,14 @@ export class JobManager extends EventEmitter {
     this.running.add(record.id);
     this.emit('job-started', this.toJobInfo(record));
 
+    // Once the record settles (done, failed, cancelled, timed out) a job that is
+    // still unwinding must not keep emitting progress or logs for it.
+    const live = () => record.status === 'running';
     const ctx: JobContext = {
       params: record.params,
       signal: record.abortController.signal,
       progress: (update) => {
+        if (!live()) return;
         const progress: JobProgress = {
           jobId: record.id,
           jobType: record.type,
@@ -146,6 +150,7 @@ export class JobManager extends EventEmitter {
       },
       getSharedResult: <K extends SharedResultKey>(key: K) => this.sharedStore.get(key, record.contextKey),
       log: (text, stream = 'stdout') => {
+        if (!live()) return;
         log.debug(`[${record.type}] ${text}`);
         this.emit('job-log', { jobId: record.id, text, stream });
       },
@@ -154,15 +159,34 @@ export class JobManager extends EventEmitter {
     // A definition can opt out of the safety-net timeout with timeoutMs: 0.
     const effectiveTimeout = def.timeoutMs === undefined ? DEFAULT_JOB_TIMEOUT_MS : def.timeoutMs;
     let timeout: ReturnType<typeof setTimeout> | null = null;
+    let timedOut = false;
     if (effectiveTimeout && effectiveTimeout > 0) {
       timeout = setTimeout(() => {
         log.warn(`Job ${record.type} (${record.id}) exceeded ${effectiveTimeout}ms — aborting`);
+        timedOut = true;
         record.abortController.abort();
       }, effectiveTimeout);
     }
 
+    // Settle the record as soon as the signal fires, even if the job's own code
+    // is stuck (a stalled read, a loop that never checks the signal). Otherwise a
+    // cancel or timeout leaves the job "running" and the single slot blocked.
+    const signal = record.abortController.signal;
+    let onAbort: (() => void) | null = null;
+    const abortPromise = new Promise<never>((_, reject) => {
+      onAbort = () => reject(new Error(timedOut
+        ? `Timed out after ${Math.round(effectiveTimeout! / 60000)} min`
+        : 'Job cancelled'));
+      if (signal.aborted) onAbort();
+      else signal.addEventListener('abort', onAbort, { once: true });
+    });
+    const runPromise = Promise.resolve().then(() => def.run(ctx));
+    // If the abort wins the race the job may still finish or throw later; don't
+    // let that surface as an unhandled rejection.
+    runPromise.catch(() => {});
+
     try {
-      const result = await def.run(ctx);
+      const result = await Promise.race([runPromise, abortPromise]);
       if (timeout) clearTimeout(timeout);
 
       if (def.producesSharedResult) {
@@ -174,7 +198,9 @@ export class JobManager extends EventEmitter {
       }
 
       record.status = 'completed';
-      record.result = result;
+      // Results go to the enqueue() promise; holding them on the record kept up
+      // to 200 large results (full library checks) alive for nothing.
+      record.result = null;
       record.completedAt = Date.now();
       record.resolve(result);
       this.emit('job-completed', this.toJobInfo(record));
@@ -182,12 +208,13 @@ export class JobManager extends EventEmitter {
       if (timeout) clearTimeout(timeout);
       const message = err instanceof Error ? err.message : String(err);
       log.error(`Job ${record.type} (${record.id}) failed:`, message);
-      record.status = record.abortController.signal.aborted ? 'cancelled' : 'failed';
+      record.status = signal.aborted && !timedOut ? 'cancelled' : 'failed';
       record.error = message;
       record.completedAt = Date.now();
       record.reject(err instanceof Error ? err : new Error(message));
       this.emit(record.status === 'cancelled' ? 'job-cancelled' : 'job-failed', this.toJobInfo(record));
     } finally {
+      if (onAbort) signal.removeEventListener('abort', onAbort);
       this.running.delete(record.id);
       this.pruneCompletedJobs();
       this.tick();

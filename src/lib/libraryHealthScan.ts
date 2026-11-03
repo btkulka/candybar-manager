@@ -1,5 +1,6 @@
 import fs from 'fs';
 import path from 'path';
+import crypto from 'crypto';
 import { checkTrackHealth, TrackHealth, HealthSummary, summarizeHealth } from './trackHealthCheck';
 import { checkAiffIntegrity } from './audioIntegrityCheck';
 import type { LibraryHealthTrack } from '../types';
@@ -14,6 +15,8 @@ import {
   upsertTracksBatch,
   pruneTracksNotIn,
   getTracksForRoot,
+  getDuplicatesForRoot,
+  getScanRun,
   saveDuplicates,
   saveScanRun,
   type TrackFingerprint
@@ -33,6 +36,28 @@ export const getArchivePath = getDefaultArchivePath;
  * @param libraryRoot - The library root path (used to compute relative path)
  * @param archivePath - Optional custom archive path (defaults to .archive sibling of library)
  */
+/** True when two files have the same size and SHA-256 (streamed, not read whole). */
+async function sameFileContent(a: string, b: string): Promise<boolean> {
+  const [sa, sb] = await Promise.all([fs.promises.stat(a), fs.promises.stat(b)]);
+  if (sa.size !== sb.size) return false;
+  const hash = (p: string) => new Promise<string>((resolve, reject) => {
+    const h = crypto.createHash('sha256');
+    fs.createReadStream(p).on('data', (c) => h.update(c)).on('error', reject).on('end', () => resolve(h.digest('hex')));
+  });
+  const [ha, hb] = await Promise.all([hash(a), hash(b)]);
+  return ha === hb;
+}
+
+/** `X (2).aif`, `X (3).aif`, ... — the first name not already taken. */
+async function uniqueSiblingPath(p: string): Promise<string> {
+  const ext = path.extname(p);
+  const base = p.slice(0, p.length - ext.length);
+  for (let n = 2; ; n++) {
+    const candidate = `${base} (${n})${ext}`;
+    if (!(await fs.promises.access(candidate).then(() => true, () => false))) return candidate;
+  }
+}
+
 export async function archiveTrackFile(
   filePath: string,
   libraryRoot: string,
@@ -58,22 +83,29 @@ export async function archiveTrackFile(
     const archiveDir = path.dirname(archiveDest);
     await fs.promises.mkdir(archiveDir, { recursive: true });
 
-    // Move the file (handles cross-filesystem moves). If the archive
-    // destination already has a copy (prior archive attempt), the source is
-    // redundant — delete it so the library is cleaned up either way.
+    // Move the file (handles cross-filesystem moves; a failed copy never
+    // leaves a partial at archiveDest). If the archive already holds a file of
+    // that name, the source is only redundant when the two are byte-identical;
+    // a different file gets a numbered name instead of being thrown away.
+    let finalDest = archiveDest;
     try {
       await safeMove(filePath, archiveDest, 'archive');
     } catch (moveErr) {
-      const destExists = await fs.promises.access(archiveDest).then(() => true, () => false);
-      if (!destExists) throw moveErr;
-      await safeDelete(filePath, { context: 'archive', detail: { reason: 'archive-dest-already-existed', archiveDest } });
-      log.info(`Archive destination already existed; removed source: ${filePath}`);
+      if ((moveErr as NodeJS.ErrnoException).code !== 'EEXIST') throw moveErr;
+      if (await sameFileContent(filePath, archiveDest)) {
+        await safeDelete(filePath, { context: 'archive', detail: { reason: 'identical-copy-already-archived', archiveDest } });
+        log.info(`Identical copy already archived; moved source to Trash: ${filePath}`);
+      } else {
+        finalDest = await uniqueSiblingPath(archiveDest);
+        await safeMove(filePath, finalDest, 'archive');
+        log.info(`Archive name taken by a different file; archived as ${path.basename(finalDest)}`);
+      }
     }
 
     return {
       success: true,
       originalPath: filePath,
-      archivePath: archiveDest
+      archivePath: finalDest
     };
   } catch (error) {
     log.error('Failed to archive track:', filePath, error);
@@ -107,13 +139,16 @@ type ProgressCallback = (progress: HealthScanProgress) => void;
 export async function scanLibraryHealth({
   libraryRoot,
   onProgress,
-  preScannedFiles
+  preScannedFiles,
+  signal
 }: {
   libraryRoot: string;
   onProgress?: ProgressCallback;
   preScannedFiles?: string[];
+  signal?: AbortSignal;
 }): Promise<LibraryHealthResult> {
   log.info('Starting library health scan:', libraryRoot);
+  const checkAbort = () => { if (signal?.aborted) throw new Error('Cancelled'); };
 
   if (!fs.existsSync(libraryRoot)) {
     throw new Error(`Library directory not found: ${libraryRoot}`);
@@ -123,12 +158,15 @@ export async function scanLibraryHealth({
     throw new Error(`Path is not a directory: ${libraryRoot}`);
   }
 
+  // An empty pre-scanned list proves nothing (a walker that dropped every
+  // dirent looks identical to an empty library), so walk again ourselves.
   let audioFiles: string[];
-  if (preScannedFiles) {
+  const failedDirs: string[] = [];
+  if (preScannedFiles && preScannedFiles.length > 0) {
     audioFiles = preScannedFiles;
   } else {
     onProgress?.({ phase: 'discovering', current: 0, total: 0 });
-    audioFiles = await walkAudioDir(libraryRoot);
+    audioFiles = await walkAudioDir(libraryRoot, { signal, failedDirs });
   }
 
   const total = audioFiles.length;
@@ -138,17 +176,26 @@ export async function scanLibraryHealth({
   if (total === 0) {
     // An empty walk almost always means the library root is unavailable
     // (unmounted drive, permission error) rather than "every track was deleted".
-    // Return WITHOUT pruning — pruning here would wipe all persisted metadata.
-    const emptySummary: HealthSummary = { total: 0, healthy: 0, warnings: 0, errors: 0, byIssueCode: {} };
-    saveScanRun(libraryRoot, emptySummary, Date.now());
-    saveDuplicates(libraryRoot, []);
+    // Write nothing — no prune, no zeroed summary, no cleared duplicates — and
+    // hand back the last good snapshot so the UI keeps showing real data.
+    log.warn(`Library walk found no audio files under ${libraryRoot}; keeping the stored snapshot untouched`);
     onProgress?.({ phase: 'complete', current: 0, total: 0 });
-    return { summary: emptySummary, tracks: [], duplicates: [], scannedAt: Date.now(), libraryRoot };
+    const lastRun = getScanRun(libraryRoot);
+    const tracks = getTracksForRoot(libraryRoot);
+    return {
+      summary: lastRun?.summary ?? summarizeHealth(tracks),
+      tracks,
+      duplicates: getDuplicatesForRoot(libraryRoot),
+      scannedAt: lastRun?.scannedAt ?? Date.now(),
+      libraryRoot
+    };
   }
 
   // Prune tracks that no longer exist on disk (only once we know the walk found
-  // files, so a transient empty result can't wipe the whole index).
-  const pruned = pruneTracksNotIn(libraryRoot, presentPaths);
+  // files, so a transient empty result can't wipe the whole index). Rows under
+  // folders the walk couldn't read are kept.
+  if (failedDirs.length > 0) log.warn(`Not pruning under ${failedDirs.length} unreadable folder(s)`);
+  const pruned = pruneTracksNotIn(libraryRoot, presentPaths, failedDirs);
   if (pruned > 0) log.info(`Pruned ${pruned} missing tracks from DB`);
 
   // Incremental scan: stat each file, compare mtime, re-parse only changed/new
@@ -156,6 +203,7 @@ export async function scanLibraryHealth({
   let batch: { track: LibraryHealthTrack; fingerprint: TrackFingerprint }[] = [];
   let scanned = 0;
   let reused = 0;
+  const reusedFingerprints = new Map<string, TrackFingerprint>();
 
   const flushBatch = () => {
     if (batch.length === 0) return;
@@ -164,10 +212,11 @@ export async function scanLibraryHealth({
   };
 
   for (let i = 0; i < audioFiles.length; i++) {
+    checkAbort();
     const filePath = audioFiles[i];
     let fingerprint: TrackFingerprint;
     try {
-      const s = fs.statSync(filePath);
+      const s = await fs.promises.stat(filePath);
       fingerprint = { mtimeMs: s.mtimeMs, sizeBytes: s.size };
     } catch {
       fingerprint = { mtimeMs: null, sizeBytes: null };
@@ -181,6 +230,7 @@ export async function scanLibraryHealth({
 
     if (unchanged) {
       reused++;
+      reusedFingerprints.set(filePath, prior);
       onProgress?.({ phase: 'scanning', current: i + 1, total });
     } else {
       const health = await checkTrackHealth(filePath);
@@ -194,53 +244,51 @@ export async function scanLibraryHealth({
 
   log.info(`Scan: ${scanned} parsed, ${reused} unchanged (skipped parse)`);
 
-  // Audio integrity sweep: the byte-swap corruption detector is cheap and
-  // decoupled from the fingerprint cache, so we run it on every AIFF/AIFC
-  // file every scan. A file can pass a full-metadata parse and still be
-  // byte-swapped — and the cache skips the metadata parse when mtime is
-  // unchanged, so we can't piggyback on checkTrackHealth for this pass.
+  // Audio integrity sweep. Every parse above already ran the byte-swap check,
+  // so only unchanged AIFF rows that were never checked at their current mtime
+  // (rows from before the check existed, or imported) need reading here.
   {
-    const integrityUpdates: { track: LibraryHealthTrack; fingerprint: TrackFingerprint }[] = [];
-    const currentTracks = getTracksForRoot(libraryRoot);
-    const trackByPath = new Map(currentTracks.map(t => [t.filePath, t]));
-    for (const filePath of audioFiles) {
+    const toCheck = audioFiles.filter((filePath) => {
       const ext = path.extname(filePath).toLowerCase();
-      if (ext !== '.aiff' && ext !== '.aif' && ext !== '.aifc') continue;
-      const track = trackByPath.get(filePath);
-      if (!track) continue;
-      const integrity = await checkAiffIntegrity(filePath);
-      const hasBroken = track.issues.some(i => i.code === 'BROKEN_AUDIO');
-      if (integrity.status === 'byte_swapped' && !hasBroken) {
-        track.issues.push({
-          code: 'BROKEN_AUDIO',
-          severity: 'error',
-          message: 'Audio bytes are scrambled (byte-swap)',
-          detail:
-            `Adjacent-sample coherence in the header-claimed byte order is ` +
-            `${integrity.coherence.expected.toFixed(2)} vs ${integrity.coherence.swapped.toFixed(2)} ` +
-            `if byte-swapped. This file plays back as static. Re-import from the ` +
-            `original source (WAV/FLAC) to recover.`,
-          suggestedAction: 'none'
-        });
-        track.isHealthy = false;
-        integrityUpdates.push({ track, fingerprint: { mtimeMs: null, sizeBytes: null } });
-      } else if (integrity.status === 'ok' && hasBroken) {
-        // The track was flagged before but is now clean (user re-imported a
-        // fresh source). Drop the stale issue.
-        track.issues = track.issues.filter(i => i.code !== 'BROKEN_AUDIO');
-        track.isHealthy = !track.issues.some(i => i.severity === 'error');
-        integrityUpdates.push({ track, fingerprint: { mtimeMs: null, sizeBytes: null } });
+      if (ext !== '.aiff' && ext !== '.aif' && ext !== '.aifc') return false;
+      const fp = reusedFingerprints.get(filePath);
+      return !!fp && fp.integrityMtimeMs !== fp.mtimeMs;
+    });
+    if (toCheck.length > 0) {
+      const trackByPath = new Map(getTracksForRoot(libraryRoot).map(t => [t.filePath, t]));
+      const integrityUpdates: { track: LibraryHealthTrack; fingerprint: TrackFingerprint }[] = [];
+      for (const filePath of toCheck) {
+        checkAbort();
+        const track = trackByPath.get(filePath);
+        if (!track) continue;
+        const integrity = await checkAiffIntegrity(filePath);
+        const hasBroken = track.issues.some(i => i.code === 'BROKEN_AUDIO');
+        if (integrity.status === 'byte_swapped' && !hasBroken) {
+          track.issues.push({
+            code: 'BROKEN_AUDIO',
+            severity: 'error',
+            message: 'Audio bytes are scrambled (byte-swap)',
+            detail:
+              `Adjacent-sample coherence in the header-claimed byte order is ` +
+              `${integrity.coherence.expected.toFixed(2)} vs ${integrity.coherence.swapped.toFixed(2)} ` +
+              `if byte-swapped. This file plays back as static. Re-import from the ` +
+              `original source (WAV/FLAC) to recover.`,
+            suggestedAction: 'none'
+          });
+          track.isHealthy = false;
+        } else if (integrity.status === 'ok' && hasBroken) {
+          // The track was flagged before but is now clean (user re-imported a
+          // fresh source). Drop the stale issue.
+          track.issues = track.issues.filter(i => i.code !== 'BROKEN_AUDIO');
+          track.isHealthy = !track.issues.some(i => i.severity === 'error');
+        }
+        // Upsert either way so the row records it was checked at this mtime.
+        integrityUpdates.push({ track, fingerprint: reusedFingerprints.get(filePath)! });
       }
-    }
-    if (integrityUpdates.length > 0) {
-      // Preserve existing fingerprints rather than clobbering with nulls.
-      const freshFingerprints = getExistingFingerprints(libraryRoot);
-      const scoped = integrityUpdates.map(u => ({
-        track: u.track,
-        fingerprint: freshFingerprints.get(u.track.filePath) ?? u.fingerprint
-      }));
-      upsertTracksBatch(libraryRoot, scoped);
-      log.info(`Integrity sweep updated ${integrityUpdates.length} AIFF tracks`);
+      if (integrityUpdates.length > 0) {
+        upsertTracksBatch(libraryRoot, integrityUpdates);
+        log.info(`Integrity sweep checked ${integrityUpdates.length} AIFF tracks`);
+      }
     }
   }
 

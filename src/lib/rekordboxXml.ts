@@ -17,14 +17,39 @@ export type RekordboxTrack = {
   key: string;
   /** Decoded absolute path from the original Location attribute (no URI encoding). */
   origPath: string;
+  /** Track length in seconds (TotalTime), when the XML carries it. */
+  totalTime?: number;
 };
+
+/** Decode the XML entities an attribute value can carry (&amp; &apos; &#39; ...). */
+export function decodeXmlEntities(value: string): string {
+  return value.replace(/&(#x[0-9a-f]+|#\d+|amp|lt|gt|quot|apos);/gi, (m, ent: string) => {
+    const e = ent.toLowerCase();
+    if (e === 'amp') return '&';
+    if (e === 'lt') return '<';
+    if (e === 'gt') return '>';
+    if (e === 'quot') return '"';
+    if (e === 'apos') return "'";
+    const code = e.startsWith('#x') ? parseInt(e.slice(2), 16) : parseInt(e.slice(1), 10);
+    return Number.isFinite(code) ? String.fromCodePoint(code) : m;
+  });
+}
+
+/** Escape a string for use inside a double-quoted XML attribute. */
+function escapeXmlAttr(value: string): string {
+  return value.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
 
 function decodeLocation(loc: string): string {
   try {
     const u = new URL(loc);
     return decodeURIComponent(u.pathname);
   } catch {
-    return decodeURIComponent((loc || '').replace(/^file:\/\/localhost/, ''));
+    try {
+      return decodeURIComponent((loc || '').replace(/^file:\/\/localhost/, ''));
+    } catch {
+      return (loc || '').replace(/^file:\/\/localhost/, '');
+    }
   }
 }
 
@@ -34,6 +59,11 @@ export function pathToLocation(absPath: string): string {
   // fragment/query and would silently truncate the Location. Encode them explicitly.
   return 'file://localhost' + encodeURI(absPath).replace(/#/g, '%23').replace(/\?/g, '%3F');
 }
+
+// One TRACK start tag. Quoted values may legally contain '>', so match quoted
+// runs as units instead of stopping at the first '>'.
+const TRACK_TAG_RE = /<TRACK\b((?:[^>"]|"[^"]*")*)>/g;
+const ATTR_RE = /([\w:-]+)="([^"]*)"/g;
 
 export type LocationUpdate = { trackId: string; newPath: string };
 export type RewriteResult = {
@@ -65,22 +95,39 @@ export async function rewriteLocations(
     await fs.writeFile(backupPath, xmlText);
   }
 
-  const updated: string[] = [];
-  const notFound: string[] = [];
-  for (const u of updates) {
-    const newLoc = pathToLocation(u.newPath);
-    const escId = u.trackId.replace(/[\\^$.*+?()[\]{}|]/g, '\\$&');
-    const rx = new RegExp(
-      `(<TRACK\\b[^>]*\\bTrackID="${escId}"[\\s\\S]*?\\bLocation=")[^"]*(")`,
-    );
-    const before = xmlText;
-    xmlText = xmlText.replace(rx, `$1${newLoc}$2`);
-    if (xmlText === before) notFound.push(u.trackId);
-    else updated.push(u.trackId);
-  }
+  // One pass over the TRACK start tags: look each TrackID up in the update map
+  // and swap its Location within that tag only (never across elements). The
+  // new value is XML-escaped and inserted via a function, so '&' or '$1' in a
+  // path can't corrupt the document.
+  const wanted = new Map<string, string>();
+  for (const u of updates) wanted.set(u.trackId, escapeXmlAttr(pathToLocation(u.newPath)));
+  const done = new Set<string>();
+  xmlText = xmlText.replace(TRACK_TAG_RE, (tag) => {
+    const idMatch = tag.match(/\bTrackID="([^"]*)"/);
+    if (!idMatch) return tag;
+    const trackId = decodeXmlEntities(idMatch[1]);
+    const newLoc = wanted.get(trackId);
+    if (newLoc === undefined || done.has(trackId)) return tag;
+    if (!/\bLocation="[^"]*"/.test(tag)) return tag;
+    done.add(trackId);
+    return tag.replace(/\bLocation="[^"]*"/, () => `Location="${newLoc}"`);
+  });
+  const updated = updates.map(u => u.trackId).filter(id => done.has(id));
+  const notFound = updates.map(u => u.trackId).filter(id => !done.has(id));
 
   if (updated.length > 0) {
-    await fs.writeFile(xmlPath, xmlText);
+    try {
+      // Temp + rename so a crash mid-write can't leave a truncated collection.
+      const tmp = `${xmlPath}.tmp-${process.pid}-${Date.now()}`;
+      await fs.writeFile(tmp, xmlText);
+      await fs.rename(tmp, xmlPath).catch(async (err) => { await fs.unlink(tmp).catch(() => {}); throw err; });
+    } catch (err) {
+      recordWrite({
+        op: 'xml-rewrite', src: xmlPath, outcome: 'error', error: err instanceof Error ? err.message : String(err),
+        detail: { backupPath, updated: updated.length, notFound: notFound.length },
+      });
+      throw err;
+    }
     recordWrite({
       op: 'xml-rewrite', src: xmlPath, outcome: 'ok',
       detail: { backupPath, updated: updated.length, notFound: notFound.length, trackIds: updated },
@@ -100,15 +147,16 @@ export async function parseRekordboxXml(xmlPath: string): Promise<RekordboxTrack
     );
   }
   const xml = await fs.readFile(xmlPath, 'utf8');
-  const trackRe = /<TRACK\s+([^>]*?)(?:\/>|>)/g;
-  const attrRe = /(\w+)="([^"]*)"/g;
+  const trackRe = new RegExp(TRACK_TAG_RE.source, 'g');
   const tracks: RekordboxTrack[] = [];
   let m: RegExpExecArray | null;
   while ((m = trackRe.exec(xml))) {
     const attrs: Record<string, string> = {};
     let a: RegExpExecArray | null;
     const block = m[1];
-    while ((a = attrRe.exec(block))) attrs[a[1]] = a[2];
+    const attrRe = new RegExp(ATTR_RE.source, 'g');
+    // Attribute values are XML-escaped ("Above &amp; Beyond"); decode them.
+    while ((a = attrRe.exec(block))) attrs[a[1]] = decodeXmlEntities(a[2]);
     if (!attrs.TrackID) continue;
     tracks.push({
       trackId: attrs.TrackID,
@@ -121,6 +169,7 @@ export async function parseRekordboxXml(xmlPath: string): Promise<RekordboxTrack
       bpm: attrs.AverageBpm || '',
       key: attrs.Tonality || '',
       origPath: decodeLocation(attrs.Location || ''),
+      totalTime: Number(attrs.TotalTime) > 0 ? Number(attrs.TotalTime) : undefined,
     });
   }
   return tracks;

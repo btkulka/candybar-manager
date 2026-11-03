@@ -26,7 +26,7 @@
         </div>
         <nav class="topbar-nav">
           <div class="nav-section-label" id="nav-section-rekordbox">Rekordbox</div>
-          <button class="nav-link active" data-page="library" data-tooltip="Library">
+          <button class="nav-link active" data-page="library" data-tooltip-pos="right" data-tooltip="Your whole collection: what's healthy, what needs fixing, and any connected drives">
             <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <path d="M9 18V5l12-2v13"/>
               <circle cx="6" cy="18" r="3"/>
@@ -34,13 +34,13 @@
             </svg>
             <span>Library</span>
           </button>
-          <button class="nav-link" data-page="organize" data-tooltip="Organize by artist">
+          <button class="nav-link" data-page="organize" data-tooltip-pos="right" data-tooltip="Sort new downloads into your library, one folder per artist">
             <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
             </svg>
             <span>Organize</span>
           </button>
-          <button class="nav-link" data-page="source" data-tooltip="Library check + lossless sourcing">
+          <button class="nav-link" data-page="source" data-tooltip-pos="right" data-tooltip="Paste a playlist to see which tracks you're missing and where to buy them in full quality">
             <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <circle cx="11" cy="11" r="8"/>
               <line x1="21" y1="21" x2="16.65" y2="16.65"/>
@@ -49,7 +49,15 @@
             </svg>
             <span>Sourcing</span>
           </button>
-          <button class="nav-link" data-page="usb-health" data-tooltip="USB drive health check">
+          <button class="nav-link" id="nav-upgrade" data-page="upgrade" data-tooltip-pos="right" data-tooltip="Pick a Rekordbox playlist and find full-quality copies of its MP3, AAC and streaming tracks">
+            <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="10"/>
+              <polyline points="16 12 12 8 8 12"/>
+              <line x1="12" y1="16" x2="12" y2="8"/>
+            </svg>
+            <span>Upgrades</span>
+          </button>
+          <button class="nav-link" data-page="usb-health" data-tooltip-pos="right" data-tooltip="Check a USB stick will play on Pioneer gear before a gig">
             <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <rect x="6" y="10" width="12" height="10" rx="1"/>
               <path d="M9 10V7h6v3"/>
@@ -58,7 +66,7 @@
             </svg>
             <span>USB</span>
           </button>
-          <button class="nav-link" id="nav-restore" data-page="restore" data-tooltip="Restore library from Rekordbox XML">
+          <button class="nav-link" id="nav-restore" data-page="restore" data-tooltip-pos="right" data-tooltip="Rebuild a lost library from a Rekordbox backup, your USB sticks and past purchases">
             <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <path d="M3 12a9 9 0 1 0 3-6.7"/>
               <path d="M3 3v6h6"/>
@@ -67,7 +75,7 @@
           </button>
 
           <div class="nav-section-label">Ableton</div>
-          <button class="nav-link" id="nav-splice-recovery" data-page="splice-recovery" data-tooltip="Recover missing Splice samples in an Ableton project">
+          <button class="nav-link" id="nav-splice-recovery" data-page="splice-recovery" data-tooltip-pos="right" data-tooltip="Re-download Splice samples an Ableton project can't find">
             <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <path d="M3 12c2-4 6-4 8 0s6 4 8 0"/>
               <circle cx="3" cy="12" r="1.5" fill="currentColor"/>
@@ -91,11 +99,11 @@
             </div>
           </div>
           <div class="sidebar-player-controls">
-            <button class="sidebar-player-btn" id="sidebar-player-play" data-tooltip="Play / Pause" disabled>
+            <button class="sidebar-player-btn" id="sidebar-player-play" aria-label="Play or pause" data-tooltip="Play / pause" data-tooltip-disabled="Play any track in the app and it shows up here" disabled>
               <svg class="icon-play" viewBox="0 0 24 24" fill="currentColor" stroke="none"><polygon points="6 3 20 12 6 21 6 3"/></svg>
               <svg class="icon-pause" viewBox="0 0 24 24" fill="currentColor" stroke="none"><rect x="5" y="4" width="4" height="16" rx="1"/><rect x="15" y="4" width="4" height="16" rx="1"/></svg>
             </button>
-            <div class="sidebar-player-progress-wrap" id="sidebar-player-progress-wrap">
+            <div class="sidebar-player-progress-wrap" id="sidebar-player-progress-wrap" data-tooltip="Click to jump to that point in the track" data-tooltip-pos="bottom">
               <div class="sidebar-player-progress" id="sidebar-player-progress"></div>
             </div>
             <span class="sidebar-player-time">
@@ -104,18 +112,18 @@
               <span id="sidebar-player-duration">0:00</span>
             </span>
             <div class="sidebar-player-volume">
-              <button class="sidebar-player-btn sidebar-player-mute-btn" id="sidebar-player-mute" data-tooltip="Mute">
+              <button class="sidebar-player-btn sidebar-player-mute-btn" id="sidebar-player-mute" aria-label="Mute or unmute" data-tooltip="Mute / unmute">
                 <svg class="icon-volume" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" fill="currentColor" stroke="none"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/></svg>
                 <svg class="icon-volume-muted" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" fill="currentColor" stroke="none"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/></svg>
               </button>
-              <input type="range" class="sidebar-player-volume-slider" id="sidebar-player-volume" min="0" max="1" step="0.01" value="1" aria-label="Volume" />
+              <input type="range" class="sidebar-player-volume-slider" id="sidebar-player-volume" min="0" max="1" step="0.01" value="1" aria-label="Volume" data-tooltip="Volume" data-tooltip-pos="bottom" />
             </div>
           </div>
         </div>
 
         <!-- Right: status + activity + services + utilities -->
         <div class="topbar-right">
-          <div class="activity-tray" id="activity-tray">
+          <div class="activity-tray" id="activity-tray" data-tooltip="Work in progress: scans, conversions and downloads show up here" data-tooltip-pos="bottom">
             <div class="activity-tray-header">
               <svg class="activity-tray-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                 <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
@@ -123,45 +131,52 @@
             </div>
             <div class="activity-tray-jobs" id="activity-jobs"></div>
           </div>
-          <div class="service-status spotify-status checking" id="spotify-status" title="Click to refresh Spotify connection">
-            <div class="service-loading-dot"></div>
+          <button type="button" class="service-status spotify-status checking" id="spotify-status" aria-label="Spotify connection" data-tooltip-pos="bottom" title="Spotify connection. Green means it's working. Click to check again.">
+            <span class="service-loading-dot"></span>
             <svg class="service-icon spotify-icon" viewBox="0 0 24 24" fill="currentColor">
               <path d="M12 0C5.4 0 0 5.4 0 12s5.4 12 12 12 12-5.4 12-12S18.66 0 12 0zm5.521 17.34c-.24.359-.66.48-1.021.24-2.82-1.74-6.36-2.101-10.561-1.141-.418.122-.779-.179-.899-.539-.12-.421.18-.78.54-.9 4.56-1.021 8.52-.6 11.64 1.32.42.18.479.659.301 1.02zm1.44-3.3c-.301.42-.841.6-1.262.3-3.239-1.98-8.159-2.58-11.939-1.38-.479.12-1.02-.12-1.14-.6-.12-.48.12-1.021.6-1.141C9.6 9.9 15 10.561 18.72 12.84c.361.181.54.78.241 1.2zm.12-3.36C15.24 8.4 8.82 8.16 5.16 9.301c-.6.179-1.2-.181-1.38-.721-.18-.601.18-1.2.72-1.381 4.26-1.26 11.28-1.02 15.721 1.621.539.3.719 1.02.419 1.56-.299.421-1.02.599-1.559.3z"/>
             </svg>
             <span class="spotify-status-text"></span>
-          </div>
-          <div class="service-status soundcloud-status checking" id="soundcloud-status" title="Click to refresh SoundCloud connection">
-            <div class="service-loading-dot"></div>
+          </button>
+          <button type="button" class="service-status soundcloud-status checking" id="soundcloud-status" aria-label="SoundCloud connection" data-tooltip-pos="bottom" title="SoundCloud connection. Green means it's working. Click to check again.">
+            <span class="service-loading-dot"></span>
             <svg class="service-icon soundcloud-icon" viewBox="0 0 291.319 291.319" fill="currentColor">
               <path d="M72.83,218.485h18.207V103.832c-6.828,1.93-12.982,5.435-18.207,10.041V218.485z M36.415,140.921v77.436l1.174,0.127 h17.033v-77.682H37.589C37.191,140.812,36.814,140.857,36.415,140.921z M0,179.63c0,14.102,7.338,26.328,18.207,33.147V146.52 C7.338,153.329,0,165.556,0,179.63z M109.245,218.485h18.207v-109.6c-5.444-3.396-11.537-5.972-18.207-7.467V218.485z M253.73,140.803h-10.242c0.519-3.934,0.847-7.932,0.847-12.003c0-50.545-41.044-91.635-91.68-91.635 c-29.792,0-56.202,14.347-72.885,36.423v144.897h155.96c20.751,0,37.59-16.848,37.59-37.59S274.481,140.803,253.73,140.803z M181.66,218.485h18.207V130.417c-5.226-4.143-11.199-7.411-17.716-9.677h-0.491V218.485z"/>
             </svg>
             <span class="soundcloud-status-text"></span>
-          </div>
-          <div class="service-status qobuz-status checking" id="qobuz-status" title="Open Qobuz settings">
-            <div class="service-loading-dot"></div>
+          </button>
+          <button type="button" class="service-status qobuz-status checking" id="qobuz-status" aria-label="Qobuz sign-in" data-tooltip-pos="bottom" title="Qobuz sign-in. Green means you're signed in. Click to manage your Qobuz accounts.">
+            <span class="service-loading-dot"></span>
             <svg class="service-icon qobuz-icon" viewBox="0 0 24 24" fill="currentColor" aria-label="Qobuz">
               <path d="M12 2.5a9.5 9.5 0 1 0 5.3 17.38l2.22 2.22 2.12-2.12-2.22-2.22A9.5 9.5 0 0 0 12 2.5zm0 3.3a6.2 6.2 0 1 1 0 12.4 6.2 6.2 0 0 1 0-12.4z"/>
             </svg>
             <span class="qobuz-status-text"></span>
-          </div>
-          <div class="service-status beatport-status checking" id="beatport-status" title="Open Beatport settings">
-            <div class="service-loading-dot"></div>
+          </button>
+          <button type="button" class="service-status beatport-status checking" id="beatport-status" aria-label="Beatport sign-in" data-tooltip-pos="bottom" title="Beatport sign-in. Green means you're signed in. Click to manage your Beatport accounts.">
+            <span class="service-loading-dot"></span>
             <svg class="service-icon beatport-icon" viewBox="0 0 24 24" fill="currentColor" aria-label="Beatport">
               <path d="M21.429 17.055a7.114 7.114 0 0 1-.794 3.246 6.917 6.917 0 0 1-2.181 2.492 6.698 6.698 0 0 1-3.063 1.163 6.653 6.653 0 0 1-3.239-.434 6.796 6.796 0 0 1-2.668-1.932 7.03 7.03 0 0 1-1.481-2.983 7.124 7.124 0 0 1 .049-3.345 7.015 7.015 0 0 1 1.566-2.937l-4.626 4.73-2.421-2.479 5.201-5.265a3.791 3.791 0 0 0 1.066-2.675V0h3.41v6.613a7.172 7.172 0 0 1-.519 2.794 7.02 7.02 0 0 1-1.559 2.353l-.153.156a6.768 6.768 0 0 1 3.49-1.725 6.687 6.687 0 0 1 3.845.5 6.873 6.873 0 0 1 2.959 2.564 7.118 7.118 0 0 1 1.118 3.8Zm-3.089 0a3.89 3.89 0 0 0-.611-2.133 3.752 3.752 0 0 0-1.666-1.424 3.65 3.65 0 0 0-2.158-.233 3.704 3.704 0 0 0-1.92 1.037 3.852 3.852 0 0 0-1.031 1.955 3.908 3.908 0 0 0 .205 2.213c.282.7.76 1.299 1.374 1.721a3.672 3.672 0 0 0 2.076.647 3.637 3.637 0 0 0 2.635-1.096c.347-.351.622-.77.81-1.231.188-.461.285-.956.286-1.456Z"/>
             </svg>
             <span class="beatport-status-text"></span>
-          </div>
+          </button>
           <div class="topbar-divider"></div>
-          <div class="status" id="status" title="App status">
+          <div class="status" id="status" data-tooltip-pos="bottom" title="App status">
             <span class="status-dot"></span>
           </div>
-          <button class="topbar-btn" id="open-settings" data-tooltip="Settings">
+          <button class="topbar-btn" id="start-tour" aria-label="Take the tour" data-tooltip-pos="bottom" data-tooltip="Take the tour">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="10"/>
+              <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/>
+              <line x1="12" y1="17" x2="12.01" y2="17"/>
+            </svg>
+          </button>
+          <button class="topbar-btn" id="open-settings" aria-label="Settings" data-tooltip-pos="bottom" data-tooltip="Settings: folders, store accounts and options">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <circle cx="12" cy="12" r="3"/>
               <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
             </svg>
           </button>
-          <button class="topbar-btn" id="toggle-devtools" data-tooltip="Toggle Developer Console">
+          <button class="topbar-btn" id="toggle-devtools" aria-label="Developer console" data-advanced data-tooltip-pos="bottom" data-tooltip="Developer console, for troubleshooting">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <polyline points="4 17 10 11 4 5"/>
               <line x1="12" y1="19" x2="20" y2="19"/>
@@ -177,7 +192,7 @@
           <header class="page-header">
             <div>
               <h2>Organize by Artist</h2>
-              <p>Moves tracks from a source bin into artist folders based on metadata.</p>
+              <p>Sorts new tracks into your library, one folder per artist.</p>
             </div>
           </header>
 
@@ -187,17 +202,17 @@
             </div>
             <div class="fields">
               <div class="field">
-                <label for="organize-source">Source Bin</label>
-                <p class="field-desc">Folder containing unorganized tracks</p>
+                <label for="organize-source">Source folder<span class="help-tip" tabindex="0" role="img" aria-label="Help" data-tooltip="Where your new downloads land, like Downloads or an Inbox folder. Organize moves tracks out of here and into your library."></span></label>
+                <p class="field-desc">The folder with the new tracks you want to sort</p>
                 <div class="input-row">
-                  <input id="organize-source" type="text" placeholder="/Users/you/Music/Inbox" title="Folder containing unorganized tracks" />
-                  <button type="button" class="btn-secondary" data-browse="organize-source" data-type="dir" data-tooltip="Browse for source folder">Browse</button>
+                  <input id="organize-source" type="text" placeholder="/Users/you/Music/Inbox" title="The folder with the new tracks you want to sort" />
+                  <button type="button" class="btn-secondary" data-browse="organize-source" data-type="dir" data-tooltip="Pick the folder on your computer">Choose…</button>
                 </div>
               </div>
             </div>
             <div class="card-actions">
-              <button class="btn-ghost" id="save-organize" data-tooltip="Save this folder as the default source">Save as Default</button>
-              <button class="btn-primary" id="scan-tracks" data-tooltip="Scan the source folder for audio files">Scan Tracks</button>
+              <button class="btn-ghost" id="save-organize" data-tooltip="Use this folder automatically next time you open the app">Save as Default</button>
+              <button class="btn-primary" id="scan-tracks" data-tooltip="List every track in the folder and check it for problems. Nothing is moved yet.">Scan Tracks</button>
             </div>
 
             <!-- Scan progress -->
@@ -219,13 +234,13 @@
               <h3>Tracks</h3>
               <div class="organize-filter-tabs">
                 <button class="filter-tab active" data-organize-filter="all" data-tooltip="Show all tracks">All</button>
-                <button class="filter-tab" data-organize-filter="warnings" data-tooltip="Show only tracks with health warnings">Warnings</button>
-                <button class="filter-tab" data-organize-filter="ready" data-tooltip="Show only tracks that are ready to organize (healthy, have artist, not yet processed)">Ready</button>
-                <button class="filter-tab" data-organize-filter="successful" data-tooltip="Show only tracks that were organized successfully">Successful</button>
+                <button class="filter-tab" data-organize-filter="warnings" data-tooltip="Only tracks with a problem to fix. These stay where they are when you organize.">Warnings</button>
+                <button class="filter-tab" data-organize-filter="ready" data-tooltip="Only tracks with no problems and an artist name. These are the ones that will move.">Ready</button>
+                <button class="filter-tab" data-organize-filter="successful" data-tooltip="Only tracks that were moved into your library">Successful</button>
               </div>
               <div class="track-list-header-actions">
                 <span class="track-count" id="track-count">0 tracks</span>
-                <button class="btn-ghost btn-sm" id="clear-tracks" data-tooltip="Clear the scanned track list">Clear</button>
+                <button class="btn-ghost btn-sm" id="clear-tracks" data-tooltip="Clear this list. Your files aren't touched.">Clear</button>
               </div>
             </div>
 
@@ -237,7 +252,7 @@
                 <line x1="12" y1="17" x2="12.01" y2="17"/>
               </svg>
               <span id="missing-artist-text" style="flex: 1;">Some tracks are missing artist tags. Edit them or ignore to proceed.</span>
-              <button class="btn-ghost btn-sm" id="ignore-all-missing" data-tooltip="Mark all tracks missing artist tags as ignored">Ignore All</button>
+              <button class="btn-ghost btn-sm" id="ignore-all-missing" data-tooltip="Skip every track without an artist name. They stay in the source folder.">Ignore All</button>
             </div>
 
             <!-- Organize progress -->
@@ -263,7 +278,7 @@
             </div>
 
             <div class="card-actions">
-              <button class="btn-primary" id="run-organize" disabled data-tooltip="Move all scanned tracks into your library">Organize</button>
+              <button class="btn-primary" id="run-organize" disabled data-tooltip="Move the listed tracks into your library, one folder per artist. You'll see a summary before anything moves." data-tooltip-disabled="Scan a folder first, or include at least one track">Organize</button>
             </div>
           </section>
 
@@ -283,7 +298,7 @@
           <header class="page-header">
             <div>
               <h2>Library &amp; Sourcing</h2>
-              <p>Drop a CSV or Spotify playlist. We check your library first, then source missing tracks lossless on Qobuz and Beatport.</p>
+              <p>Add a Spotify playlist, a SoundCloud set or a CSV. We check what you already own, then find the rest in full quality on Qobuz and Beatport.</p>
             </div>
           </header>
 
@@ -329,7 +344,7 @@
                       </div>
                       <div class="progress-chip progress-chip--miss">
                         <span class="progress-chip-value" id="source-progress-notfound-count">0</span>
-                        <span class="progress-chip-label">Not found</span>
+                        <span class="progress-chip-label" title="No full-quality version found on either store">Not found</span>
                       </div>
                     </div>
 
@@ -346,16 +361,16 @@
 
                     <div class="source-segbar">
                       <div class="source-segments" id="source-segments">
-                        <button class="source-seg active" data-seg="new" data-tooltip="Tracks not in your library — the ones to buy">
+                        <button class="source-seg active" data-seg="new" data-tooltip="Tracks you don't have yet. These are the ones to buy.">
                           <span class="source-seg-n" id="seg-count-new">0</span><span class="source-seg-l">New to buy</span>
                         </button>
-                        <button class="source-seg" data-seg="maybe" data-tooltip="A related version is already in your library">
+                        <button class="source-seg" data-seg="maybe" data-tooltip="You have something close, like a different mix. Check before buying.">
                           <span class="source-seg-n" id="seg-count-maybe">0</span><span class="source-seg-l">Maybe owned</span>
                         </button>
-                        <button class="source-seg" data-seg="owned" data-tooltip="Confirmed duplicates already in your library">
+                        <button class="source-seg" data-seg="owned" data-tooltip="Already in your library. No need to buy.">
                           <span class="source-seg-n" id="seg-count-owned">0</span><span class="source-seg-l">Owned</span>
                         </button>
-                        <button class="source-seg" data-seg="notfound" data-tooltip="Tracks with no lossless store match">
+                        <button class="source-seg" data-seg="notfound" data-tooltip="Not available in full (lossless) quality on Qobuz or Beatport">
                           <span class="source-seg-n" id="seg-count-notfound">0</span><span class="source-seg-l">Not found</span>
                         </button>
                       </div>
@@ -364,7 +379,7 @@
                           <circle cx="11" cy="11" r="8"/>
                           <line x1="21" y1="21" x2="16.65" y2="16.65"/>
                         </svg>
-                        <input type="text" id="source-search" placeholder="Filter these tracks…" title="Filter by artist or title" />
+                        <input type="text" id="source-search" placeholder="Filter these tracks…" title="Type an artist or title to narrow the list" />
                       </div>
                     </div>
 
@@ -398,11 +413,11 @@
                 </span>
               </div>
               <div class="source-buybar-actions">
-                <button class="btn-ghost btn-sm" id="source-add-more" data-tooltip="Import another playlist or CSV and merge its tracks into these results">+ Add list</button>
-                <button class="btn-ghost btn-sm" id="source-export-csv" data-tooltip="Export the current results to CSV">Export</button>
-                <button class="btn-ghost btn-sm" id="clear-source-results" data-tooltip="Clear these results">Clear</button>
-                <button class="btn-secondary btn-sm" id="source-review-cart" style="display: none;" data-tooltip="Review what's queued in your carts">Review carts</button>
-                <button class="btn-primary" id="source-add-to-cart" data-tooltip="Add the selected tracks to your store carts">Add to carts</button>
+                <button class="btn-ghost btn-sm" id="source-add-more" data-tooltip="Add another playlist or CSV to these results">+ Add list</button>
+                <button class="btn-ghost btn-sm" id="source-export-csv" data-tooltip="Save these results as a spreadsheet (CSV)">Export</button>
+                <button class="btn-ghost btn-sm" id="clear-source-results" data-tooltip="Clear these results. Nothing is bought or deleted.">Clear</button>
+                <button class="btn-secondary btn-sm" id="source-review-cart" style="display: none;" data-tooltip="See what's in your Qobuz and Beatport carts">Review carts</button>
+                <button class="btn-primary" id="source-add-to-cart" data-tooltip="Put the selected tracks in your Qobuz and Beatport carts. Nothing is bought until you check out.">Add to carts</button>
               </div>
             </div>
           </div>
@@ -412,7 +427,7 @@
           <aside class="source-cart-drawer" id="source-cart-drawer" style="display: none;" aria-label="Cart review">
             <div class="source-cart-drawer-head">
               <h3>Your carts</h3>
-              <button class="btn-icon" id="source-cart-close" data-tooltip="Close cart review">✕</button>
+              <button class="btn-icon" id="source-cart-close" aria-label="Close cart review" data-tooltip="Close">✕</button>
             </div>
             <div class="source-cart-drawer-body">
               <section id="source-cart-section" class="wizard-cart-review" style="display: none;">
@@ -429,8 +444,8 @@
                   <div class="cart-store-body">
                     <div class="cart-store-list" id="source-cart-qobuz-list"></div>
                     <div class="cart-store-actions">
-                      <button class="btn-secondary btn-sm" id="source-open-qobuz-cart" data-tooltip="Open your Qobuz cart in the embedded panel">Open Cart</button>
-                      <button class="btn-primary btn-sm" id="source-auto-checkout-qobuz" data-tooltip="Drive the Qobuz cart to the Place Order page and ask before committing">Auto-Checkout Qobuz</button>
+                      <button class="btn-secondary btn-sm" id="source-open-qobuz-cart" data-tooltip="Open your Qobuz cart in a panel on the right">Open Cart</button>
+                      <button class="btn-primary btn-sm" id="source-auto-checkout-qobuz" data-tooltip="Fills in the Qobuz checkout for you, then shows the total and asks before placing the order">Auto-Checkout Qobuz</button>
                     </div>
                   </div>
                 </div>
@@ -447,17 +462,132 @@
                   <div class="cart-store-body">
                     <div class="cart-store-list" id="source-cart-beatport-list"></div>
                     <div class="cart-store-actions">
-                      <button class="btn-secondary btn-sm" id="source-open-beatport-cart" data-tooltip="Open your Beatport cart in the embedded panel">Open Cart</button>
-                      <button class="btn-primary btn-sm" id="source-auto-checkout-beatport" data-tooltip="Drive the Beatport cart to the Place Order page and ask before committing">Auto-Checkout Beatport</button>
+                      <button class="btn-secondary btn-sm" id="source-open-beatport-cart" data-tooltip="Open your Beatport cart in a panel on the right">Open Cart</button>
+                      <button class="btn-primary btn-sm" id="source-auto-checkout-beatport" data-tooltip="Fills in the Beatport checkout for you, then shows the total and asks before placing the order">Auto-Checkout Beatport</button>
                     </div>
                   </div>
                 </div>
                 <div class="cart-actions-bar">
-                  <button class="btn-primary btn-sm" id="source-download-purchases" style="display: none;" data-tooltip="Download the tracks you just purchased">Download Purchases</button>
+                  <button class="btn-primary btn-sm" id="source-download-purchases" style="display: none;" data-tooltip="Download the tracks you just bought">Download Purchases</button>
                 </div>
               </section>
             </div>
           </aside>
+        </div>
+
+        <!-- Lossless Upgrades Page: Rekordbox playlist → lossless copies of its lossy tracks -->
+        <div class="page" id="page-upgrade">
+          <header class="page-header">
+            <div>
+              <h2>Lossless Upgrades</h2>
+              <p>Pick a Rekordbox playlist. We find the tracks you only have as MP3, AAC or a streaming link, then look for full-quality copies on Qobuz and Beatport.</p>
+            </div>
+          </header>
+
+          <div class="source-workspace">
+            <div class="source-input-bar">
+              <div class="upgrade-picker">
+                <select id="upgrade-playlist" aria-label="Rekordbox playlist" title="The Rekordbox playlist to check" disabled>
+                  <option value="">Loading playlists…</option>
+                </select>
+                <button class="btn-icon" id="upgrade-refresh" aria-label="Reload playlists" data-tooltip="Read the playlist list from Rekordbox again">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <polyline points="23 4 23 10 17 10"/>
+                    <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
+                  </svg>
+                </button>
+                <button class="btn-primary" id="upgrade-run" disabled data-tooltip="Check each track's format, then look for lossless copies of the lossy ones on Qobuz and Beatport. Nothing is bought and Rekordbox isn't changed." data-tooltip-disabled="Pick a playlist first">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <polygon points="5 3 19 12 5 21 5 3" fill="currentColor"/>
+                  </svg>
+                  Find upgrades
+                </button>
+              </div>
+              <p class="upgrade-hint" id="upgrade-hint">Read live from your Rekordbox collection. Nothing in Rekordbox is changed.</p>
+            </div>
+
+            <div id="upgrade-progress" class="wizard-progress" style="display: none;">
+              <div class="progress-hero">
+                <div class="progress-hero-main">
+                  <div class="progress-phase-row">
+                    <svg class="spinner" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                      <circle cx="12" cy="12" r="10" stroke-opacity="0.25"/>
+                      <path d="M12 2a10 10 0 0 1 10 10" stroke-linecap="round"/>
+                    </svg>
+                    <span class="progress-phase-label" id="upgrade-progress-message">Reading the playlist…</span>
+                  </div>
+                  <div class="progress-count-row">
+                    <strong class="progress-count-big" id="upgrade-progress-count"></strong>
+                  </div>
+                </div>
+                <div class="progress-percent-big" id="upgrade-progress-percent"></div>
+              </div>
+              <div class="progress-bar-container progress-bar-container--prominent">
+                <div class="progress-bar progress-bar--gradient" id="upgrade-progress-bar" style="width: 0%"></div>
+              </div>
+            </div>
+
+            <section id="upgrade-results" class="wizard-results" style="display: none;">
+              <div id="upgrade-playlist-card"></div>
+              <div class="source-scan-summary" id="upgrade-summary"></div>
+
+              <div class="source-segbar">
+                <div class="source-segments" id="upgrade-segments">
+                  <button class="source-seg active" data-seg="found" data-tooltip="Lossy tracks with a full-quality copy for sale. These are the ones to buy.">
+                    <span class="source-seg-n" id="upgrade-count-found">0</span><span class="source-seg-l">Upgrades found</span>
+                  </button>
+                  <button class="source-seg" data-seg="relink" data-tooltip="You already own a lossless copy of the same version. Swap it into the playlist in Rekordbox instead of buying.">
+                    <span class="source-seg-n" id="upgrade-count-relink">0</span><span class="source-seg-l">Have lossless</span>
+                  </button>
+                  <button class="source-seg" data-seg="notfound" data-tooltip="Lossy tracks with no lossless copy on Qobuz or Beatport">
+                    <span class="source-seg-n" id="upgrade-count-notfound">0</span><span class="source-seg-l">No lossless source</span>
+                  </button>
+                  <button class="source-seg" data-seg="lossless" data-tooltip="Already lossless (AIFF, WAV, FLAC or ALAC). Nothing to do.">
+                    <span class="source-seg-n" id="upgrade-count-lossless">0</span><span class="source-seg-l">Already lossless</span>
+                  </button>
+                </div>
+                <div class="source-filter">
+                  <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <circle cx="11" cy="11" r="8"/>
+                    <line x1="21" y1="21" x2="16.65" y2="16.65"/>
+                  </svg>
+                  <input type="text" id="upgrade-search" aria-label="Filter tracks" placeholder="Filter these tracks…" title="Type an artist or title to narrow the list" />
+                </div>
+              </div>
+
+              <div id="upgrade-cart-add-progress" class="cart-add-progress" style="display: none;">
+                <div class="cart-add-progress-top">
+                  <span class="cart-add-progress-store" id="upgrade-cart-add-store">Qobuz</span>
+                  <span class="cart-add-progress-count" id="upgrade-cart-add-count">0 / 0</span>
+                </div>
+                <div class="progress-bar-container progress-bar-container--prominent">
+                  <div class="progress-bar progress-bar--gradient" id="upgrade-cart-add-bar" style="width: 0%"></div>
+                </div>
+                <div class="cart-add-progress-message" id="upgrade-cart-add-message">Authenticating…</div>
+              </div>
+
+              <div class="source-groups" id="upgrade-groups"></div>
+            </section>
+          </div>
+
+          <div class="source-buybar" id="upgrade-buybar" style="display: none;">
+            <div class="source-buybar-inner">
+              <div class="source-buybar-sel">
+                <span class="source-buybar-count"><b id="upgrade-buybar-n">0</b> selected</span>
+                <span class="source-buybar-split">
+                  <span class="source-buybar-store q" id="upgrade-buybar-qobuz">Qobuz 0 · $0.00</span>
+                  <span class="source-buybar-store b" id="upgrade-buybar-beatport">Beatport 0 · $0.00</span>
+                </span>
+              </div>
+              <div class="source-buybar-actions">
+                <button class="btn-ghost btn-sm" id="upgrade-clear" data-tooltip="Clear these results. Nothing is bought or deleted.">Clear</button>
+                <button class="btn-secondary btn-sm" id="upgrade-open-qobuz" style="display: none;" data-tooltip="Open your Qobuz cart in a panel on the right">Qobuz cart</button>
+                <button class="btn-secondary btn-sm" id="upgrade-open-beatport" style="display: none;" data-tooltip="Open your Beatport cart in a panel on the right">Beatport cart</button>
+                <button class="btn-secondary btn-sm" id="upgrade-download" style="display: none;" data-tooltip="After checking out, download the tracks you just bought">Download purchases</button>
+                <button class="btn-primary" id="upgrade-add-to-cart" data-tooltip="Put the selected lossless copies in your Qobuz and Beatport carts. Nothing is bought until you check out.">Add to carts</button>
+              </div>
+            </div>
+          </div>
         </div>
 
         <div class="page" id="page-usb-health">
@@ -472,14 +602,14 @@
           <section class="card" id="usb-volume-card">
             <div class="card-header">
               <h3>Volumes</h3>
-              <button class="btn-ghost btn-sm" id="usb-refresh-volumes" data-tooltip="Re-detect connected volumes">Refresh</button>
+              <button class="btn-ghost btn-sm" id="usb-refresh-volumes" data-tooltip="Look again for connected drives">Refresh</button>
             </div>
             <div id="usb-volume-list" class="usb-volume-list">
               <div class="empty-state">No volumes detected. Click Refresh to scan for connected drives.</div>
             </div>
             <div class="card-actions">
-              <button class="btn-ghost btn-sm" id="usb-select-folder" data-tooltip="Pick a folder to scan as a USB volume">Select Folder&hellip;</button>
-              <button class="btn-primary" id="usb-scan-btn" disabled data-tooltip="Scan the selected volume for XDJ-RX3 compatibility">Scan USB</button>
+              <button class="btn-ghost btn-sm" id="usb-select-folder" data-tooltip="Check a single folder instead of a whole drive">Choose folder&hellip;</button>
+              <button class="btn-primary" id="usb-scan-btn" disabled data-tooltip="Check every track on the drive will play on a Pioneer XDJ-RX3. Nothing is changed." data-tooltip-disabled="Pick a drive above first">Scan USB</button>
             </div>
           </section>
 
@@ -494,70 +624,6 @@
             </div>
           </section>
 
-          <!-- Volume Health Card (shown post-scan) -->
-          <section class="card" id="usb-volume-health-card" style="display:none;">
-            <div class="card-header">
-              <h3 id="usb-volume-name">Volume</h3>
-              <span id="usb-volume-fs-badge" class="usb-fs-badge"></span>
-            </div>
-            <div id="usb-volume-stats" class="usb-volume-stats"></div>
-            <div id="usb-volume-issues" class="usb-volume-issues"></div>
-          </section>
-
-          <!-- KPI Grid -->
-          <div class="kpi-grid" id="usb-kpi-grid" style="display:none;">
-            <div class="kpi-card">
-              <div class="kpi-value" id="usb-kpi-total">0</div>
-              <div class="kpi-label">Total Tracks</div>
-            </div>
-            <div class="kpi-card success">
-              <div class="kpi-value" id="usb-kpi-healthy">0</div>
-              <div class="kpi-label">Healthy</div>
-              <div class="kpi-pct" id="usb-kpi-healthy-pct">0%</div>
-            </div>
-            <div class="kpi-card warning">
-              <div class="kpi-value" id="usb-kpi-warnings">0</div>
-              <div class="kpi-label">Warnings</div>
-              <div class="kpi-pct" id="usb-kpi-warnings-pct">0%</div>
-            </div>
-            <div class="kpi-card error">
-              <div class="kpi-value" id="usb-kpi-errors">0</div>
-              <div class="kpi-label">Errors</div>
-              <div class="kpi-pct" id="usb-kpi-errors-pct">0%</div>
-            </div>
-          </div>
-          <div id="usb-scan-timestamp" class="scan-timestamp" style="display:none;"></div>
-
-          <!-- Track Table Card -->
-          <section class="card" id="usb-table-section" style="display:none;">
-            <div class="card-header">
-              <div class="filter-tabs">
-                <button class="usb-filter-tab active" data-filter="all" data-tooltip="Show all tracks on this volume">All</button>
-                <button class="usb-filter-tab" data-filter="errors" data-tooltip="Show only tracks with errors">Errors</button>
-                <button class="usb-filter-tab" data-filter="warnings" data-tooltip="Show only tracks with warnings">Warnings</button>
-              </div>
-              <span id="usb-track-count" class="track-count"></span>
-            </div>
-            <div class="table-container">
-              <table class="data-table" id="usb-data-table">
-                <thead>
-                  <tr>
-                    <th class="col-status" data-sort="status">Status<span class="sort-indicator"></span></th>
-                    <th class="col-artist" data-sort="artist">Artist<span class="sort-indicator"></span></th>
-                    <th class="col-title" data-sort="title">Title<span class="sort-indicator"></span></th>
-                    <th class="col-format" data-sort="format">Format<span class="sort-indicator"></span></th>
-                    <th class="col-sample-rate" data-sort="sampleRate">Sample Rate<span class="sort-indicator"></span></th>
-                    <th class="col-bitrate" data-sort="bitRate">Bit Rate<span class="sort-indicator"></span></th>
-                    <th class="col-duration" data-sort="duration">Duration<span class="sort-indicator"></span></th>
-                    <th class="col-date-added" data-sort="dateAdded">Added<span class="sort-indicator"></span></th>
-                    <th class="col-issues">Issues</th>
-                  </tr>
-                </thead>
-                <tbody id="usb-table-body"></tbody>
-              </table>
-            </div>
-          </section>
-
           <!-- Additional XDJ-compat summary widgets -->
           <div id="usb-results" style="display:none;">
             <section class="card" id="usb-drive-overview-card">
@@ -569,7 +635,7 @@
             </section>
 
             <section class="card">
-              <div class="card-header"><h3>Compatibility Checklist</h3></div>
+              <div class="card-header"><h3>Compatibility Checklist<span class="help-tip" tabindex="0" role="img" aria-label="Help" data-tooltip="The basics a Pioneer player needs: the right drive format, supported file types, and enough free space."></span></h3></div>
               <div id="usb-checklist" class="usb-checklist"></div>
             </section>
 
@@ -584,8 +650,39 @@
             </section>
 
             <section class="card">
-              <div class="card-header"><h3>Compatibility Matrix</h3></div>
+              <div class="card-header"><h3>Compatibility Matrix<span class="help-tip" tabindex="0" role="img" aria-label="Help" data-tooltip="Which Pioneer players can read this drive. A cross means that player will struggle with some tracks."></span></h3></div>
               <div id="usb-matrix-wrap" class="usb-matrix-wrap"></div>
+            </section>
+
+            <!-- Every track on the drive, problems first -->
+            <section class="card" id="usb-table-section">
+              <div class="card-header">
+                <div class="filter-tabs health-filter-tabs" role="group" aria-label="Show tracks">
+                  <button type="button" class="filter-tab usb-filter-tab active" data-filter="all" aria-pressed="true" data-tooltip="Every track on this drive">All</button>
+                  <button type="button" class="filter-tab usb-filter-tab" data-filter="errors" aria-pressed="false" data-tooltip="Only tracks that won't play">Errors</button>
+                  <button type="button" class="filter-tab usb-filter-tab" data-filter="warnings" aria-pressed="false" data-tooltip="Only tracks worth fixing">Warnings</button>
+                </div>
+                <span id="usb-track-count" class="track-count"></span>
+              </div>
+              <div class="table-container usb-table-container">
+                <table class="data-table" id="usb-data-table">
+                  <thead>
+                    <tr>
+                      <th class="col-status" data-sort="status" title="Green plays fine, amber is worth fixing, red won't play. Click to sort.">Status<span class="sort-indicator"></span></th>
+                      <th class="col-artist" data-sort="artist" title="Click to sort">Artist<span class="sort-indicator"></span></th>
+                      <th class="col-title" data-sort="title" title="Click to sort">Title<span class="sort-indicator"></span></th>
+                      <th class="col-format" data-sort="format" title="File type, like AIFF, WAV or MP3. Click to sort.">Format<span class="sort-indicator"></span></th>
+                      <th class="col-sample-rate" data-sort="sampleRate" title="How finely the sound was recorded. Pioneer players need 44.1 or 48 kHz. Click to sort.">Sample Rate<span class="sort-indicator"></span></th>
+                      <th class="col-bitrate" data-sort="bitRate" title="How much detail the file keeps. For MP3s, 320 kbps is the best. Click to sort.">Bit Rate<span class="sort-indicator"></span></th>
+                      <th class="col-duration" data-sort="duration" title="Click to sort">Duration<span class="sort-indicator"></span></th>
+                      <th class="col-date-added" data-sort="dateAdded" title="Click to sort">Added<span class="sort-indicator"></span></th>
+                      <th class="col-issues">Issues</th>
+                    </tr>
+                  </thead>
+                  <tbody id="usb-table-body"></tbody>
+                </table>
+              </div>
+              <div class="empty-state" id="usb-table-empty" style="display:none;">No tracks match this filter.</div>
             </section>
           </div>
 
@@ -599,17 +696,16 @@
           <div class="library-top-row">
             <div class="library-kpi-strip" id="library-dashboard" style="display: none;">
               <div class="library-kpi-bar">
-                <span class="library-kpi-item" id="kpi-total" title="Total tracks">0 tracks</span>
+                <span class="library-kpi-item" id="kpi-total" title="Every track in your library folder">0 tracks</span>
                 <span class="library-kpi-sep">&middot;</span>
-                <span class="library-kpi-item kpi-healthy" id="kpi-healthy" title="Healthy tracks">0 healthy</span>
+                <span class="library-kpi-item kpi-healthy" id="kpi-healthy" title="Tracks with no problems">0 healthy</span>
                 <span class="library-kpi-sep">&middot;</span>
-                <span class="library-kpi-item kpi-warnings" id="kpi-warnings" title="Tracks with warnings">0 warnings</span>
+                <span class="library-kpi-item kpi-warnings" id="kpi-warnings" title="Tracks that play but are worth fixing, like missing tags or artwork">0 warnings</span>
                 <span class="library-kpi-sep">&middot;</span>
-                <span class="library-kpi-item kpi-errors" id="kpi-errors" title="Tracks with errors">0 errors</span>
-                <button class="btn-ghost btn-sm library-duplicates-btn" id="toggle-duplicates" style="display:none;" data-tooltip="Show potential duplicates">Duplicates <span id="duplicates-badge"></span></button>
+                <span class="library-kpi-item kpi-errors" id="kpi-errors" title="Tracks that may not play on Pioneer gear">0 errors</span>
                 <span class="library-kpi-timestamp">
                   <span id="scan-timestamp"></span>
-                  <button class="btn-icon library-rescan-btn" id="run-library-scan" data-tooltip="Rescan library">
+                  <button class="btn-icon library-rescan-btn" id="run-library-scan" aria-label="Rescan library" data-tooltip="Check your library again for new tracks and problems">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                       <path d="M23 4v6h-6"/>
                       <path d="M1 20v-6h6"/>
@@ -627,7 +723,7 @@
                 <h3>Connected Devices</h3>
                 <div class="cd-header-actions">
                   <span class="cd-status" id="cd-status"></span>
-                  <button class="btn-ghost btn-sm" id="cd-refresh" data-tooltip="Refresh connected devices">Refresh</button>
+                  <button class="btn-ghost btn-sm" id="cd-refresh" data-tooltip="Look again for connected drives">Refresh</button>
                 </div>
               </div>
               <div id="cd-volume-list" class="cd-volume-list"></div>
@@ -662,44 +758,25 @@
                 <circle cx="11" cy="11" r="8"/>
                 <line x1="21" y1="21" x2="16.65" y2="16.65"/>
               </svg>
-              <input class="browse-search-input" id="browse-search" type="text" placeholder="Search tracks, artists, albums&hellip;" title="Search tracks, artists, albums" />
+              <input class="browse-search-input" id="browse-search" type="text" placeholder="Search tracks, artists, albums&hellip;" title="Type to find a track, artist or album" />
             </div>
-            <button class="btn-ghost btn-sm" id="toggle-split-panel" data-tooltip="Toggle split panel">Split</button>
-            <select id="split-dimension" class="browse-select" title="Split dimension">
+            <button class="btn-ghost btn-sm" id="toggle-split-panel" data-tooltip="Show a side list for browsing by artist, album or genre">Split</button>
+            <select id="split-dimension" class="browse-select" title="What the side list is grouped by">
               <option value="artist">Artist</option>
               <option value="album">Album</option>
               <option value="genre">Genre</option>
             </select>
-            <button class="btn-ghost btn-sm" id="toggle-columns-panel" data-tooltip="Toggle columns">Columns</button>
-            <select id="add-column-select" class="browse-add-column-select" title="Add column">
+            <button class="btn-ghost btn-sm" id="toggle-columns-panel" data-tooltip="Show filter columns to narrow the list step by step">Columns</button>
+            <select id="add-column-select" class="browse-add-column-select" title="Add a filter column, like Genre or BPM">
               <option value="">Add column&hellip;</option>
               <option value="artist">Artist</option>
               <option value="album">Album</option>
               <option value="genre">Genre</option>
               <option value="bpm">BPM</option>
-              <option value="key">Key</option>
             </select>
-            <button class="btn-ghost btn-sm missing-art-btn" id="missing-art-mode" data-tooltip="Enter Missing Album Art selection mode" style="display:none;">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
-                <rect x="3" y="3" width="18" height="18" rx="2"/>
-                <circle cx="9" cy="9" r="2"/>
-                <path d="M21 15l-5-5L5 21"/>
-              </svg>
-              <span>Missing Art</span>
-              <span class="chip-count" id="missing-art-count">0</span>
-            </button>
-            <button class="btn-primary btn-sm" id="fix-flow-start" data-tooltip="Start fix flow" style="display:none;">Fix All</button>
+            <button class="btn-primary btn-sm" id="fix-flow-start" data-tooltip="Go through the affected tracks one at a time. Nothing changes until you choose a fix for each." style="display:none;">Fix All</button>
           </div>
 
-          <!-- Active issue filter banner -->
-          <div class="active-issue-filter" id="active-issue-filter" style="display:none;">
-            <span id="filter-code-label"></span>
-            <button class="btn-icon btn-sm" id="clear-issue-filter" data-tooltip="Clear filter">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
-              </svg>
-            </button>
-          </div>
 
           <!-- Browse Columns + Compact List -->
           <div class="library-health-panels">
@@ -725,7 +802,7 @@
             <!-- Inspector panel -->
             <div class="library-inspector" id="library-inspector" style="display: none;">
               <div class="inspector-header">
-                <button class="btn-icon" id="inspector-close" data-tooltip="Close inspector">
+                <button class="btn-icon" id="inspector-close" aria-label="Close track details" data-tooltip="Close track details">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                     <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
                   </svg>
@@ -741,21 +818,6 @@
             </div>
           </div>
 
-          <!-- Duplicates Drawer -->
-          <section class="card duplicates-section" id="duplicates-section" style="display: none;">
-            <div class="card-header">
-              <h3>Potential Duplicates</h3>
-              <span class="track-count" id="duplicates-count">0 pairs</span>
-              <button class="btn-icon btn-sm" id="duplicates-close" data-tooltip="Close">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
-                </svg>
-              </button>
-            </div>
-            <p class="section-description">These tracks appear to be duplicates based on artist and title similarity. Review and decide which to keep.</p>
-            <div class="duplicates-list" id="duplicates-list"></div>
-          </section>
-
         </div>
         <!-- ===== END LIBRARY PAGE ===== -->
 
@@ -767,7 +829,7 @@
           </div>
 
           <!-- Wizard stepper -->
-          <nav class="wiz-stepper" id="restore-stepper">
+          <nav class="wiz-stepper" id="restore-stepper" aria-label="Restore steps" title="Where you are in the restore">
             <button type="button" class="wiz-step is-active" data-step="configure" disabled><span class="wiz-step-num">1</span> Configure</button>
             <button type="button" class="wiz-step" data-step="review" disabled><span class="wiz-step-num">2</span> Review</button>
             <button type="button" class="wiz-step" data-step="running" disabled><span class="wiz-step-num">3</span> Run</button>
@@ -778,25 +840,27 @@
           <section class="wiz-stage is-active" data-stage="configure" id="restore-stage-configure">
             <div class="wiz-grid">
               <div class="wiz-card">
-                <h3>Rekordbox XML</h3>
+                <h3>Rekordbox XML<span class="help-tip" tabindex="0" role="img" aria-label="Help" data-tooltip="A backup of your Rekordbox collection. In Rekordbox, choose File > Export Collection in xml format."></span></h3>
                 <div class="restore-row">
-                  <input type="text" id="restore-xml-path" placeholder="/path/to/rekordbox.xml" readonly class="restore-input" />
-                  <button class="btn-secondary" id="restore-pick-xml" data-tooltip="Choose the Rekordbox export XML to restore from">Choose…</button>
+                  <input type="text" id="restore-xml-path" placeholder="/path/to/rekordbox.xml" readonly class="restore-input" title="The Rekordbox backup to restore from" />
+                  <button class="btn-secondary" id="restore-pick-xml" data-tooltip="Pick the XML file you exported from Rekordbox">Choose…</button>
                 </div>
+                <p class="wiz-hint" id="restore-xml-hint">Choose the XML backup to continue.</p>
               </div>
 
               <div class="wiz-card">
-                <h3>Library root</h3>
+                <h3>Library folder<span class="help-tip" tabindex="0" role="img" aria-label="Help" data-tooltip="Where recovered tracks are saved. Leave it blank to use the library folder from Settings."></span></h3>
                 <div class="restore-row">
-                  <input type="text" id="restore-library-root" placeholder="Using app library root" class="restore-input" />
+                  <input type="text" id="restore-library-root" placeholder="The library folder from Settings" class="restore-input" title="Where recovered tracks are saved" />
+                  <button class="btn-secondary" id="restore-pick-library-root" data-tooltip="Pick a different folder for recovered tracks">Choose…</button>
                 </div>
-                <p class="wiz-hint">Leave blank to use your configured library root.</p>
+                <p class="wiz-hint">Leave blank to use the library folder from Settings.</p>
               </div>
 
               <div class="wiz-card">
                 <div class="wiz-card-header">
                   <h3>USB volumes</h3>
-                  <button class="btn-ghost btn-sm" id="restore-refresh-volumes" data-tooltip="Re-detect mounted USB volumes">Refresh</button>
+                  <button class="btn-ghost btn-sm" id="restore-refresh-volumes" data-tooltip="Look again for connected USB drives">Refresh</button>
                 </div>
                 <div id="restore-volumes" class="restore-volumes">
                   <span class="wiz-hint">Click refresh to detect mounted volumes.</span>
@@ -806,38 +870,38 @@
               <div class="wiz-card">
                 <h3>Sources</h3>
                 <div class="wiz-sources" id="restore-sources">
-                  <label class="wiz-source-row" data-source="usb">
+                  <label class="wiz-source-row" data-source="usb" title="Copy missing tracks from connected USB drives">
                     <input type="checkbox" id="restore-src-usb" checked>
                     <span class="wiz-source-label">USB</span>
                     <span class="wiz-source-status" id="restore-status-usb">—</span>
                   </label>
-                  <label class="wiz-source-row" data-source="beatport">
+                  <label class="wiz-source-row" data-source="beatport" title="Re-download tracks you've bought on Beatport">
                     <input type="checkbox" id="restore-src-beatport" checked>
                     <span class="wiz-source-label">Beatport</span>
                     <span class="wiz-source-status" id="restore-status-beatport">—</span>
                   </label>
-                  <label class="wiz-source-row" data-source="qobuz">
+                  <label class="wiz-source-row" data-source="qobuz" title="Re-download tracks you've bought on Qobuz">
                     <input type="checkbox" id="restore-src-qobuz" checked>
                     <span class="wiz-source-label">Qobuz</span>
                     <span class="wiz-source-status" id="restore-status-qobuz">—</span>
                   </label>
-                  <label class="wiz-source-row" data-source="soundcloud">
+                  <label class="wiz-source-row" data-source="soundcloud" title="Download from SoundCloud. Lower quality (lossy), so only use it as a last resort.">
                     <input type="checkbox" id="restore-src-soundcloud">
                     <span class="wiz-source-label">SoundCloud <span class="wiz-badge wiz-badge-warn">experimental, lossy</span></span>
-                    <span class="wiz-source-status" id="restore-status-soundcloud">—</span>
                   </label>
                 </div>
+                <div class="wiz-callout is-warn" id="restore-store-errors" role="status" hidden></div>
               </div>
 
-              <div class="wiz-card">
+              <div class="wiz-card" data-advanced>
                 <h3>Performance</h3>
                 <div class="restore-row">
                   <label for="restore-concurrency">Concurrent downloads</label>
-                  <input type="number" id="restore-concurrency" value="5" min="1" max="10" class="restore-input-sm" />
+                  <input type="number" id="restore-concurrency" value="5" min="1" max="10" class="restore-input-sm" title="How many tracks download at once (1 to 10). Lower it if downloads fail." />
                 </div>
               </div>
 
-              <div class="wiz-card">
+              <div class="wiz-card" data-advanced>
                 <h3>Advanced</h3>
                 <label class="wiz-check" title="Read audio tags (artist/title) from USB files. Slower — but catches tracks whose folder/path has changed.">
                   <input type="checkbox" id="restore-usb-tag-matching">
@@ -851,7 +915,7 @@
             </div>
 
             <div class="wiz-actions">
-              <button class="btn-primary" id="restore-to-review" data-tooltip="Preview what will be recovered before running">Review plan →</button>
+              <button class="btn-primary" id="restore-to-review" disabled data-tooltip="See what will be recovered and from where. Nothing starts yet." data-tooltip-disabled="Choose a Rekordbox XML backup first">Review plan →</button>
             </div>
           </section>
 
@@ -867,13 +931,15 @@
               <ul class="wiz-plan-list" id="review-plan"></ul>
               <p class="wiz-hint" id="review-eta">—</p>
             </div>
+            <div class="wiz-callout is-warn" id="review-store-errors" role="status" hidden></div>
+            <p class="wiz-hint wiz-quiet-note" id="review-deleted-note" hidden></p>
             <div class="wiz-card" id="review-warnings-card" style="display:none;">
               <h3>Warnings</h3>
               <ul class="wiz-warn-list" id="review-warnings"></ul>
             </div>
             <div class="wiz-actions">
-              <button class="btn-ghost" id="restore-back-to-configure">← Back</button>
-              <button class="btn-primary" id="restore-start" data-tooltip="Start the restore job">Start restore</button>
+              <button class="btn-ghost" id="restore-back-to-configure" data-tooltip="Change your choices">← Back</button>
+              <button class="btn-primary" id="restore-start" data-tooltip="Start recovering tracks. You can stop at any time and keep what's done.">Start restore</button>
             </div>
           </section>
 
@@ -926,7 +992,7 @@
                 </div>
 
                 <div class="wiz-actions wiz-actions-danger">
-                  <button class="btn-ghost" id="restore-abort" data-tooltip="Stop the restore — already-recovered tracks stay in the staging folder">Abort</button>
+                  <button class="btn-ghost" id="restore-abort" data-tooltip="Stops at the next safe point. Downloads already under way finish, and tracks already recovered are kept.">Abort</button>
                 </div>
               </div>
             </div>
@@ -935,6 +1001,7 @@
           <!-- Stage 4: REPORT -->
           <section class="wiz-stage" data-stage="report" id="restore-stage-report" style="display: none;">
             <div class="wiz-hero wiz-hero-report" id="restore-report-hero"></div>
+            <div class="wiz-callout is-warn" id="report-store-errors" role="status" hidden></div>
 
             <div class="wiz-grid">
               <div class="wiz-card">
@@ -955,17 +1022,24 @@
               </div>
             </div>
 
+            <!-- Deleted on purpose: never restored, never counted as missing or failed -->
+            <details class="wiz-card wiz-quiet-group" id="report-deleted-card" hidden>
+              <summary id="report-deleted-summary">Left out — you deleted these</summary>
+              <p class="wiz-hint">You deleted these from your intake folder, so the restore leaves them alone. They don't count as missing.</p>
+              <ul class="wiz-quiet-list" id="report-deleted-list"></ul>
+            </details>
+
             <div class="wiz-card">
               <div class="wiz-report-toolbar">
                 <div class="restore-report-filters">
-                  <button class="btn-ghost btn-sm restore-filter is-active" data-filter="all">All</button>
-                  <button class="btn-ghost btn-sm restore-filter" data-filter="recovered">Recovered</button>
-                  <button class="btn-ghost btn-sm restore-filter" data-filter="still_missing">Still missing</button>
+                  <button class="btn-ghost btn-sm restore-filter is-active" data-filter="all" data-tooltip="Every track in the report">All</button>
+                  <button class="btn-ghost btn-sm restore-filter" data-filter="recovered" data-tooltip="Tracks that were found and saved">Recovered</button>
+                  <button class="btn-ghost btn-sm restore-filter" data-filter="still_missing" data-tooltip="Tracks that couldn't be found anywhere">Still missing</button>
                 </div>
                 <div class="wiz-report-actions">
-                  <button class="btn-ghost btn-sm" id="report-export" data-tooltip="Save the full report as JSON">Export JSON</button>
-                  <button class="btn-ghost btn-sm" id="report-open-stage" data-tooltip="Open the staging folder in Finder">Open stage folder</button>
-                  <button class="btn-secondary btn-sm" id="report-retry-failed" data-tooltip="Re-run restore for just the still-missing tracks">Retry failed</button>
+                  <button class="btn-ghost btn-sm" id="report-export" data-tooltip="Show the saved report (a JSON file) in Finder">Show report file</button>
+                  <button class="btn-ghost btn-sm" id="report-open-stage" data-tooltip="Open the folder with the recovered tracks in Finder">Open stage folder</button>
+                  <button class="btn-secondary btn-sm" id="report-retry-failed" data-tooltip="Back to the plan to run the whole restore again with the same backup and sources">Run again…</button>
                 </div>
               </div>
               <table class="restore-report-table" id="restore-report-table">
@@ -975,7 +1049,7 @@
             </div>
 
             <div class="wiz-actions">
-              <button class="btn-ghost" id="restore-new-run">New restore</button>
+              <button class="btn-ghost" id="restore-new-run" data-tooltip="Start over with a different backup">New restore</button>
             </div>
           </section>
         </div>
@@ -988,7 +1062,7 @@
             <p>Re-download missing Splice samples referenced by an Ableton <code>.als</code> project.</p>
           </div>
 
-          <nav class="wiz-stepper" id="splice-stepper">
+          <nav class="wiz-stepper" id="splice-stepper" aria-label="Recovery steps" title="Where you are in the recovery">
             <button type="button" class="wiz-step is-active" data-step="configure" disabled><span class="wiz-step-num">1</span> Configure</button>
             <button type="button" class="wiz-step" data-step="scan" disabled><span class="wiz-step-num">2</span> Scan</button>
             <button type="button" class="wiz-step" data-step="review" disabled><span class="wiz-step-num">3</span> Review</button>
@@ -1002,8 +1076,8 @@
               <div class="wiz-card">
                 <h3>Ableton project</h3>
                 <div class="restore-row">
-                  <input type="text" id="splice-als-path" placeholder="/path/to/project.als" readonly class="restore-input" />
-                  <button class="btn-secondary" id="splice-pick-als" data-tooltip="Choose the .als project to scan">Choose…</button>
+                  <input type="text" id="splice-als-path" placeholder="/path/to/project.als" readonly class="restore-input" title="The Ableton project with missing samples" />
+                  <button class="btn-secondary" id="splice-pick-als" data-tooltip="Pick the Ableton project (.als file)">Choose…</button>
                 </div>
                 <p class="wiz-hint">Pick a Live Set with broken Splice sample references.</p>
               </div>
@@ -1015,14 +1089,14 @@
                     <span class="splice-status-dot"></span>
                     <span id="splice-status-text">Checking…</span>
                   </span>
-                  <button class="btn-secondary" id="splice-connect-btn" data-tooltip="Open splice.com to log in" style="display:none;">Connect</button>
+                  <button class="btn-secondary" id="splice-connect-btn" data-tooltip="Opens Splice so you can sign in. You stay signed in next time." style="display:none;">Connect</button>
                 </div>
                 <p class="wiz-hint">A persistent Chrome profile keeps you logged in between sessions.</p>
               </div>
             </div>
 
             <div class="wiz-actions">
-              <button class="btn-primary" id="splice-to-scan" disabled data-tooltip="Parse the project and search Splice for each missing sample">Scan project →</button>
+              <button class="btn-primary" id="splice-to-scan" disabled data-tooltip="Find the missing samples and look each one up on Splice. Nothing is downloaded yet." data-tooltip-disabled="Pick a project and sign in to Splice first">Scan project →</button>
             </div>
           </section>
 
@@ -1039,7 +1113,7 @@
               <p class="wiz-hint" id="splice-scan-current">—</p>
             </div>
             <div class="wiz-actions">
-              <button class="btn-ghost" id="splice-scan-back">Back</button>
+              <button class="btn-ghost" id="splice-scan-back" data-tooltip="Go back. Results from this scan are thrown away.">Back</button>
             </div>
           </section>
 
@@ -1061,7 +1135,7 @@
                 </div>
                 <div id="splice-credits-list" class="splice-bucket-list"></div>
                 <div class="wiz-card-footer">
-                  <button class="btn-primary" id="splice-buy-all" disabled data-tooltip="Spend a credit per sample in this bucket and download them">Buy all (0)</button>
+                  <button class="btn-primary" id="splice-buy-all" disabled data-tooltip="Spend one Splice credit per sample to download these. You'll see the total first." data-tooltip-disabled="No samples here need credits">Buy all (0)</button>
                 </div>
               </div>
 
@@ -1074,8 +1148,8 @@
               </div>
             </div>
             <div class="wiz-actions">
-              <button class="btn-ghost" id="splice-review-back">Back</button>
-              <button class="btn-primary" id="splice-download-owned" disabled data-tooltip="Download every sample in the Owned bucket into the original project paths">Download owned →</button>
+              <button class="btn-ghost" id="splice-review-back" data-tooltip="Pick a different project">Back</button>
+              <button class="btn-primary" id="splice-download-owned" disabled data-tooltip="Download every sample you already own, for free, into the folders the project expects" data-tooltip-disabled="No owned samples to download">Download owned →</button>
             </div>
           </section>
 
@@ -1108,7 +1182,7 @@
               </div>
             </div>
             <div class="wiz-actions">
-              <button class="btn-ghost" id="splice-report-restart">New recovery</button>
+              <button class="btn-ghost" id="splice-report-restart" data-tooltip="Start over with another project">New recovery</button>
             </div>
           </section>
         </div>
@@ -1118,74 +1192,19 @@
       </div>
     </div>
 
-    <!-- Delete Confirmation Modal -->
-    <div class="modal-overlay" id="rekordbox-resync-modal" style="display: none;">
-      <div class="modal">
-        <div class="modal-header">
-          <h3>Resync from Rekordbox</h3>
-          <button class="btn-icon modal-close" id="rekordbox-resync-modal-close" data-tooltip="Close">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
-            </svg>
-          </button>
-        </div>
-        <div class="modal-body">
-          <p class="delete-warning">This will wipe the <strong>Candybar database</strong> (<code>candybar.db</code>) and rebuild it from rekordbox's <code>export.xml</code>. Rekordbox's own <code>master.db</code> is <strong>not</strong> touched.</p>
-          <div class="delete-file-info">
-            <span class="delete-file-name">Cleared (in candybar.db):</span>
-            <span class="delete-file-path">library_tracks, library_issues, library_duplicates, library_scan_runs (for the current library root)</span>
-          </div>
-          <div class="delete-file-info">
-            <span class="delete-file-name">Preserved:</span>
-            <span class="delete-file-path">ignored tracks, dismissed duplicates, dismissed issues, download history</span>
-          </div>
-          <p class="delete-note">Make sure your rekordbox XML is up to date before continuing. Any unsaved local edits to candybar's library data (issues, duplicate flags) will be lost.</p>
-        </div>
-        <div class="modal-actions">
-          <button class="btn-ghost" id="rekordbox-resync-modal-cancel" data-tooltip="Cancel resync">Cancel</button>
-          <button class="btn-danger" id="rekordbox-resync-modal-confirm" data-tooltip="Wipe and reimport">Resync</button>
-        </div>
-      </div>
-    </div>
-
-    <div class="modal-overlay" id="delete-modal" style="display: none;">
-      <div class="modal">
-        <div class="modal-header">
-          <h3>Delete Track</h3>
-          <button class="btn-icon modal-close" id="delete-modal-close" data-tooltip="Close">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
-            </svg>
-          </button>
-        </div>
-        <div class="modal-body">
-          <p class="delete-warning">Are you sure you want to permanently delete this file?</p>
-          <div class="delete-file-info">
-            <span class="delete-file-name" id="delete-file-name"></span>
-            <span class="delete-file-path" id="delete-file-path"></span>
-          </div>
-          <p class="delete-note">This action cannot be undone.</p>
-        </div>
-        <div class="modal-actions">
-          <button class="btn-ghost" id="delete-modal-cancel" data-tooltip="Cancel delete">Cancel</button>
-          <button class="btn-danger" id="delete-modal-confirm" data-tooltip="Permanently delete file">Delete</button>
-        </div>
-      </div>
-    </div>
-
     <!-- Fix Track Modal -->
     <div class="modal-overlay" id="fix-modal" style="display: none;">
-      <div class="modal">
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="fix-modal-title">
         <div class="modal-header">
-          <h3>Fix Track</h3>
-          <button class="btn-icon modal-close" id="fix-modal-close" data-tooltip="Close">
+          <h3 id="fix-modal-title">Fix Track</h3>
+          <button class="btn-icon modal-close" id="fix-modal-close" aria-label="Close" data-tooltip="Close">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
             </svg>
           </button>
         </div>
         <div class="modal-body">
-          <p class="modal-description">Convert this track to AIFF format for XDJ-RX3 compatibility.</p>
+          <p class="modal-description" id="fix-modal-desc">Make a lossless AIFF version that Pioneer CDJs and XDJs play reliably.</p>
           <div class="fix-file-info">
             <div class="fix-file-row">
               <svg class="fix-file-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -1197,13 +1216,14 @@
             <div class="fix-issues" id="fix-issues-list"></div>
           </div>
           <label class="checkbox-label fix-delete-label">
-            <input type="checkbox" id="fix-delete-original" title="Delete original file after conversion" />
-            <span>Delete original file after conversion</span>
+            <input type="checkbox" id="fix-delete-original" />
+            <span>Move the original to the Trash afterwards</span>
+            <span class="help-tip" tabindex="0" role="img" aria-label="Help" data-tooltip="Keeps your library from having two copies. You can put the original back from the Trash in Finder."></span>
           </label>
         </div>
         <div class="modal-actions">
-          <button class="btn-ghost" id="fix-modal-cancel" data-tooltip="Cancel fix">Cancel</button>
-          <button class="btn-primary" id="fix-modal-confirm" data-tooltip="Convert the track to AIFF">Convert to AIFF</button>
+          <button class="btn-ghost" id="fix-modal-cancel" data-tooltip="Close without changing anything">Cancel</button>
+          <button class="btn-primary" id="fix-modal-confirm">Convert to AIFF</button>
         </div>
       </div>
     </div>
@@ -1216,7 +1236,7 @@
       <div class="drawer">
         <div class="drawer-header">
           <h3>Edit Track Tags</h3>
-          <button class="btn-icon" id="close-tag-editor" data-tooltip="Close without saving">
+          <button class="btn-icon" id="close-tag-editor" aria-label="Close without saving" data-tooltip="Close without saving changes">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
             </svg>
@@ -1232,8 +1252,8 @@
               </svg>
             </div>
             <div class="album-art-buttons">
-              <button class="btn-secondary btn-sm" id="change-album-art" data-tooltip="Choose an image file for album art">Choose File</button>
-              <button class="btn-secondary btn-sm" id="search-album-art" data-tooltip="Search online for album art">Search Art</button>
+              <button class="btn-secondary btn-sm" id="change-album-art" data-tooltip="Use an image from your computer as the cover">Choose File</button>
+              <button class="btn-secondary btn-sm" id="search-album-art" data-tooltip="Look online for this track's cover art">Search Art</button>
             </div>
             <div class="album-art-suggestions" id="album-art-suggestions" style="display: none;">
               <div class="album-art-suggestions-status" id="album-art-suggestions-status"></div>
@@ -1247,11 +1267,11 @@
             </div>
             <div class="field">
               <label for="edit-artist">Artist <span class="required">*</span></label>
-              <input type="text" id="edit-artist" placeholder="Artist name" title="Primary artist (required)" />
+              <input type="text" id="edit-artist" placeholder="Artist name" title="The main artist. Needed so Organize knows which folder the track goes in." />
             </div>
             <div class="field">
               <label for="edit-remixer">Remixer</label>
-              <input type="text" id="edit-remixer" placeholder="Remix artist" title="Remix artist" />
+              <input type="text" id="edit-remixer" placeholder="Remix artist" title="Who made this remix, if it is one" />
             </div>
             <div class="field">
               <label for="edit-album">Album</label>
@@ -1263,15 +1283,15 @@
             </div>
             <div class="field">
               <label for="edit-year">Year</label>
-              <input type="text" id="edit-year" placeholder="2024" title="Release year" />
+              <input type="text" id="edit-year" placeholder="2024" title="The year the track came out" />
             </div>
             <div class="field">
               <label for="edit-bpm">BPM</label>
-              <input type="text" id="edit-bpm" placeholder="128" title="Tempo in beats per minute" />
+              <input type="text" id="edit-bpm" placeholder="128" title="Tempo in beats per minute, e.g. 124" />
             </div>
             <div class="field">
               <label for="edit-key">Key</label>
-              <input type="text" id="edit-key" placeholder="8A" title="Camelot or musical key (e.g. 8A)" />
+              <input type="text" id="edit-key" placeholder="8A" title="Musical key, as a Camelot code (8A) or a note name (Am). Helps with harmonic mixing." />
             </div>
             <div class="field">
               <label for="edit-label">Label</label>
@@ -1279,162 +1299,109 @@
             </div>
             <div class="field">
               <label for="edit-comment">Comment</label>
-              <input type="text" id="edit-comment" placeholder="Notes" title="Free-form comment" />
+              <input type="text" id="edit-comment" placeholder="Notes" title="Any notes you want to keep with the track" />
             </div>
             <input type="hidden" id="edit-file-path" />
           </div>
         </div>
         <div class="drawer-footer">
-          <button class="btn-ghost" id="scan-tags" data-tooltip="Search online and fill empty fields" style="margin-right: auto;">Scan Tags</button>
-          <button class="btn-ghost" id="cancel-tag-editor" data-tooltip="Discard changes">Cancel</button>
-          <button class="btn-primary" id="save-tag-editor" data-tooltip="Save tag changes">Save</button>
-        </div>
-      </div>
-    </div>
-
-    <!-- Store Purchase Modal (multi-phase workflow) -->
-    <div class="modal-overlay" id="store-purchase-modal" style="display: none;">
-      <div class="modal modal-lg">
-        <div class="modal-header">
-          <h3>Purchase Missing Tracks</h3>
-          <button class="btn-icon modal-close" id="store-purchase-close" data-tooltip="Close">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
-            </svg>
-          </button>
-        </div>
-        <div class="modal-body">
-          <!-- Search phase -->
-          <div class="purchase-phase" id="store-search-phase">
-            <h4>Searching Stores</h4>
-            <div class="progress-bar-container">
-              <div class="progress-bar" id="store-search-progress-bar" style="width: 0%"></div>
-            </div>
-            <span class="progress-label" id="store-search-progress-label">Starting&hellip;</span>
-          </div>
-
-          <!-- Review matches phase -->
-          <div class="purchase-phase" id="store-match-stats" style="display: none;"></div>
-          <div class="purchase-phase" id="store-match-actions" style="display: none;">
-            <button class="btn-ghost btn-sm" id="store-select-all" data-tooltip="Select all matched tracks">Select All</button>
-            <button class="btn-ghost btn-sm" id="store-select-none" data-tooltip="Deselect all tracks">Select None</button>
-            <button class="btn-ghost btn-sm" id="store-research-btn" data-tooltip="Re-search the stores for selected tracks">Re-search</button>
-          </div>
-          <div class="purchase-phase match-list" id="store-match-list" style="display: none;"></div>
-
-          <!-- Cart phase -->
-          <div class="purchase-phase" id="store-cart-phase" style="display: none;">
-            <h4>Adding to Carts</h4>
-            <div class="progress-bar-container">
-              <div class="progress-bar" id="store-cart-progress-bar" style="width: 0%"></div>
-            </div>
-            <span class="progress-label" id="store-cart-progress-label"></span>
-          </div>
-
-          <!-- Done phase -->
-          <div class="purchase-phase" id="store-done-phase" style="display: none;">
-            <h4>Ready to Purchase</h4>
-            <div class="done-summary" id="store-done-summary"></div>
-            <div class="done-actions">
-              <button class="btn-primary btn-sm" id="store-open-qobuz-cart" style="display: none;" data-tooltip="Open your Qobuz cart in the panel">Open Qobuz Cart</button>
-              <button class="btn-secondary btn-sm" id="store-open-beatport-cart" style="display: none;" data-tooltip="Open your Beatport cart in the panel">Open Beatport Cart</button>
-              <button class="btn-primary btn-sm" id="store-download-btn" style="display: none;" data-tooltip="Download purchased tracks">Download Purchases</button>
-            </div>
-          </div>
-
-          <!-- Download phase -->
-          <div class="purchase-phase" id="store-download-phase" style="display: none;">
-            <h4>Downloading</h4>
-            <div class="progress-bar-container">
-              <div class="progress-bar" id="store-download-progress-bar" style="width: 0%"></div>
-            </div>
-            <span class="progress-label" id="store-download-progress-label"></span>
-          </div>
-        </div>
-        <div class="modal-actions">
-          <button class="btn-ghost" id="store-purchase-cancel" data-tooltip="Cancel the purchase flow">Cancel</button>
-          <button class="btn-primary" id="store-purchase-btn" data-tooltip="Proceed with the current phase">Proceed</button>
-          <button class="btn-primary" id="store-add-cart-btn" style="display: none;" data-tooltip="Add selected tracks to store carts">Add to Carts</button>
+          <button class="btn-ghost" id="scan-tags" data-tooltip="Look the track up online and fill in the empty fields. Nothing is saved until you click Save." style="margin-right: auto;">Scan Tags</button>
+          <button class="btn-ghost" id="cancel-tag-editor" data-tooltip="Close without saving changes">Cancel</button>
+          <button class="btn-primary" id="save-tag-editor" data-tooltip="Save these details into the file">Save</button>
         </div>
       </div>
     </div>
 
     <!-- Settings Modal -->
     <div class="modal-overlay" id="settings-modal">
-      <div class="modal modal-settings">
+      <div class="modal modal-settings" role="dialog" aria-modal="true" aria-labelledby="settings-title">
         <div class="modal-header">
-          <h3>Settings</h3>
-          <button class="btn-icon modal-close" id="close-settings" data-tooltip="Close">
+          <h3 id="settings-title">Settings</h3>
+          <button class="btn-icon modal-close" id="close-settings" aria-label="Close settings" data-tooltip="Close">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
             </svg>
           </button>
         </div>
         <div class="modal-body settings-modal-body">
-          <aside class="settings-nav" role="tablist">
-            <button type="button" class="settings-nav-item is-active" data-target="library" role="tab" data-tooltip="Library paths and scanning" data-tooltip-pos="right">Library</button>
-            <button type="button" class="settings-nav-item" id="settings-nav-rekordbox" data-target="rekordbox" role="tab" data-tooltip="Rekordbox XML import settings" data-tooltip-pos="right">Rekordbox</button>
-            <button type="button" class="settings-nav-item" data-target="console" role="tab" data-tooltip="Developer console options" data-tooltip-pos="right">Console</button>
-            <button type="button" class="settings-nav-item" data-target="spotify" role="tab" data-tooltip="Spotify API credentials" data-tooltip-pos="right">Spotify</button>
-            <button type="button" class="settings-nav-item" data-target="qobuz" role="tab" data-tooltip="Qobuz accounts and credentials" data-tooltip-pos="right">Qobuz</button>
-            <button type="button" class="settings-nav-item" data-target="beatport" role="tab" data-tooltip="Beatport accounts and credentials" data-tooltip-pos="right">Beatport</button>
+          <aside class="settings-nav" role="tablist" aria-orientation="vertical" aria-label="Settings sections">
+            <button type="button" class="settings-nav-item is-active" data-target="library" role="tab" data-tooltip="Your music folders and general options" data-tooltip-pos="right">Library</button>
+            <button type="button" class="settings-nav-item" id="settings-nav-rekordbox" data-target="rekordbox" role="tab" data-tooltip="Connect the app to your Rekordbox collection" data-tooltip-pos="right">Rekordbox</button>
+            <button type="button" class="settings-nav-item" data-target="console" role="tab" data-advanced data-tooltip="Live log of what the app is doing, for troubleshooting" data-tooltip-pos="right">Console</button>
+            <button type="button" class="settings-nav-item" data-target="spotify" role="tab" data-tooltip="Lets the app read Spotify playlists" data-tooltip-pos="right">Spotify</button>
+            <button type="button" class="settings-nav-item" data-target="qobuz" role="tab" data-tooltip="Sign in to Qobuz to search, buy and re-download" data-tooltip-pos="right">Qobuz</button>
+            <button type="button" class="settings-nav-item" data-target="beatport" role="tab" data-tooltip="Sign in to Beatport to search, buy and re-download" data-tooltip-pos="right">Beatport</button>
           </aside>
           <div class="settings-sections">
-          <div class="settings-section is-active" data-section="library">
+          <div class="settings-section is-active" data-section="library" role="tabpanel" aria-label="Library">
             <h4>Library</h4>
             <div class="setting-row">
               <div class="setting-info">
-                <label>Library Root</label>
-                <p class="setting-desc"><span id="library-root-display">(not set)</span></p>
+                <label for="library-root-display">Library folder<span class="help-tip" tabindex="0" role="img" aria-label="Help" data-tooltip="The folder that holds your music. Organize moves new tracks here, and the Library page checks it."></span></label>
+                <p class="setting-desc">Saved as soon as you pick it, then the library is checked again.</p>
                 <p class="setting-desc" id="library-scan-status" style="display: none;"></p>
               </div>
-              <button class="btn-secondary btn-sm" id="library-root-choose" data-tooltip="Choose library root folder">Choose…</button>
+              <input type="text" id="library-root-display" readonly placeholder="Not set" title="Your music library folder" />
+              <button class="btn-secondary btn-sm" id="library-root-choose" data-tooltip="Pick your music library folder. The library is checked again afterwards.">Choose…</button>
             </div>
             <div class="setting-row">
               <div class="setting-info">
-                <label for="setting-archive-path">Archive Path</label>
-                <p class="setting-desc">Where processed tracks are moved.</p>
+                <label for="setting-archive-path">Archive folder<span class="help-tip" tabindex="0" role="img" aria-label="Help" data-tooltip="Archiving moves a track out of your library without deleting it. This is where those tracks go."></span></label>
+                <p class="setting-desc">Where archived tracks go.</p>
               </div>
-              <input type="text" id="setting-archive-path" placeholder="/path/to/archive" title="Folder where processed tracks are moved" />
-              <button class="btn-secondary btn-sm" data-browse="setting-archive-path" data-type="dir" data-tooltip="Browse for archive folder">Browse</button>
+              <input type="text" id="setting-archive-path" placeholder="/path/to/archive" title="Where archived tracks go" />
+              <button class="btn-secondary btn-sm" data-browse="setting-archive-path" data-type="dir" data-tooltip="Pick the archive folder">Choose…</button>
             </div>
             <div class="setting-row">
               <div class="setting-info">
                 <label for="setting-rekordbox-enabled">Rekordbox features</label>
-                <p class="setting-desc">Show the Rekordbox settings tab and Restore page. Turn off on machines that don't manage a rekordbox library.</p>
+                <p class="setting-desc">Show the Rekordbox settings and the Restore page. Turn off if you don't use Rekordbox.</p>
               </div>
-              <input type="checkbox" id="setting-rekordbox-enabled" />
+              <label class="switch" title="Turn Rekordbox features on or off">
+                <input type="checkbox" id="setting-rekordbox-enabled" />
+                <span class="switch-slider"></span>
+              </label>
+            </div>
+            <div class="setting-row">
+              <div class="setting-info">
+                <label for="setting-show-advanced">Show advanced tools</label>
+                <p class="setting-desc">The developer console, Rekordbox database repair, and fine-tuning options. Leave this off unless you need them.</p>
+              </div>
+              <label class="switch" title="Show or hide advanced and troubleshooting controls">
+                <input type="checkbox" id="setting-show-advanced" />
+                <span class="switch-slider"></span>
+              </label>
             </div>
           </div>
 
-          <div class="settings-section" data-section="rekordbox">
+          <div class="settings-section" data-section="rekordbox" role="tabpanel" aria-label="Rekordbox">
             <h4>Rekordbox (Repair)</h4>
             <div class="setting-row">
               <div class="setting-info">
-                <label for="setting-rekordbox-xml-path">Export XML</label>
+                <label for="setting-rekordbox-xml-path">Export XML<span class="help-tip" tabindex="0" role="img" aria-label="Help" data-tooltip="In Rekordbox, choose File > Export Collection in xml format, then pick the file it saves."></span></label>
                 <p class="setting-desc">Path to <code>export.xml</code> from rekordbox. Used to find missing files and backfill library metadata.</p>
               </div>
-              <input type="text" id="setting-rekordbox-xml-path" placeholder="/path/to/export.xml" title="Path to rekordbox export.xml" />
-              <button class="btn-secondary btn-sm" data-browse="setting-rekordbox-xml-path" data-type="file" data-tooltip="Browse for rekordbox export.xml">Browse</button>
+              <input type="text" id="setting-rekordbox-xml-path" placeholder="/path/to/export.xml" title="The XML file exported from Rekordbox" />
+              <button class="btn-secondary btn-sm" data-browse="setting-rekordbox-xml-path" data-type="file" data-tooltip="Pick the XML file exported from Rekordbox">Choose…</button>
             </div>
-            <div class="setting-row">
+            <div class="setting-row" data-advanced>
               <div class="setting-info">
                 <p class="setting-desc" id="rekordbox-status">—</p>
               </div>
-              <button class="btn-secondary btn-sm" id="rekordbox-scan-btn" data-tooltip="Scan rekordbox XML for files missing on disk">Scan Missing</button>
-              <button class="btn-secondary btn-sm" id="rekordbox-import-btn" data-tooltip="Import rekordbox metadata into the library database">Import to Library</button>
+              <button class="btn-secondary btn-sm" id="rekordbox-scan-btn" data-tooltip="List tracks Rekordbox knows about whose files can't be found. Nothing is changed.">Scan Missing</button>
+              <button class="btn-secondary btn-sm" id="rekordbox-import-btn" data-tooltip="Copy track details from Rekordbox into this app's library list. Your files aren't changed.">Import to Library</button>
             </div>
-            <div class="setting-row">
+            <div class="setting-row" data-advanced>
               <div class="setting-info">
                 <label>Resync from Rekordbox</label>
                 <p class="setting-desc">Wipe the local <strong>Candybar database</strong> (<code>candybar.db</code>) for the current library root and rebuild it from rekordbox's <code>export.xml</code>. Does <strong>not</strong> touch rekordbox's own <code>master.db</code>. Useful when stale paths from an old drive are polluting matches. Ignores, dismissed duplicates, and download history are preserved.</p>
               </div>
-              <button class="btn-danger btn-sm" id="rekordbox-resync-btn" data-tooltip="Wipe library data and re-import from rekordbox XML">Resync (Wipe + Reimport)</button>
+              <button class="btn-danger btn-sm" id="rekordbox-resync-btn" data-tooltip="Clear this app's track list and rebuild it from the XML. You'll confirm first.">Clear and Rebuild…</button>
             </div>
-            <div id="rekordbox-missing-list" class="setting-desc" style="max-height: 200px; overflow-y: auto; margin-top: 8px;"></div>
+            <div id="rekordbox-missing-list" data-advanced class="setting-desc" style="max-height: 200px; overflow-y: auto; margin-top: 8px;"></div>
           </div>
 
-          <div class="settings-section" data-section="console">
+          <div class="settings-section" data-section="console" data-advanced role="tabpanel" aria-label="Console">
             <h4>Console</h4>
             <div class="setting-row">
               <div class="setting-info">
@@ -1448,21 +1415,21 @@
             </div>
           </div>
 
-          <div class="settings-section" data-section="spotify">
+          <div class="settings-section" data-section="spotify" role="tabpanel" aria-label="Spotify">
             <h4>Spotify</h4>
             <div class="setting-row">
               <div class="setting-info">
-                <label for="setting-spotify-client-id">Client ID</label>
+                <label for="setting-spotify-client-id">Client ID<span class="help-tip" tabindex="0" role="img" aria-label="Help" data-tooltip="Needed to read Spotify playlists. Create a free app at developer.spotify.com/dashboard, then copy its Client ID and Client Secret here."></span></label>
               </div>
-              <input type="text" id="setting-spotify-client-id" placeholder="Spotify client ID" title="Spotify API client ID" />
+              <input type="text" id="setting-spotify-client-id" placeholder="Spotify client ID" title="From your app at developer.spotify.com/dashboard" />
             </div>
             <div class="setting-row">
               <div class="setting-info">
                 <label for="setting-spotify-client-secret">Client Secret</label>
               </div>
               <div class="password-wrap">
-                <input type="password" id="setting-spotify-client-secret" placeholder="Spotify client secret" title="Spotify API client secret" />
-                <button type="button" class="password-toggle" data-password-toggle="setting-spotify-client-secret" aria-label="Show password" data-tooltip="Show password">
+                <input type="password" id="setting-spotify-client-secret" placeholder="Spotify client secret" title="From your app at developer.spotify.com/dashboard. Keep it private." />
+                <button type="button" class="password-toggle" data-password-toggle="setting-spotify-client-secret" aria-label="Show password" data-tooltip="Show or hide">
                   <svg class="icon-eye" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z"/><circle cx="12" cy="12" r="3"/></svg>
                   <svg class="icon-eye-off" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.94 10.94 0 0 1 12 20c-7 0-11-7-11-7a19.77 19.77 0 0 1 4.22-4.88"/><path d="M9.88 4.24A10.94 10.94 0 0 1 12 4c7 0 11 7 11 7a19.88 19.88 0 0 1-3.17 4"/><path d="M14.12 14.12a3 3 0 0 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
                 </button>
@@ -1470,7 +1437,7 @@
             </div>
           </div>
 
-          <div class="settings-section" data-section="qobuz">
+          <div class="settings-section" data-section="qobuz" role="tabpanel" aria-label="Qobuz">
             <div class="account-section-header qobuz-section-header">
               <div class="account-section-icon-wrap">
                 <svg class="account-section-icon" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
@@ -1489,7 +1456,7 @@
             </button>
           </div>
 
-          <div class="settings-section" data-section="beatport">
+          <div class="settings-section" data-section="beatport" role="tabpanel" aria-label="Beatport">
             <div class="account-section-header beatport-section-header">
               <div class="account-section-icon-wrap">
                 <svg class="account-section-icon" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
@@ -1510,20 +1477,13 @@
           </div>
         </div>
         <div class="modal-actions">
-          <button class="btn-primary" id="save-settings" data-tooltip="Save all settings">Save</button>
+          <button class="btn-primary" id="save-settings" data-tooltip="Save your changes">Save</button>
         </div>
       </div>
     </div>
 
     <!-- Floating console (script output) -->
-    <div id="floating-console" class="floating-console" style="display: none;">
-      <div class="floating-console-header">
-        <span class="floating-console-title">Console</span>
-        <div class="floating-console-actions">
-          <button class="floating-console-btn" id="floating-console-clear" data-tooltip="Clear">Clear</button>
-          <button class="floating-console-btn" id="floating-console-close" data-tooltip="Hide console">×</button>
-        </div>
-      </div>
+    <div id="floating-console" class="floating-console" data-advanced style="display: none;">
       <div class="floating-console-body" id="floating-console-body"></div>
     </div>
 
@@ -1533,7 +1493,7 @@
     <!-- Right drawer (generic, content set programmatically) -->
     <div id="right-drawer" class="right-drawer right-drawer--hidden">
       <div class="right-drawer__collapsed" id="right-drawer-collapsed">
-        <button class="right-drawer__expand-btn" id="right-drawer-expand" data-tooltip="Expand drawer">
+        <button class="right-drawer__expand-btn" id="right-drawer-expand" aria-label="Expand drawer" data-tooltip="Expand drawer">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 18 9 12 15 6"/></svg>
         </button>
       </div>
@@ -1541,10 +1501,10 @@
         <div class="right-drawer__header">
           <h3 class="right-drawer__title" id="right-drawer-title"></h3>
           <div class="right-drawer__header-actions">
-            <button class="btn-icon btn-sm" id="right-drawer-collapse" data-tooltip="Collapse">
+            <button class="btn-icon btn-sm" id="right-drawer-collapse" aria-label="Collapse drawer" data-tooltip="Collapse">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 6 15 12 9 18"/></svg>
             </button>
-            <button class="btn-icon btn-sm" id="right-drawer-hide" data-tooltip="Close">
+            <button class="btn-icon btn-sm" id="right-drawer-hide" aria-label="Close drawer" data-tooltip="Close">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
               </svg>
@@ -1563,7 +1523,7 @@
             <h2 id="aaf-heading">Fix Missing Album Art</h2>
             <span class="aaf-counter" id="aaf-counter">0 of 0</span>
           </div>
-          <button class="btn-icon" id="aaf-close" data-tooltip="Close">
+          <button class="btn-icon" id="aaf-close" aria-label="Close" data-tooltip="Close">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
             </svg>
@@ -1584,9 +1544,9 @@
               <span class="aaf-status" id="aaf-status"></span>
             </div>
             <div class="aaf-viewer">
-              <button class="btn-secondary btn-sm aaf-nav" id="aaf-prev-suggestion" aria-label="Previous suggestion" data-tooltip="Previous suggestion" disabled>&lsaquo;</button>
+              <button class="btn-secondary btn-sm aaf-nav" id="aaf-prev-suggestion" aria-label="Previous suggestion" data-tooltip="Previous suggestion" data-tooltip-disabled="This is the first suggestion" disabled>&lsaquo;</button>
               <div class="aaf-preview" id="aaf-preview"></div>
-              <button class="btn-secondary btn-sm aaf-nav" id="aaf-next-suggestion" aria-label="Next suggestion" data-tooltip="Next suggestion" disabled>&rsaquo;</button>
+              <button class="btn-secondary btn-sm aaf-nav" id="aaf-next-suggestion" aria-label="Next suggestion" data-tooltip="Next suggestion" data-tooltip-disabled="No more suggestions" disabled>&rsaquo;</button>
             </div>
             <div class="aaf-suggestion-meta" id="aaf-suggestion-meta"></div>
             <div class="aaf-grid" id="aaf-grid"></div>
@@ -1596,14 +1556,14 @@
         <div class="aaf-complete" id="aaf-complete" hidden>
           <div class="aaf-complete-icon">✓</div>
           <div class="aaf-complete-text" id="aaf-complete-text"></div>
-          <button class="btn-primary" id="aaf-done" data-tooltip="Finish the album art fix flow">Done</button>
+          <button class="btn-primary" id="aaf-done" data-tooltip="Close">Done</button>
         </div>
 
         <div class="aaf-footer">
-          <button class="btn-ghost btn-sm" id="aaf-back" data-tooltip="Go back to the previous track" disabled>Previous Track</button>
+          <button class="btn-ghost btn-sm" id="aaf-back" data-tooltip="Go back to the previous track" data-tooltip-disabled="This is the first track" disabled>Previous Track</button>
           <div class="aaf-footer-right">
-            <button class="btn-ghost" id="aaf-skip" data-tooltip="Skip this track without changing its art">Skip</button>
-            <button class="btn-primary" id="aaf-apply" data-tooltip="Apply the selected album art to this track" disabled>Apply Album Art</button>
+            <button class="btn-ghost" id="aaf-skip" data-tooltip="Leave this track's cover as it is and show the next one">Skip</button>
+            <button class="btn-primary" id="aaf-apply" data-tooltip="Save the selected cover into this track" data-tooltip-disabled="Pick a cover from the suggestions first" disabled>Apply Album Art</button>
           </div>
         </div>
       </div>

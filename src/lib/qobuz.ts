@@ -3,7 +3,9 @@
  * Scrapes public search pages - no API key required
  */
 
+import { JSDOM } from 'jsdom';
 import { createScopedLogger } from './logger';
+import { withVersion, pickQobuzLosslessTier, type QobuzTierOption } from './storeMatching';
 
 const log = createScopedLogger('Qobuz');
 
@@ -18,6 +20,16 @@ export type QobuzTrack = {
   url: string;
   /** URL of the cover art (600px by convention). null if unavailable. */
   image: string | null;
+  /** The release this hit came from. Search returns releases, so until the
+   *  track is resolved `id` is this album id and `name`/`price` are the
+   *  release's. */
+  albumId: string;
+  /** True once `id`/`name`/`price`/`quality` describe the one track on the
+   *  release that matches the request, and its lossless tier was read. */
+  trackResolved: boolean;
+  /** The chosen lossless tier's add-to-cart link (carries the articleId). */
+  cartLink?: string;
+  articleId?: string;
 };
 
 export type QobuzArtist = {
@@ -45,13 +57,16 @@ export type QobuzSearchResult = {
 const BASE_URL = 'https://www.qobuz.com';
 const USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 
-async function fetchPage(url: string): Promise<string> {
+async function fetchPage(url: string, { xhr = false }: { xhr?: boolean } = {}): Promise<string> {
   const response = await fetch(url, {
     headers: {
       'User-Agent': USER_AGENT,
       'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-      'Accept-Language': 'en-US,en;q=0.5'
-    }
+      'Accept-Language': 'en-US,en;q=0.5',
+      // The add-to-cart popin is an AJAX fragment and 404s unless asked for as one.
+      ...(xhr ? { 'X-Requested-With': 'XMLHttpRequest' } : {}),
+    },
+    signal: AbortSignal.timeout(20_000),
   });
 
   if (!response.ok) {
@@ -109,6 +124,8 @@ export async function searchQobuzTracks(query: string): Promise<QobuzTrack[]> {
     price: a.priceDisplay,
     url: `${BASE_URL}/us-en/album/${a.slug}/${a.id}`,
     image: qobuzCoverUrl(a.id),
+    albumId: a.id,
+    trackResolved: false,
   }));
 }
 
@@ -119,6 +136,92 @@ function qobuzCoverUrl(id: string): string | null {
   const last2 = id.slice(-2);
   const prev2 = id.slice(-4, -2);
   return `https://static.qobuz.com/images/covers/${last2}/${prev2}/${id}_600.jpg`;
+}
+
+// ---------- release → track ----------
+//
+// Search answers with releases; a cart needs one track and one quality tier.
+// Both are read anonymously — the catalog and the add-to-cart popin are public.
+
+/** Public web-player app id (not a secret; shipped in Qobuz's own bundle). */
+const QOBUZ_APP_ID = '798273057';
+
+export type QobuzReleaseTrack = { id: string; title: string; artist: string };
+
+/** Every track on a release: the catalog API first (structured, carries each
+ *  track's own version), the album page if that fails. A page row whose title
+ *  can't be read is left out — a track we can't name is a track we can't check. */
+export async function getQobuzReleaseTracks(albumId: string, albumUrl: string): Promise<QobuzReleaseTrack[]> {
+  try {
+    const res = await fetch(
+      `${BASE_URL}/api.json/0.2/album/get?album_id=${encodeURIComponent(albumId)}&app_id=${QOBUZ_APP_ID}`,
+      { headers: { 'User-Agent': USER_AGENT, Accept: 'application/json', 'X-App-Id': QOBUZ_APP_ID }, signal: AbortSignal.timeout(20_000) }
+    );
+    if (res.ok) {
+      const data = await res.json() as {
+        artist?: { name?: string };
+        tracks?: { items?: Array<{ id?: number; title?: string; version?: string | null; performer?: { name?: string } }> };
+      };
+      const albumArtist = data.artist?.name ?? '';
+      const tracks = (data.tracks?.items ?? [])
+        .filter(t => t.id && t.title)
+        .map(t => ({ id: String(t.id), title: withVersion(t.title!, t.version), artist: t.performer?.name || albumArtist }));
+      if (tracks.length > 0) return tracks;
+    } else {
+      log.debug(`Qobuz album/get ${albumId}: HTTP ${res.status}`);
+    }
+  } catch (err) {
+    log.debug(`Qobuz album/get ${albumId} failed:`, err);
+  }
+  if (!albumUrl) return [];
+  return parseQobuzAlbumPage(await fetchPage(albumUrl));
+}
+
+export function parseQobuzAlbumPage(html: string): QobuzReleaseTrack[] {
+  const doc = new JSDOM(html).window.document;
+  const out: QobuzReleaseTrack[] = [];
+  const seen = new Set<string>();
+  for (const btn of doc.querySelectorAll('[data-url*="popin-add-cart/track"]')) {
+    const id = (btn.getAttribute('data-url') || '').split('/').pop() || '';
+    if (!/^\d+$/.test(id) || seen.has(id)) continue;
+    const row = btn.closest('.track, .track-list__track, li, tr');
+    const text = (sel: string) => row?.querySelector(sel)?.textContent?.replace(/\s+/g, ' ').trim() || '';
+    const title = text('.track__title, .track__name, .title');
+    if (!title) continue;
+    seen.add(id);
+    out.push({ id, title, artist: text('.track__artist, .track__artists, .artist') });
+  }
+  return out;
+}
+
+/** One option per quality button in the add-to-cart popin. The text carries
+ *  every attribute that might name the format, for classifyQobuzTier. */
+export function parseQobuzPopin(html: string): QobuzTierOption[] {
+  const doc = new JSDOM(html).window.document;
+  const options: QobuzTierOption[] = [];
+  for (const btn of doc.querySelectorAll('[data-cart-link]')) {
+    const cartLink = btn.getAttribute('data-cart-link') || '';
+    const text = [
+      btn.textContent ?? '',
+      ...['data-label', 'data-format', 'data-quality', 'aria-label', 'title'].map(a => btn.getAttribute(a) ?? ''),
+    ].join(' ').replace(/\s+/g, ' ').trim();
+    const shown = (btn.textContent ?? '').match(/[$€£]\s?\d+[.,]\d{2}/)?.[0];
+    const attr = Number(btn.getAttribute('data-price'));
+    options.push({
+      text,
+      cartLink,
+      price: shown ?? (Number.isFinite(attr) && attr > 0 ? `$${attr.toFixed(2)}` : undefined),
+      articleId: btn.getAttribute('data-id') || cartLink.match(/articleId=(\d+)/)?.[1] || undefined,
+    });
+  }
+  return options;
+}
+
+/** The best positively-lossless tier Qobuz sells for one track, or null when
+ *  it sells none. Throws when the popin can't be read at all. */
+export async function getQobuzLosslessTier(trackId: string, prefer: 'hires' | 'cd' = 'hires') {
+  const html = await fetchPage(`${BASE_URL}/v4/ajax/popin-add-cart/track/${encodeURIComponent(trackId)}`, { xhr: true });
+  return pickQobuzLosslessTier(parseQobuzPopin(html), prefer);
 }
 
 type LiveAlbum = {
@@ -147,6 +250,7 @@ function extractLiveAlbums(html: string): LiveAlbum[] {
         id: string;
         slug: string;
         title: string;
+        version?: string | null;
         artists?: Array<{ name: string }>;
         bitDepth?: string;
         samplingRate?: string;
@@ -157,7 +261,8 @@ function extractLiveAlbums(html: string): LiveAlbum[] {
         out.push({
           id: a.id,
           slug: a.slug,
-          title: a.title,
+          // Qobuz keeps "HNTR Remix" in `version`, apart from the title.
+          title: withVersion(a.title, a.version),
           artists: (a.artists ?? []).map(x => x.name),
           bitDepth: a.bitDepth ?? null,
           samplingRate: a.samplingRate ?? null,

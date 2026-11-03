@@ -338,6 +338,66 @@ export async function getPlaylistTracks(
   return { playlist, tracks };
 }
 
+/**
+ * Look up tracks by Spotify ID, 50 per request (the API's cap). IDs Spotify
+ * no longer knows come back as null and are left out of the map.
+ *
+ * A 429 waits out Retry-After and tries again. A 400 means one id in the batch
+ * is malformed (a truncated Rekordbox URI), and Spotify rejects the whole batch
+ * for it, so the batch is halved until the bad id stands alone and is dropped —
+ * one bad entry can't fail a whole playlist.
+ */
+export async function getSpotifyTracksByIds(
+  ids: string[],
+  credentials: SpotifyCredentials
+): Promise<Map<string, SpotifyTrack>> {
+  const found = new Map<string, SpotifyTrack>();
+  const MAX_RETRIES = 5;
+  const MAX_RETRY_SECONDS = 60;
+
+  async function lookup(batch: string[], retries = 0): Promise<void> {
+    const token = await getAccessToken(credentials);
+    const response = await fetchWithTimeout(
+      `https://api.spotify.com/v1/tracks?ids=${batch.map(encodeURIComponent).join(',')}`,
+      { headers: { Authorization: `Bearer ${token}` } }
+    );
+    if (response.ok) {
+      const data = await response.json() as { tracks: Array<SpotifyApiTrack | null> };
+      for (const t of data.tracks) {
+        if (t) found.set(t.id, mapTrack(t));
+      }
+      return;
+    }
+    if (response.status === 429 && retries < MAX_RETRIES) {
+      const wait = Math.min(parseInt(response.headers.get('retry-after') || '2', 10) || 2, MAX_RETRY_SECONDS);
+      log.warn(`Spotify rate limited looking up tracks (retry ${retries + 1}/${MAX_RETRIES}), waiting ${wait}s`);
+      await new Promise(r => setTimeout(r, wait * 1000));
+      return lookup(batch, retries + 1);
+    }
+    if (response.status === 401 && retries === 0) {
+      tokenCache = null;
+      return lookup(batch, retries + 1);
+    }
+    if (response.status === 400) {
+      if (batch.length === 1) {
+        log.warn(`Spotify rejected track id ${batch[0]} as invalid — skipped`);
+        return;
+      }
+      const mid = Math.ceil(batch.length / 2);
+      await lookup(batch.slice(0, mid));
+      await lookup(batch.slice(mid));
+      return;
+    }
+    const errText = await response.text();
+    throw new Error(`Spotify API error looking up tracks: ${errText}`);
+  }
+
+  for (let i = 0; i < ids.length; i += 50) {
+    await lookup(ids.slice(i, i + 50));
+  }
+  return found;
+}
+
 export async function testSpotifyConnection(credentials: SpotifyCredentials): Promise<boolean> {
   try {
     await getAccessToken(credentials);

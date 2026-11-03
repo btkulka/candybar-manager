@@ -15,15 +15,16 @@ export type IntegrityResult =
  * collapses it to ~0. If the "other" byte order is dramatically more coherent
  * than the order the header claims, the file is broken.
  *
- * Read cost is small (one fd, ~64KB), so this is cheap to run per track.
+ * Read cost is small (one fd: the 12-byte FORM header, the chunk headers and
+ * 16KB of PCM), so this is cheap to run per track.
  */
 export async function checkAiffIntegrity(filePath: string): Promise<IntegrityResult> {
   let fd: fs.promises.FileHandle | null = null;
   try {
     fd = await fs.promises.open(filePath, 'r');
-    const header = Buffer.alloc(64 * 1024);
+    const header = Buffer.alloc(12);
     const { bytesRead } = await fd.read(header, 0, header.length, 0);
-    if (bytesRead < 64) return { status: 'unknown', reason: 'file too small' };
+    if (bytesRead < 12) return { status: 'unknown', reason: 'file too small' };
 
     if (header.toString('ascii', 0, 4) !== 'FORM') return { status: 'unknown', reason: 'not a FORM file' };
     const formType = header.toString('ascii', 8, 12);

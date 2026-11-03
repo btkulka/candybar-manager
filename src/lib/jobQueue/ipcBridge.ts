@@ -1,4 +1,4 @@
-import { ipcMain, BrowserWindow } from 'electron';
+import { BrowserWindow } from 'electron';
 import { createScopedLogger } from '../logger';
 import { JobManager } from './jobManager';
 import { JobInfo, JobProgress } from './types';
@@ -38,15 +38,7 @@ export function initJobQueue(): void {
   manager.on('job-progress', (progress: JobProgress) => broadcast('job-progress', progress));
   manager.on('job-log', (entry: { jobId: string; text: string; stream: string }) => broadcast('job-log', entry));
 
-  // IPC: list all jobs
-  ipcMain.handle('get-jobs', () => manager!.getAllJobs());
-
-  // IPC: cancel a job
-  ipcMain.handle('cancel-job', (_event, { jobId }: { jobId: string }) => {
-    const cancelled = manager!.cancel(jobId);
-    log.info('Cancel requested for job:', jobId, cancelled ? 'ok' : 'not found');
-    return { cancelled };
-  });
+  // Listing and cancelling jobs are the `job-list` / `job-cancel` handlers in main.ts.
 
   log.info('Job queue initialized');
 }

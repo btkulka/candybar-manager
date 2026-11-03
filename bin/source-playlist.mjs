@@ -23,7 +23,7 @@ import { loadPlaylist } from '../lib/sourcing/playlist.mjs';
 import { loadLibrary, bucketTracks } from '../lib/sourcing/library.mjs';
 import { bestQobuzMatch, resolveCart } from '../lib/sourcing/qobuz.mjs';
 import { openBeatport, getAccessToken, makeSearcher, bestBeatportMatch } from '../lib/sourcing/beatport.mjs';
-import { pickStore, STORE_MATCH_FLOOR } from '../lib/sourcing/matching.mjs';
+import { pickStore, beatportFallback, STORE_MATCH_FLOOR } from '../lib/sourcing/matching.mjs';
 import { sessionDir } from '../lib/sourcing/config.mjs';
 
 const RATE_LIMIT_MS = 500;
@@ -209,8 +209,9 @@ async function main() {
       if (bpRes.status === 'rejected') log(`          beatport search failed: ${bpRes.reason?.message}`);
       if (qbRes.status === 'rejected') log(`          qobuz search failed: ${qbRes.reason?.message}`);
 
-      const { store, pick, runnerUp } = pickStore(bp, qb);
-      let match = pick;
+      const chosen = pickStore(bp, qb);
+      let { store, runnerUp } = chosen;
+      let match = chosen.pick;
 
       // Qobuz search returns ALBUM ids; a cart needs a TRACK id + its tiers.
       if (store === 'qobuz' && match) {
@@ -218,6 +219,15 @@ async function main() {
           match = await resolveCart(match, want, { prefer: args.prefer });
         } catch (err) {
           match = { ...match, cartError: err.message };
+        }
+        // No lossless tier, or not on the release: a lossless Beatport match
+        // is the buy instead, and the Qobuz miss stays visible as runner-up.
+        const fallback = beatportFallback(match, bp);
+        if (fallback) {
+          log(`          qobuz: ${match.cartError} — using the Beatport match instead`);
+          runnerUp = match;
+          match = { ...fallback, fallbackFrom: { store: 'qobuz', reason: match.cartError } };
+          store = 'beatport';
         }
       }
 

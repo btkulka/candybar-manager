@@ -28,6 +28,8 @@ export type UpdateStatus = {
   ahead: number;
   /** Tracked files modified — a one-click pull could conflict. */
   dirty: boolean;
+  /** Untracked local files that an incoming commit adds — `pull --ff-only` refuses these. */
+  untrackedCollisions: string[];
   /** Subjects of the incoming commits, newest first (capped). */
   incoming: string[];
 };
@@ -57,19 +59,23 @@ export async function checkForUpdate(repoDir: string): Promise<UpdateStatus | nu
   try {
     await git(repoDir, ['fetch', '--quiet', 'origin', UPDATE_BRANCH]);
     const remote = `origin/${UPDATE_BRANCH}`;
-    const [branch, behind, ahead, porcelain, incoming] = await Promise.all([
+    const [branch, behind, ahead, porcelain, incoming, addedUpstream, untracked] = await Promise.all([
       git(repoDir, ['rev-parse', '--abbrev-ref', 'HEAD']),
       git(repoDir, ['rev-list', '--count', `HEAD..${remote}`]),
       git(repoDir, ['rev-list', '--count', `${remote}..HEAD`]),
       git(repoDir, ['status', '--porcelain', '--untracked-files=no']),
       git(repoDir, ['log', '--format=%s', '-n', '8', `HEAD..${remote}`]),
+      git(repoDir, ['diff', '--name-only', '--diff-filter=A', `HEAD...${remote}`]),
+      git(repoDir, ['ls-files', '--others', '--exclude-standard']),
     ]);
+    const untrackedSet = new Set(untracked ? untracked.split('\n') : []);
     const status: UpdateStatus = {
       repoDir,
       branch,
       behind: Number(behind) || 0,
       ahead: Number(ahead) || 0,
       dirty: porcelain.length > 0,
+      untrackedCollisions: (addedUpstream ? addedUpstream.split('\n') : []).filter(f => untrackedSet.has(f)),
       incoming: incoming ? incoming.split('\n') : [],
     };
     log.info(`Update check: branch=${branch} behind=${status.behind} ahead=${status.ahead} dirty=${status.dirty}`);
@@ -86,8 +92,15 @@ export async function checkForUpdate(repoDir: string): Promise<UpdateStatus | nu
  * branch mean the user should pull by hand.
  */
 export function oneClickBlocker(s: UpdateStatus): string | null {
+  // `rev-parse --abbrev-ref HEAD` prints "HEAD" when no branch is checked out.
+  if (s.branch === 'HEAD') return `This checkout isn't on a branch (detached HEAD); check out ${UPDATE_BRANCH} first.`;
   if (s.branch !== UPDATE_BRANCH) return `You're on branch "${s.branch}", not ${UPDATE_BRANCH}.`;
   if (s.dirty) return 'This checkout has uncommitted changes.';
+  if (s.untrackedCollisions?.length) {
+    const shown = s.untrackedCollisions.slice(0, 3).join(', ');
+    const more = s.untrackedCollisions.length > 3 ? ` and ${s.untrackedCollisions.length - 3} more` : '';
+    return `Untracked local files would be overwritten by the update: ${shown}${more}.`;
+  }
   if (s.ahead > 0) return `This checkout has ${s.ahead} local commit${s.ahead === 1 ? '' : 's'} not on GitHub.`;
   return null;
 }

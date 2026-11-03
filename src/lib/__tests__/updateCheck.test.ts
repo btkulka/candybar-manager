@@ -61,16 +61,36 @@ describe('checkForUpdate', () => {
     git(app, 'checkout', '--', 'a.txt');
   });
 
+  it('finds untracked local files that an incoming commit adds', async () => {
+    await commit(upstream, 'collide.txt', 'adds collide.txt');
+    git(upstream, 'push', 'origin', 'main');
+    await fs.writeFile(path.join(app, 'collide.txt'), 'local, untracked');
+    const s = await checkForUpdate(app);
+    expect(s?.dirty).toBe(false); // untracked files don't count as dirty...
+    expect(s?.untrackedCollisions).toEqual(['collide.txt']); // ...but this one would block the pull
+    expect(oneClickBlocker(s!)).toMatch(/collide\.txt/);
+    await fs.rm(path.join(app, 'collide.txt'));
+  });
+
   it('returns null outside a git checkout', async () => {
     expect(await checkForUpdate(tmp)).toBeNull();
   });
 });
 
 describe('oneClickBlocker', () => {
-  const base: UpdateStatus = { repoDir: '/x', branch: 'main', behind: 3, ahead: 0, dirty: false, incoming: [] };
+  const base: UpdateStatus = { repoDir: '/x', branch: 'main', behind: 3, ahead: 0, dirty: false, untrackedCollisions: [], incoming: [] };
 
   it('blocks on another branch or local commits', () => {
     expect(oneClickBlocker({ ...base, branch: 'feature' })).toMatch(/feature/);
     expect(oneClickBlocker({ ...base, ahead: 1 })).toMatch(/1 local commit /);
+  });
+
+  it('explains a detached HEAD instead of calling it a branch named "HEAD"', () => {
+    expect(oneClickBlocker({ ...base, branch: 'HEAD' })).toMatch(/detached HEAD/);
+  });
+
+  it('blocks when untracked files would be overwritten by the pull', () => {
+    expect(oneClickBlocker({ ...base, untrackedCollisions: ['src/lib/new.ts'] })).toMatch(/src\/lib\/new\.ts/);
+    expect(oneClickBlocker(base)).toBeNull();
   });
 });

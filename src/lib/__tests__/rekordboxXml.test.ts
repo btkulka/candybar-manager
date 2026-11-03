@@ -91,3 +91,63 @@ describe('rewriteLocations', () => {
     expect(res.notFound).toEqual([]);
   });
 });
+
+// Rekordbox escapes attribute values (&amp; &apos; ...) — the parser must decode
+// them and the rewriter must produce well-formed XML for any path.
+const ENTITY_XML = `<?xml version="1.0" encoding="UTF-8"?>
+<DJ_PLAYLISTS>
+  <COLLECTION Entries="3">
+    <TRACK TrackID="1" Name="Don&apos;t Stop" Artist="Above &amp; Beyond" TotalTime="412"
+           Location="file://localhost/Volumes/X/Music/Above%20&amp;%20Beyond/Don't%20Stop.aif"></TRACK>
+    <TRACK TrackID="2" Name="A > B" Artist="Gt" Location="file://localhost/old2.aif"></TRACK>
+    <TRACK TrackID="3" Name="Plain" Artist="P" Location="file://localhost/old3.aif"></TRACK>
+  </COLLECTION>
+  <PLAYLISTS><NODE Name="ROOT"><NODE Name="p"><TRACK Key="3"/></NODE></NODE></PLAYLISTS>
+</DJ_PLAYLISTS>
+`;
+
+describe('XML entities and special characters', () => {
+  it('decodes entities in parsed attributes (artist, title, location)', async () => {
+    await fs.writeFile(xmlPath, ENTITY_XML);
+    const tracks = await parseRekordboxXml(xmlPath);
+    expect(tracks.map(t => t.trackId)).toEqual(['1', '2', '3']);
+    expect(tracks[0]).toMatchObject({
+      artist: 'Above & Beyond',
+      title: "Don't Stop",
+      origPath: "/Volumes/X/Music/Above & Beyond/Don't Stop.aif",
+      totalTime: 412,
+    });
+    // A raw '>' inside a quoted value doesn't cut the tag short.
+    expect(tracks[1]).toMatchObject({ title: 'A > B', origPath: '/old2.aif' });
+  });
+
+  it('writes "&" and "$1"/"$&" in a new path as well-formed, literal XML', async () => {
+    await fs.writeFile(xmlPath, ENTITY_XML);
+    const weird = "/Volumes/X/Music/Above & Beyond/Ca$h $1 $& Deal.aif";
+    const res = await rewriteLocations(xmlPath, [{ trackId: '3', newPath: weird }], { backup: false });
+    expect(res.updated).toEqual(['3']);
+    const xml = await fs.readFile(xmlPath, 'utf8');
+    // No raw '&' outside an entity anywhere in the document.
+    expect(/&(?!amp;|lt;|gt;|quot;|apos;|#\d+;|#x[0-9a-f]+;)/i.test(xml)).toBe(false);
+    // Exactly one TRACK 3 element; nothing got spliced in.
+    expect(xml.match(/TrackID="3"/g)).toHaveLength(1);
+    // Round trip: parsing gives back the exact path.
+    const back = (await parseRekordboxXml(xmlPath)).find(t => t.trackId === '3');
+    expect(back?.origPath).toBe(weird);
+  });
+
+  it('updates many tracks in one pass and only touches the named TRACK tags', async () => {
+    await fs.writeFile(xmlPath, ENTITY_XML);
+    const res = await rewriteLocations(xmlPath, [
+      { trackId: '1', newPath: '/new/1.aif' },
+      { trackId: '2', newPath: '/new/2.aif' },
+      { trackId: '99', newPath: '/new/99.aif' },
+    ], { backup: false });
+    expect(res.updated).toEqual(['1', '2']);
+    expect(res.notFound).toEqual(['99']);
+    const tracks = await parseRekordboxXml(xmlPath);
+    expect(tracks.map(t => t.origPath)).toEqual(['/new/1.aif', '/new/2.aif', '/old3.aif']);
+    // Playlist entries are untouched.
+    expect(await fs.readFile(xmlPath, 'utf8')).toContain('<TRACK Key="3"/>');
+  });
+});

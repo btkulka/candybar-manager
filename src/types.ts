@@ -148,6 +148,14 @@ export type ConversionResult = {
   originalPath: string;
   outputPath?: string;
   errorMessage?: string;
+  /** The caller asked for the original to be removed, but Rekordbox still
+   *  references it (or the collection couldn't be read), so it was kept. The
+   *  entry needs relinking to `outputPath` in Rekordbox first. */
+  keptOriginalForRekordbox?: boolean;
+  /** The conversion succeeded but the original couldn't be moved to the Trash
+   *  (it is still in place); `originalDeleteError` says why. */
+  originalTrashFailed?: boolean;
+  originalDeleteError?: string;
 };
 
 export type HealthSummary = {
@@ -168,6 +176,8 @@ export type LibraryHealthTrack = {
   genre: string;
   hasAlbumArt: boolean;
   dateAdded: number | null;
+  /** Tempo from tags (or Rekordbox's AverageBpm); null when the file carries none. */
+  bpm: number | null;
   isHealthy: boolean;
   issues: HealthIssue[];
   format: TrackHealthFormat;
@@ -342,6 +352,8 @@ export type AppConfig = {
   excludedVolumes: string[]; // volume names to hide from the Devices panel
   rekordboxXmlPath: string; // path to rekordbox export.xml (used for backwards repair)
   rekordboxEnabled?: boolean; // when false, hides rekordbox UI (settings tab, Restore page) for machines that don't manage a rekordbox library
+  showAdvancedTools?: boolean; // when false (default), hides developer and repair controls marked data-advanced
+  tutorialCompleted?: boolean; // false until the first-run tour is finished or skipped; config files that predate the tour read as true
 };
 
 // Store purchase types
@@ -372,6 +384,9 @@ export type StoreMatch = {
   // Qobuz-specific: articleId for cart add
   articleId?: string;
   cartLink?: string;
+  /** Qobuz: the release the match was found on. Set with an empty `trackId`
+   *  when search couldn't pin the track down; the cart add resolves it. */
+  albumId?: string;
   /** Which account this match came from (for owned-track downloads). */
   sourceAccountId?: string;
   /** Beatport-specific: needed to generate the signed download URL for this purchase. */
@@ -415,19 +430,26 @@ export type LibraryProbableRow = {
   suspectedFileArtist: string;
   suspectedFileTitle: string;
   confidence: number;
+  /** Why it's only probable: "file on disk, not in Rekordbox" (you have the
+   *  file but never imported it) or "uncertain match". */
+  reason?: string;
 };
 
-/** Playlist metadata surfaced to the renderer as soon as a Spotify playlist is
- *  fetched, so the source flow can show the cover art / name / track count while
- *  the (slower) library scan runs. Emitted on `library-sourcing:playlist-info`. */
+/** Playlist metadata surfaced to the renderer as soon as a Spotify playlist or
+ *  SoundCloud set is fetched, so the source flow can show the cover art / name /
+ *  track count while the (slower) library scan runs. Emitted on
+ *  `library-sourcing:playlist-info`. */
 export type SourcePlaylistInfo = {
   name: string;
   imageUrl: string | null;
-  /** Total tracks in the playlist (Spotify's count). */
+  /** Total tracks in the playlist (the service's own count). */
   trackCount: number;
   /** Playable tracks actually fetched (excludes local/unavailable). */
   fetchedCount: number;
   owner: string;
+  /** Where the list came from; drives the card's badge. Unset on snapshots
+   *  saved before SoundCloud sets were supported, which were all Spotify. */
+  source?: 'spotify' | 'soundcloud' | 'rekordbox';
 };
 
 /** The combined response from `library-sourcing:run`: phase 1's library match
@@ -443,6 +465,61 @@ export type LibrarySourcingResult = {
   /** Inputs that had no library match and no store match — so the user can
    *  see what fully slipped through. */
   notFound: import('./lib/qobuzCart').QobuzCartTrackInput[];
+};
+
+// ---------- Lossless upgrades (Rekordbox playlist → lossless store copies) ----------
+
+/** A regular or smart playlist in the live Rekordbox collection. Folders are
+ *  flattened into `path` ("Gigs / 2026"); they aren't pickable themselves. */
+export type RekordboxPlaylistSummary = {
+  id: string;
+  name: string;
+  /** Parent folders, outermost first, joined with " / ". Empty at the root. */
+  path: string;
+  kind: 'playlist' | 'smart';
+  count: number;
+  /** Set on a smart playlist whose rules pyrekordbox can't evaluate; it can't be picked. */
+  unreadable?: string;
+  /** A smart playlist the reader ran out of time to count; `count` is 0 but
+   *  the playlist may well have tracks, so it stays pickable. */
+  countUnknown?: boolean;
+};
+
+/** How a Rekordbox entry's audio is held. `streaming` is a Spotify/SoundCloud
+ *  &c. entry with no file behind it; `unknown` is a format we can't call. */
+export type UpgradeFormatClass = 'lossless' | 'lossy' | 'streaming' | 'unknown';
+
+/** One playlist entry, classified and (when it needs an upgrade) searched. */
+export type LosslessUpgradeRow = {
+  rbId: string;
+  artist: string;
+  title: string;
+  album: string;
+  /** Rekordbox FolderPath: a file path, or a `spotify:track:…` style URI. */
+  filePath: string;
+  format: UpgradeFormatClass;
+  /** Short human label for what's held now: "MP3 320", "AAC 256", "Spotify stream", "AIFF 16/44.1". */
+  formatLabel: string;
+  duration?: number;
+  /** A lossless entry for the same track (same version) is already in the
+   *  collection, so this one needs relinking in Rekordbox, not buying. */
+  losslessCopy?: { rbId: string; filePath: string; formatLabel: string };
+  /** Store search result. Only set for lossy/streaming rows with no lossless copy. */
+  match?: import('./lib/qobuzCart').QobuzCartMatch;
+  /** Why a row couldn't be searched (e.g. a streaming title that couldn't be read). */
+  note?: string;
+};
+
+export type LosslessUpgradeResult = {
+  playlist: RekordboxPlaylistSummary;
+  rows: LosslessUpgradeRow[];
+};
+
+export type LosslessUpgradeProgress = {
+  phase: 'reading' | 'resolving' | 'searching';
+  current: number;
+  total: number;
+  message: string;
 };
 
 export type StoreSearchProgress = {

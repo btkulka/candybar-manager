@@ -102,11 +102,20 @@ export async function repairAiffHeader(filePath: string): Promise<boolean> {
     was: diag.currentCompressionType,
   });
 
-  const handle = await fs.open(filePath, 'r+');
   try {
-    await handle.write(Buffer.from('NONE', 'ascii'), 0, 4, diag.compressionTypeOffset);
-  } finally {
-    await handle.close();
+    const handle = await fs.open(filePath, 'r+');
+    try {
+      await handle.write(Buffer.from('NONE', 'ascii'), 0, 4, diag.compressionTypeOffset);
+    } finally {
+      await handle.close();
+    }
+  } catch (err) {
+    recordWrite({
+      op: 'header-repair', src: filePath, outcome: 'error',
+      error: err instanceof Error ? err.message : String(err),
+      detail: { offset: diag.compressionTypeOffset, was: diag.currentCompressionType },
+    });
+    throw err;
   }
   recordWrite({
     op: 'header-repair', src: filePath, outcome: 'ok',

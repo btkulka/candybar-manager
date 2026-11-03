@@ -1,6 +1,7 @@
 import type { TrackInfo, OrganizeResult, OrganizeConflictFile, OrganizeState, OrganizeProgress, ScanProgress } from './shared';
 import type { OrganizeConflict } from '../types';
-import { showToast, setStatus, escapeHtml, getValue, setValue, icons, showContextMenu, openTagEditor, formatDuration, getErrorMessage, convertTrackWithRepair } from './shared';
+import { showToast, setStatus, escapeHtml, getValue, setValue, icons, actionHints, showContextMenu, openTagEditor, formatDuration, getErrorMessage, convertTrackWithRepair } from './shared';
+import { confirmAction, confirmMoveToTrash } from './confirmDialog';
 import { addConversionTask, updateConversionTask } from './activity';
 import { playFile } from './player';
 import { pushFloatingConsole } from './settings';
@@ -55,6 +56,10 @@ let organizeFilter: OrganizeFilter = 'all';
 // Startup restoreOrganizeState races with fast user action — without this
 // guard, a late cache restore can clobber freshly-scanned tracks.
 let userHasModifiedState = false;
+// Scan → autopopulate → rescan. Organize and Clear stay locked until it ends:
+// autopopulate is still writing tags into these files, and the rescan replaces
+// the list.
+let scanPipelineRunning = false;
 
 function syncOrganizeState() {
   window.candybar.updateOrganizeState({ tracks, conflicts });
@@ -180,21 +185,21 @@ function createTrackElement(track: TrackInfo): HTMLElement {
       ${resultHtml}
     </div>
     <div class="track-actions">
-      <button class="btn-icon preview-btn" data-tooltip="Preview">
+      <button class="btn-icon preview-btn" aria-label="Play preview" data-tooltip="${escapeHtml(actionHints.play)}">
         <svg class="icon-play" viewBox="0 0 24 24" fill="currentColor" stroke="none"><polygon points="5 3 19 12 5 21 5 3"/></svg>
         <svg class="icon-stop" viewBox="0 0 24 24" fill="currentColor" stroke="none"><rect x="6" y="6" width="12" height="12" rx="1"/></svg>
       </button>
       ${
         !track.health?.isHealthy
-          ? `<button class="btn-icon convert-btn" data-tooltip="Convert to AIFF">${icons.convert}</button>`
+          ? `<button class="btn-icon convert-btn" aria-label="Convert to AIFF" data-tooltip="${escapeHtml(actionHints.convertAiff)}">${icons.convert}</button>`
           : ''
       }
-      <button class="btn-icon edit-btn" data-tooltip="Edit tags">${icons.edit}</button>
-      <button class="btn-icon ignore-btn ${track.ignored ? 'active' : ''}" data-tooltip="${track.ignored ? 'Include track' : 'Ignore track'}">
+      <button class="btn-icon edit-btn" aria-label="Edit tags" data-tooltip="${escapeHtml(actionHints.editTags)}">${icons.edit}</button>
+      <button class="btn-icon ignore-btn ${track.ignored ? 'active' : ''}" aria-label="${track.ignored ? 'Include track' : 'Ignore track'}" aria-pressed="${track.ignored}" data-tooltip="${escapeHtml(track.ignored ? actionHints.include : actionHints.ignore)}">
         ${track.ignored ? icons.include : icons.ignore}
       </button>
-      <button class="btn-icon archive-btn" data-tooltip="Archive track">${icons.archive}</button>
-      <button class="btn-icon delete-btn" data-tooltip="Delete file">${icons.trash}</button>
+      <button class="btn-icon archive-btn" aria-label="Archive track" data-tooltip="${escapeHtml(actionHints.archive)}">${icons.archive}</button>
+      <button class="btn-icon delete-btn" aria-label="Move to Trash" data-tooltip="${escapeHtml(actionHints.trash)}">${icons.trash}</button>
     </div>
   `;
 
@@ -222,7 +227,7 @@ function createTrackElement(track: TrackInfo): HTMLElement {
   });
 
   const deleteBtn = el.querySelector('.delete-btn') as HTMLButtonElement;
-  deleteBtn.addEventListener('click', () => showDeleteConfirm(track));
+  deleteBtn.addEventListener('click', () => trashTrack(track));
 
   // Context menu
   el.addEventListener('contextmenu', (e) => {
@@ -232,28 +237,34 @@ function createTrackElement(track: TrackInfo): HTMLElement {
       {
         label: 'Convert to AIFF',
         icon: icons.convert,
+        hint: actionHints.convertAiff,
         action: () => handleConvertTrack(track)
       },
       {
         label: 'Edit tags',
         icon: icons.edit,
+        hint: actionHints.editTags,
         action: () => openTagEditor(track, updateTrackInList)
       },
       {
         label: track.ignored ? 'Include track' : 'Ignore track',
         icon: track.ignored ? icons.include : icons.ignore,
+        hint: track.ignored ? actionHints.include : actionHints.ignore,
         action: () => toggleIgnore(track.id)
       },
       { separator: true },
       {
         label: 'Archive track',
         icon: icons.archive,
+        hint: actionHints.archive,
         action: () => handleArchiveTrack(track)
       },
       {
-        label: 'Delete file',
+        label: 'Move to Trash…',
         icon: icons.trash,
-        action: () => showDeleteConfirm(track)
+        danger: true,
+        hint: actionHints.trash,
+        action: () => trashTrack(track)
       }
     ];
     showContextMenu(e.clientX, e.clientY, items);
@@ -406,7 +417,24 @@ function updateTrackCount() {
   }
 }
 
+/** Rescanned list, keeping the user's Ignore choices and finished statuses. */
+function mergeRescan(fresh: TrackInfo[]): TrackInfo[] {
+  const previous = new Map(tracks.map((t) => [t.filePath, t]));
+  return fresh.map((t) => {
+    const old = previous.get(t.filePath);
+    return old ? { ...t, ignored: old.ignored, status: old.status, resultPath: old.resultPath, errorMessage: old.errorMessage } : t;
+  });
+}
+
 function updateRunButton() {
+  clearTracksBtn.disabled = scanPipelineRunning;
+  if (scanPipelineRunning) {
+    runOrganize.disabled = true;
+    runOrganize.dataset.tooltipDisabled = 'Still reading and filling in tags. This unlocks when the scan finishes.';
+    return;
+  }
+  runOrganize.dataset.tooltipDisabled = 'Scan a folder first, or include at least one track';
+
   // On the Ready tab, scope the action to just the ready tracks — blocking
   // warnings/missing-artist tracks elsewhere shouldn't prevent organizing these.
   if (organizeFilter === 'ready') {
@@ -442,46 +470,23 @@ function toggleIgnore(trackId: string) {
 
 // ========== Delete Track ==========
 
-function showDeleteConfirm(track: TrackInfo) {
-  const modal = document.getElementById('delete-modal') as HTMLDivElement;
-  const fileName = document.getElementById('delete-file-name') as HTMLSpanElement;
-  const filePath = document.getElementById('delete-file-path') as HTMLSpanElement;
-  const confirmBtn = document.getElementById('delete-modal-confirm') as HTMLButtonElement;
-  const cancelBtn = document.getElementById('delete-modal-cancel') as HTMLButtonElement;
-  const closeBtn = document.getElementById('delete-modal-close') as HTMLButtonElement;
-
-  fileName.textContent = track.fileName;
-  filePath.textContent = track.filePath;
-  modal.style.display = 'flex';
-
-  function cleanup() {
-    modal.style.display = 'none';
-    confirmBtn.removeEventListener('click', onConfirm);
-    cancelBtn.removeEventListener('click', cleanup);
-    closeBtn.removeEventListener('click', cleanup);
-  }
-
-  async function onConfirm() {
-    cleanup();
-    try {
-      const result = await window.candybar.deleteTrackFile(track.filePath);
-      if (result.success) {
-        showToast('success', 'Track Deleted', `${track.fileName} has been deleted.`);
-        tracks = tracks.filter((t) => t.id !== track.id);
-        renderTrackList();
-        syncOrganizeState();
-      } else {
-        showToast('error', 'Delete Failed', result.error || 'Unknown error');
-      }
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Unknown error';
-      showToast('error', 'Delete Failed', message);
+async function trashTrack(track: TrackInfo) {
+  if (!(await confirmMoveToTrash([track]))) return;
+  userHasModifiedState = true;
+  try {
+    const result = await window.candybar.deleteTrackFile(track.filePath);
+    if (result.success) {
+      showToast('success', 'Moved to Trash', `${track.fileName} is in the Trash if you need it back.`);
+      tracks = tracks.filter((t) => t.id !== track.id);
+      renderTrackList();
+      syncOrganizeState();
+    } else {
+      // Trash-only: when the Trash refuses (e.g. some USB formats) the file stays put.
+      showToast('error', 'Not moved to Trash', result.error || 'The file is still where it was.');
     }
+  } catch (err) {
+    showToast('error', 'Not moved to Trash', getErrorMessage(err));
   }
-
-  confirmBtn.addEventListener('click', onConfirm);
-  cancelBtn.addEventListener('click', cleanup);
-  closeBtn.addEventListener('click', cleanup);
 }
 
 async function handleArchiveTrack(track: TrackInfo) {
@@ -527,7 +532,7 @@ async function handleConvertTrack(track: TrackInfo) {
 
       const source = getValue('organize-source');
       if (source) {
-        tracks = await window.candybar.scanTracks(source);
+        tracks = mergeRescan(await window.candybar.scanTracks(source));
         renderTrackList();
         syncOrganizeState();
       }
@@ -554,7 +559,7 @@ async function autopopulateTracks(tracksToPopulate: TrackInfo[]) {
   const progressHandler = (payload: { current: number; total: number; filePath: string }) => {
     setStatus(`Autopopulating metadata (${payload.current}/${payload.total})...`);
   };
-  window.candybar.onAutopopulateProgress(progressHandler);
+  const offAutopopulate = window.candybar.onAutopopulateProgress(progressHandler);
 
   try {
     const input = tracksToPopulate.map((t) => ({
@@ -582,6 +587,8 @@ async function autopopulateTracks(tracksToPopulate: TrackInfo[]) {
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Unknown error';
     showToast('error', 'Autopopulate Failed', message);
+  } finally {
+    offAutopopulate();
   }
 }
 
@@ -595,6 +602,8 @@ async function handleScanTracks() {
   userHasModifiedState = true;
   setStatus('Scanning...');
   scanTracksBtn.disabled = true;
+  scanPipelineRunning = true;
+  updateRunButton();
   showScanProgress();
   const offScanProgress = window.candybar.onScanProgress(updateScanProgress);
 
@@ -611,7 +620,7 @@ async function handleScanTracks() {
       syncOrganizeState();
       await autopopulateTracks(tracks);
       // Re-scan so UI reflects any tags written by autopopulate.
-      tracks = await window.candybar.scanTracks(source);
+      tracks = mergeRescan(await window.candybar.scanTracks(source));
       renderTrackList();
       // All tracks have been through the analysis queue — refresh library tags
       // so the Library tab picks up any writes autopopulate made.
@@ -628,19 +637,20 @@ async function handleScanTracks() {
     offScanProgress();
     hideScanProgress();
     scanTracksBtn.disabled = false;
+    scanPipelineRunning = false;
+    updateRunButton();
   }
 }
 
 // ========== Config ==========
 
 async function saveOrganizeConfig() {
-  const currentConfig = await window.candybar.getConfig();
-  const config = {
-    ...currentConfig,
-    organizeSourceDir: getValue('organize-source')
-  };
-  await window.candybar.setConfig(config);
-  showToast('success', 'Defaults Saved');
+  try {
+    await window.candybar.updateConfig({ organizeSourceDir: getValue('organize-source') });
+    showToast('success', 'Defaults Saved');
+  } catch (err) {
+    showToast('error', 'Save Failed', getErrorMessage(err));
+  }
 }
 
 // ========== Conflicts ==========
@@ -698,33 +708,38 @@ function renderConflicts() {
       </div>
     `;
 
-    el.querySelector('.keep-incoming-btn')!.addEventListener('click', () => resolveConflict(i, 'incoming'));
-    el.querySelector('.keep-existing-btn')!.addEventListener('click', () => resolveConflict(i, 'existing'));
+    el.querySelector('.keep-incoming-btn')!.addEventListener('click', () => void resolveConflict(conflict, 'incoming', el));
+    el.querySelector('.keep-existing-btn')!.addEventListener('click', () => void resolveConflict(conflict, 'existing', el));
 
     conflictsList.appendChild(el);
   }
 }
 
-async function resolveConflict(index: number, keep: 'incoming' | 'existing') {
-  const conflict = conflicts[index];
-  if (!conflict) return;
+async function resolveConflict(conflict: OrganizeConflict, keep: 'incoming' | 'existing', el: HTMLElement) {
+  // Both buttons lock while the files move, so a double-click can't run it twice.
+  const buttons = el.querySelectorAll<HTMLButtonElement>('.conflict-actions button');
+  buttons.forEach((b) => { b.disabled = true; });
 
-  const result = await window.candybar.organizeResolveConflict(
-    conflict.incoming.filePath,
-    conflict.existing.filePath,
-    conflict.targetPath,
-    keep
-  );
-
-  if (result.success) {
-    const keptFile = keep === 'incoming' ? conflict.incoming.fileName : conflict.existing.fileName;
-    showToast('success', 'Conflict Resolved', `Kept "${keptFile}"`);
-    conflicts.splice(index, 1);
-    renderConflicts();
-    syncOrganizeState();
-  } else {
+  try {
+    const result = await window.candybar.organizeResolveConflict(
+      conflict.incoming.filePath,
+      conflict.existing.filePath,
+      conflict.targetPath,
+      keep
+    );
+    if (result.success) {
+      const keptFile = keep === 'incoming' ? conflict.incoming.fileName : conflict.existing.fileName;
+      showToast('success', 'Conflict Resolved', `Kept "${keptFile}"`);
+      conflicts = conflicts.filter((c) => c !== conflict);
+      renderConflicts();
+      syncOrganizeState();
+      return;
+    }
     showToast('error', 'Resolution Failed', result.error || 'Unknown error');
+  } catch (err) {
+    showToast('error', 'Resolution Failed', getErrorMessage(err));
   }
+  buttons.forEach((b) => { b.disabled = false; });
 }
 
 // ========== Run Organize ==========
@@ -775,7 +790,34 @@ async function runOrganizeHandler() {
     return;
   }
 
+  // organizeTracks skips unhealthy files, so count only what will really move.
+  const movable = tracksToOrganize.filter((t) => t.health?.isHealthy !== false).length;
+  if (movable === 0) {
+    showToast('warning', 'Nothing to move', 'Every track here has a problem to fix first. The Warnings tab shows what\'s wrong.');
+    return;
+  }
+  const held = tracksToOrganize.length - movable;
+  const ignoredCount = readyOnly ? 0 : tracks.filter((t) => t.ignored && t.status === 'pending').length;
+  // Locked from the first click so a double-click can't open two confirms.
   runOrganize.disabled = true;
+  const libraryRoot = await window.candybar.getLibraryRoot();
+  const confirmed = await confirmAction({
+    title: `Move ${movable} track${movable === 1 ? '' : 's'} into your library?`,
+    message: 'Each track goes into a folder named after its artist.',
+    details: [
+      { label: 'From', value: getValue('organize-source') || 'Source folder' },
+      { label: 'Into', value: libraryRoot || 'Your library folder' },
+      ...(held > 0 ? [{ label: 'Left in place', value: `${held} with problems to fix first` }] : []),
+      ...(ignoredCount > 0 ? [{ label: 'Ignored', value: `${ignoredCount} you chose to skip` }] : []),
+    ],
+    safetyNote: 'Nothing gets overwritten. If a track is already in your library, you choose which copy to keep.',
+    confirmLabel: `Move ${movable} track${movable === 1 ? '' : 's'}`,
+    tone: 'info',
+  });
+  if (!confirmed) { updateRunButton(); return; }
+
+  // A rescan mid-run would swap the list out from under the progress events.
+  scanTracksBtn.disabled = true;
 
   setStatus('Organizing...');
   organizeRunCounters = { success: 0, conflict: 0, error: 0, skipped: 0 };
@@ -825,8 +867,9 @@ async function runOrganizeHandler() {
     clearTrackProcessing();
     progressEl.style.display = 'none';
   } finally {
-    runOrganize.disabled = false;
     organizeRunCounters = null;
+    scanTracksBtn.disabled = false;
+    updateRunButton();
   }
 }
 

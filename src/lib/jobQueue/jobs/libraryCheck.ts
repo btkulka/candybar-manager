@@ -47,7 +47,8 @@ export const libraryCheckJob: JobDefinition<CheckParams, CheckResult> = {
         libraryRoot,
         tracks: trackRecords,
         preScannedFiles: fileList?.files,
-        onProgress
+        onProgress,
+        signal: ctx.signal
       });
     }
 
@@ -56,7 +57,8 @@ export const libraryCheckJob: JobDefinition<CheckParams, CheckResult> = {
         libraryRoot,
         csvPath,
         preScannedFiles: fileList?.files,
-        onProgress
+        onProgress,
+        signal: ctx.signal
       });
     }
 

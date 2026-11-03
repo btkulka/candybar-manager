@@ -12,11 +12,12 @@ import fsp from 'fs/promises';
 import path from 'path';
 import fuzzball from 'fuzzball';
 import { createScopedLogger } from './logger';
-import { walkAudioDir } from './fileUtils';
+import { walkAudioDir, isPathUnder } from './fileUtils';
+import { isTrackDeleted } from './db';
 import { normalizeForComparison } from './stringUtils';
 import { parseRekordboxXml, rewriteLocations, type RekordboxTrack } from './rekordboxXml';
 import {
-  listExternalVolumes, buildUsbIndex, matchAgainstUsbIndex,
+  listExternalVolumes, buildUsbIndex, matchAgainstUsbIndex, usbMatchDurationOk,
   type UsbVolume, type UsbMatch,
 } from './usbScan';
 import {
@@ -120,6 +121,8 @@ export type RestoreProgress = {
     missing: number;
     recovered: number;
     stillMissing: number;
+    /** Missing on disk but deliberately left out: tracks the user deleted. */
+    deletedSkipped: number;
   };
   /** Seconds since the restore job started. */
   elapsedSec: number;
@@ -139,11 +142,18 @@ export type XmlRewriteSummary = {
   notFound: number;
 };
 
+/** A track restore left out on purpose (never a failure or "still missing"). */
+export type RestoreSkippedTrack = { trackId: string; artist: string; title: string; reason: string };
+
 export type RestoreReport = {
   options: RestoreOptions;
   totals: RestoreProgress['totals'];
   bySource: Record<string, number>;
   results: RestoreTrackResult[];
+  /** Tracks the user deleted: listed separately, not counted as missing or failed. */
+  deletedSkipped: RestoreSkippedTrack[];
+  /** Store accounts whose purchase history couldn't be read ("couldn't check", not "owns nothing"). */
+  storeErrors: string[];
   /** Populated when options.rewriteXml is true. */
   xmlRewrite?: XmlRewriteSummary;
   startedAt: string;
@@ -164,19 +174,51 @@ function fuzzTitle(a: string, b: string): number {
   return Math.max(fuzzball.ratio(aN, bN), fuzzball.token_set_ratio(aN, bN)) / 100;
 }
 
-/** Scan library and decide which Rekordbox tracks are already present (reuses prior logic). */
+/** Accent- and normalization-insensitive lowercase fold for filename comparisons
+ *  (exFAT keeps NFC or NFD as written; Rekordbox may hold the other form). */
+function foldName(s: string): string {
+  return s.normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+}
+
+/**
+ * Decide which Rekordbox tracks have no file in the library. This one stays a
+ * filesystem check on purpose: restore is about files missing on disk. Throws
+ * rather than reporting the whole collection missing when the library can't be
+ * read (unmounted drive, wrong root, "Candy Bar 1" remount).
+ */
 async function computeMissing(xmlTracks: RekordboxTrack[], libraryRoot: string): Promise<RekordboxTrack[]> {
-  const libFiles = await walkAudioDir(libraryRoot);
-  const byBasename = new Map<string, string[]>();
-  for (const f of libFiles) {
-    const base = path.basename(f).toLowerCase();
-    if (!byBasename.has(base)) byBasename.set(base, []);
-    byBasename.get(base)!.push(f);
+  if (!fs.existsSync(libraryRoot)) {
+    throw new Error(`Library directory not found: ${libraryRoot}`);
   }
+  const failedDirs: string[] = [];
+  const libFiles = await walkAudioDir(libraryRoot, { failedDirs });
+  if (libFiles.length === 0 && xmlTracks.length > 0) {
+    throw new Error(
+      `Library scan found no audio files under ${libraryRoot}; refusing to treat all ` +
+      `${xmlTracks.length} Rekordbox tracks as missing. Check the drive is mounted and the library root is right.`
+    );
+  }
+  if (failedDirs.length > 0) {
+    log.warn(`computeMissing: ${failedDirs.length} unreadable folder(s); tracks under them are treated as present`);
+  }
+
+  const byBasename = new Set<string>();
+  // Fuzzy fallback index: top-level (artist) folder -> folded file names in it.
+  const byFolder = new Map<string, string[]>();
+  for (const f of libFiles) {
+    byBasename.add(foldName(path.basename(f)));
+    const folder = foldName(path.relative(libraryRoot, f).split(path.sep)[0] || '');
+    const list = byFolder.get(folder);
+    if (list) list.push(foldName(path.basename(f)));
+    else byFolder.set(folder, [foldName(path.basename(f))]);
+  }
+  const folders = Array.from(byFolder.keys());
+
   const missing: RekordboxTrack[] = [];
   for (const t of xmlTracks) {
-    const origBase = path.basename(t.origPath || '').toLowerCase();
+    const origBase = foldName(path.basename(t.origPath || ''));
     if (origBase && byBasename.has(origBase)) continue;
+    if (t.origPath && isPathUnder(t.origPath, failedDirs)) continue; // can't tell; don't re-fetch
 
     // Fuzzy fallback: artist folder contains all tokens + >=60% of title tokens in filename.
     const firstArtist = (t.artist || '').split(/[,&]/)[0].trim();
@@ -184,14 +226,13 @@ async function computeMissing(xmlTracks: RekordboxTrack[], libraryRoot: string):
     const titleTokens = normalizeForComparison(t.title).split(' ').filter(Boolean);
     if (titleTokens.length === 0 || artistTokens.length === 0) { missing.push(t); continue; }
 
-    const found = libFiles.find(f => {
-      const rel = f.slice(libraryRoot.length + 1);
-      const folder = (rel.split('/')[0] || '').toLowerCase();
-      const fname = path.basename(f).toLowerCase();
-      if (!artistTokens.every(w => folder.includes(w))) return false;
-      const hits = titleTokens.filter(w => fname.includes(w)).length / titleTokens.length;
-      return hits >= 0.6;
-    });
+    let found = false;
+    for (const folder of folders) {
+      if (!artistTokens.every(w => folder.includes(w))) continue;
+      found = byFolder.get(folder)!.some(fname =>
+        titleTokens.filter(w => fname.includes(w)).length / titleTokens.length >= 0.6);
+      if (found) break;
+    }
     if (!found) missing.push(t);
   }
   return missing;
@@ -201,7 +242,22 @@ async function copyUsbMatch(match: UsbMatch, stageDir: string): Promise<string> 
   const ext = path.extname(match.sourcePath);
   const destName = sanitizeFilename(`${match.rekordboxTrack.artist} - ${match.rekordboxTrack.title}${ext}`);
   const destPath = path.join(stageDir, destName);
-  if (!fs.existsSync(destPath)) await fsp.copyFile(match.sourcePath, destPath);
+  const srcSize = (await fsp.stat(match.sourcePath)).size;
+  const existing = await fsp.stat(destPath).catch(() => null);
+  // Reuse an earlier copy only when it's complete; a short file is a partial
+  // copy from an interrupted run and must not be reported as recovered.
+  if (existing && existing.size === srcSize) return destPath;
+  // Copy via a hidden partial so an interrupted copy never sits at destPath.
+  const partial = path.join(stageDir, `.${destName}.partial-${Date.now()}`);
+  try {
+    await fsp.copyFile(match.sourcePath, partial);
+    const copied = await fsp.stat(partial);
+    if (copied.size !== srcSize) throw new Error(`copy incomplete (${copied.size} of ${srcSize} bytes)`);
+    await fsp.rename(partial, destPath);
+  } catch (err) {
+    await fsp.unlink(partial).catch(() => {});
+    throw err;
+  }
   return destPath;
 }
 
@@ -246,9 +302,11 @@ export async function restoreLibrary(
   await fsp.mkdir(options.stageDir, { recursive: true });
 
   const totals: RestoreProgress['totals'] = {
-    totalXmlTracks: 0, alreadyInLibrary: 0, missing: 0, recovered: 0, stillMissing: 0,
+    totalXmlTracks: 0, alreadyInLibrary: 0, missing: 0, recovered: 0, stillMissing: 0, deletedSkipped: 0,
   };
   const results = new Map<string, RestoreTrackResult>();
+  const deletedSkipped: RestoreSkippedTrack[] = [];
+  const storeErrors: string[] = [];
 
   // Per-account counters keyed by `${service}:${accountId}` so we can serialize
   // them on every emit without allocating a new list unnecessarily.
@@ -318,8 +376,23 @@ export async function restoreLibrary(
   phaseEnd('scanning_library', 'Library scan complete');
 
   phaseStart('computing_missing', 'Computing missing tracks');
-  const missing = await computeMissing(xmlTracks, options.libraryRoot);
-  totals.alreadyInLibrary = xmlTracks.length - missing.length;
+  const missingOnDisk = await computeMissing(xmlTracks, options.libraryRoot);
+  // Anything the user deleted stays deleted: never restore a tombstoned track.
+  const missing: RekordboxTrack[] = [];
+  for (const t of missingOnDisk) {
+    if (isTrackDeleted({ artist: t.artist, title: t.title })) {
+      deletedSkipped.push({ trackId: t.trackId, artist: t.artist, title: t.title, reason: 'you deleted this track' });
+    } else {
+      missing.push(t);
+    }
+  }
+  totals.deletedSkipped = deletedSkipped.length;
+  if (deletedSkipped.length > 0) {
+    log.info(`Skipping ${deletedSkipped.length} missing track(s) the user deleted`);
+    emit({ phase: 'computing_missing', message: `Skipping ${deletedSkipped.length} track(s) you deleted`,
+      log: { level: 'info', message: `Skipping ${deletedSkipped.length} deleted track(s); deleted tracks are never restored` } });
+  }
+  totals.alreadyInLibrary = xmlTracks.length - missingOnDisk.length;
   totals.missing = missing.length;
   totals.stillMissing = missing.length;
   for (const t of missing) results.set(t.trackId, { track: t, status: 'pending', source: null });
@@ -328,6 +401,24 @@ export async function restoreLibrary(
 
   // Working set of tracks still to recover
   let remaining = [...missing];
+
+  /** A store download declined this track because the user deleted it: drop it
+   *  from the results (it is neither missing nor failed) and list it separately. */
+  const skipDeleted = (track: RekordboxTrack, reason: string) => {
+    if (!results.delete(track.trackId)) return;
+    totals.missing--; totals.stillMissing--; totals.deletedSkipped++;
+    deletedSkipped.push({ trackId: track.trackId, artist: track.artist, title: track.title, reason });
+  };
+  /** Record purchase-history read failures: they mean "couldn't check", not "not owned". */
+  const noteStoreErrors = (phase: RestorePhase, errors: string[] | undefined) => {
+    for (const e of errors ?? []) {
+      storeErrors.push(e);
+      log.warn(`Couldn't check ${e}`);
+      emit({ phase, message: `Couldn't check ${e}`, log: { level: 'warn', message: `Couldn't check ${e}` } });
+    }
+  };
+  const findSkipped = (dl: { skipped?: { trackId: string; artist: string; title: string; reason: string }[] }, m: StoreMatch) =>
+    dl.skipped?.find(x => x.trackId === m.trackId) ?? dl.skipped?.find(x => x.artist === m.artist && x.title === m.title);
 
   // ---------- Stage 1: USB ----------
   if (options.sources.usb && remaining.length > 0) {
@@ -355,6 +446,12 @@ export async function restoreLibrary(
       for (const t of remaining) {
         const hit = matchAgainstUsbIndex(t, index);
         if (!hit) { nextRemaining.push(t); continue; }
+        if (!(await usbMatchDurationOk(hit))) {
+          nextRemaining.push(t);
+          const r = results.get(t.trackId)!;
+          r.detail = (r.detail ? r.detail + '; ' : '') + `usb ${hit.method} match rejected: length differs from Rekordbox (${path.basename(hit.sourcePath)})`;
+          continue;
+        }
         try {
           const destPath = await copyUsbMatch(hit, options.stageDir);
           const r = results.get(t.trackId)!;
@@ -395,6 +492,7 @@ export async function restoreLibrary(
     }
     phaseStart('beatport_fetch', `Fetching purchases from ${beatportAccounts.length} Beatport account(s)`);
     const owned = await fetchAllBeatportPurchases(beatportAccounts);
+    noteStoreErrors('beatport_fetch', owned.errors);
     // Attribute owned counts back to each account.
     const beatportOwnedByAccount = new Map<string, number>();
     for (const o of owned) {
@@ -407,7 +505,7 @@ export async function restoreLibrary(
       bumpPerAccount(key, 'beatport', a.id, { ownedCount: beatportOwnedByAccount.get(a.id) ?? 0 });
     }
     log.info(`Beatport: ${owned.length} tracks owned across ${beatportAccounts.length} account(s)`);
-    phaseEnd('beatport_fetch', `${owned.length} tracks owned on Beatport`);
+    phaseEnd('beatport_fetch', `${owned.length} tracks owned on Beatport${owned.errors?.length ? ` (${owned.errors.length} account(s) couldn't be checked)` : ''}`);
     emit({ phase: 'beatport_fetch', message: `${owned.length} total purchases fetched`, withPerAccount: true });
 
     const toDownload: StoreMatch[] = [];
@@ -447,6 +545,8 @@ export async function restoreLibrary(
       for (let i = 0; i < toDownload.length; i++) {
         const rbxId = matchedTrackIds[i];
         const rbx = results.get(rbxId)!;
+        const skip = findSkipped(dl, toDownload[i]);
+        if (skip) { skipDeleted(rbx.track, skip.reason); continue; }
         const expectedBase = sanitizeFilename(`${toDownload[i].artist} - ${toDownload[i].title}`).toLowerCase();
         const matchAccountId = toDownload[i].sourceAccountId ?? beatportAccounts[0]?.id;
         rbx.sourceAccountId = matchAccountId;
@@ -475,11 +575,12 @@ export async function restoreLibrary(
         }
       }
       for (const t of remaining) {
-        const r = results.get(t.trackId)!;
-        if (r.status !== 'recovered') nextRemaining.push(t);
+        const r = results.get(t.trackId);
+        // Deleted-and-skipped tracks are gone from results: not "still to recover".
+        if (r && r.status !== 'recovered') nextRemaining.push(t);
       }
       remaining = nextRemaining;
-      phaseEnd('beatport_download', `Beatport download complete — ${dl.downloaded.length} succeeded, ${dl.failed.length} failed`);
+      phaseEnd('beatport_download', `Beatport download complete — ${dl.downloaded.length} succeeded, ${dl.failed.length} failed${dl.skipped?.length ? `, ${dl.skipped.length} skipped (you deleted them)` : ''}`);
       emit({ phase: 'beatport_download', message: 'Beatport complete', withPerAccount: true });
     } else {
       phaseEnd('beatport_download', 'No Beatport downloads needed');
@@ -499,6 +600,7 @@ export async function restoreLibrary(
     }
     phaseStart('qobuz_fetch', `Fetching purchases from ${qobuzAccounts.length} Qobuz account(s)`);
     const owned = await fetchAllQobuzPurchases(qobuzAccounts);
+    noteStoreErrors('qobuz_fetch', owned.errors);
     const qobuzOwnedByAccount = new Map<string, number>();
     for (const o of owned) {
       const acct = o.sourceAccountId ?? qobuzAccounts[0]?.id;
@@ -510,7 +612,7 @@ export async function restoreLibrary(
       bumpPerAccount(key, 'qobuz', a.id, { ownedCount: qobuzOwnedByAccount.get(a.id) ?? 0 });
     }
     log.info(`Qobuz: ${owned.length} tracks owned across ${qobuzAccounts.length} account(s)`);
-    phaseEnd('qobuz_fetch', `${owned.length} tracks owned on Qobuz`);
+    phaseEnd('qobuz_fetch', `${owned.length} tracks owned on Qobuz${owned.errors?.length ? ` (${owned.errors.length} account(s) couldn't be checked)` : ''}`);
     emit({ phase: 'qobuz_fetch', message: `${owned.length} total purchases fetched`, withPerAccount: true });
 
     const toDownload: StoreMatch[] = [];
@@ -546,6 +648,8 @@ export async function restoreLibrary(
       for (let i = 0; i < toDownload.length; i++) {
         const rbxId = matchedTrackIds[i];
         const rbx = results.get(rbxId)!;
+        const skip = findSkipped(dl, toDownload[i]);
+        if (skip) { skipDeleted(rbx.track, skip.reason); continue; }
         const expectedBase = sanitizeFilename(`${toDownload[i].artist} - ${toDownload[i].title}`).toLowerCase();
         const matchAccountId = toDownload[i].sourceAccountId ?? qobuzAccounts[0]?.id;
         rbx.sourceAccountId = matchAccountId;
@@ -573,7 +677,7 @@ export async function restoreLibrary(
           }
         }
       }
-      phaseEnd('qobuz_download', `Qobuz download complete — ${dl.downloaded.length} succeeded, ${dl.failed.length} failed`);
+      phaseEnd('qobuz_download', `Qobuz download complete — ${dl.downloaded.length} succeeded, ${dl.failed.length} failed${dl.skipped?.length ? `, ${dl.skipped.length} skipped (you deleted them)` : ''}`);
       emit({ phase: 'qobuz_download', message: 'Qobuz complete', withPerAccount: true });
     } else {
       phaseEnd('qobuz_download', 'No Qobuz downloads needed');
@@ -589,6 +693,11 @@ export async function restoreLibrary(
   for (const r of resultsList) {
     if (r.status === 'pending') {
       r.status = 'still_missing';
+      if (!r.failureCategory && storeErrors.length > 0) {
+        // Some purchase history couldn't be read, so "no match" isn't proven.
+        r.failureCategory = storeErrors.some(e => /login|auth|unauthori|401|403|sign.?in/i.test(e)) ? 'login' : 'other';
+        r.detail = (r.detail ? r.detail + '; ' : '') + `not found in the purchases that could be read; couldn't check: ${storeErrors.join('; ')}`;
+      }
       // If we never matched it and don't have a more specific reason, mark as no_match.
       if (!r.failureCategory) r.failureCategory = 'no_match';
     }
@@ -651,6 +760,8 @@ export async function restoreLibrary(
 
   return {
     options, totals, bySource, results: resultsList,
+    deletedSkipped,
+    storeErrors,
     xmlRewrite,
     startedAt: startedAt.toISOString(),
     finishedAt: finishedAt.toISOString(),

@@ -3,8 +3,29 @@ import path from 'path';
 import { AUDIO_EXTENSIONS } from './constants';
 import { createScopedLogger } from './logger';
 import { recordWrite, statBytes, type WriteJournalEntry } from './writeJournal';
+import { updateDownloadedTrackPath } from './db';
+import { invalidateLibraryFileLists } from './jobQueue/sharedResultStore';
 
 const log = createScopedLogger('FileUtils');
+
+/**
+ * In-flight scratch files written next to real tracks by this app: converter
+ * temps (`X.converting-<ts>-<id>.aif`), tag-write temps (`X_tagtmp.aiff`), move
+ * partials (`.X.partial-<ts>`). They carry audio extensions, so every walker
+ * must skip them or a half-written file gets scanned, organized or matched.
+ */
+export function isTransientAudioName(name: string): boolean {
+  return /\.converting-\d+-[a-z0-9]+\.[^.]+$/i.test(name)
+    || /_tagtmp\.[^.]+$/i.test(name)
+    || /\.partial-\d+$/i.test(name);
+}
+
+/** Bookkeeping after any successful move: keep download records pointing at the
+ *  file, and drop cached file lists that still list the old path. */
+function afterMove(source: string, destination: string): void {
+  updateDownloadedTrackPath(source, destination);
+  invalidateLibraryFileLists();
+}
 
 // ExFAT on macOS occasionally returns ENOENT on rename into a freshly created
 // directory because the new dir entry hasn't been flushed to the FAT yet.
@@ -56,6 +77,7 @@ export async function safeMove(
   try {
     await tryRename(source, destination);
     journal('ok');
+    afterMove(source, destination);
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code;
     if (code === 'ENOENT') {
@@ -63,6 +85,7 @@ export async function safeMove(
         await fs.access(destination);
         log.debug(`Source missing but destination exists; treating as already moved: ${destination}`);
         journal('ok', { detail: { noop: 'already-moved' } });
+        afterMove(source, destination);
         return;
       } catch { /* fall through */ }
       journal('error', { error: err instanceof Error ? err.message : String(err) });
@@ -72,7 +95,27 @@ export async function safeMove(
       journal('error', { error: err instanceof Error ? err.message : String(err) });
       throw err;
     }
-    await fs.copyFile(source, destination);
+    // Cross-filesystem: copy to a hidden partial beside the destination, verify
+    // the size, then rename it into place. A failed or short copy never leaves a
+    // file at `destination` that a retry (or archive's "already archived" check)
+    // could mistake for a finished move, and the source is untouched until the
+    // copy is proven complete.
+    const partial = path.join(path.dirname(destination), `.${path.basename(destination)}.partial-${Date.now()}`);
+    try {
+      await fs.copyFile(source, partial);
+      const [srcStat, partStat] = await Promise.all([fs.stat(source), fs.stat(partial)]);
+      if (srcStat.size !== partStat.size) {
+        throw new Error(`copy incomplete (${partStat.size} of ${srcStat.size} bytes)`);
+      }
+      await fs.rename(partial, destination);
+    } catch (copyErr) {
+      await fs.unlink(partial).catch(() => {});
+      journal('error', {
+        error: `cross-filesystem copy failed: ${copyErr instanceof Error ? copyErr.message : String(copyErr)}`,
+        detail: { mode: 'copy+delete', sourceUntouched: true },
+      });
+      throw copyErr;
+    }
     try {
       await fs.unlink(source);
     } catch (unlinkErr) {
@@ -85,29 +128,39 @@ export async function safeMove(
       throw unlinkErr;
     }
     journal('ok', { detail: { mode: 'copy+delete' } });
+    afterMove(source, destination);
   }
 }
 
 export type WalkDirOptions = {
   skipHidden?: boolean;
   onProgress?: (count: number) => void;
+  /** Stop with an 'Cancelled' error once aborted (checked per directory). */
+  signal?: AbortSignal;
+  /** Don't descend more than this many levels below `root` (0 = root only). */
+  maxDepth?: number;
+  /** Collects directories that couldn't be read, so callers can avoid treating
+   *  their (unlisted) contents as deleted. */
+  failedDirs?: string[];
 };
 
 /**
  * Recursively walk a directory and return all audio file paths.
- * Uses an iterative stack to avoid deep recursion.
+ * Uses an iterative stack to avoid deep recursion. This is the one walker every
+ * scan should use: it resolves DT_UNKNOWN dirents and skips this app's temp files.
  */
 export async function walkAudioDir(
   root: string,
   options: WalkDirOptions = {}
 ): Promise<string[]> {
-  const { skipHidden = true, onProgress } = options;
+  const { skipHidden = true, onProgress, signal, maxDepth = Infinity, failedDirs } = options;
   log.debug('Walking audio directory:', root);
   const files: string[] = [];
-  const stack = [root];
+  const stack: { dir: string; depth: number }[] = [{ dir: root, depth: 0 }];
 
   while (stack.length > 0) {
-    const dir = stack.pop()!;
+    if (signal?.aborted) throw new Error('Cancelled');
+    const { dir, depth } = stack.pop()!;
     let entries;
     try {
       entries = await fs.readdir(dir, { withFileTypes: true });
@@ -115,11 +168,13 @@ export async function walkAudioDir(
       // One unreadable subdir (permissions, transient I/O) must not abort the
       // whole scan — skip it and keep walking.
       log.warn(`Skipping unreadable directory: ${dir}`, err);
+      failedDirs?.push(dir);
       continue;
     }
 
     for (const entry of entries) {
       if (skipHidden && entry.name.startsWith('.')) continue;
+      if (isTransientAudioName(entry.name)) continue;
 
       const fullPath = path.join(dir, entry.name);
       let isDir = entry.isDirectory();
@@ -136,7 +191,7 @@ export async function walkAudioDir(
       }
 
       if (isDir) {
-        stack.push(fullPath);
+        if (depth < maxDepth) stack.push({ dir: fullPath, depth: depth + 1 });
       } else if (isFile) {
         const ext = path.extname(entry.name).toLowerCase();
         if (AUDIO_EXTENSIONS.has(ext)) {
@@ -151,6 +206,11 @@ export async function walkAudioDir(
 
   log.debug('Walk complete:', files.length, 'audio files found');
   return files;
+}
+
+/** True when `filePath` sits inside any of `dirs` (used to keep rows under unreadable dirs). */
+export function isPathUnder(filePath: string, dirs: string[]): boolean {
+  return dirs.some(d => filePath === d || filePath.startsWith(d.endsWith(path.sep) ? d : d + path.sep));
 }
 
 /**

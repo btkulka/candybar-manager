@@ -1,10 +1,14 @@
 import { spawn } from 'child_process';
 import fs from 'fs/promises';
 import path from 'path';
+import { parseFile } from 'music-metadata';
 import { createScopedLogger } from './logger';
 import { repairAiffHeader } from './aiffRepair';
-import { recordWrite } from './writeJournal';
+import { recordWrite, statBytes } from './writeJournal';
 import { safeDelete } from './safeDelete';
+import { readDjTags } from './djTags';
+import { updateDownloadedTrackPath } from './db';
+import { invalidateLibraryFileLists } from './jobQueue/sharedResultStore';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const ffmpegPath: string = require('ffmpeg-static');
 // eslint-disable-next-line @typescript-eslint/no-var-requires, @typescript-eslint/no-require-imports
@@ -17,6 +21,19 @@ export type ConversionResult = {
   originalPath: string;
   outputPath?: string;
   errorMessage?: string;
+  /** True when the output replaced the original under the same name. */
+  replacedInPlace?: boolean;
+  /** Where the replaced original went, when it was moved into a Trash folder we know. */
+  originalTrashPath?: string;
+};
+
+export type ConvertOptions = {
+  /**
+   * Never move or replace the original. A conversion to a new extension leaves
+   * the original beside the output (it already does); an in-place conversion
+   * (same filename) is refused instead of replacing the file.
+   */
+  keepOriginal?: boolean;
 };
 
 export type ConversionProgress = {
@@ -97,137 +114,181 @@ function tempConversionPath(outputPath: string): string {
   return `${stem}.converting-${Date.now()}-${Math.random().toString(36).slice(2, 8)}${ext}`;
 }
 
-export async function convertToAiff(
-  filePath: string,
-  onProgress?: ProgressCallback
-): Promise<ConversionResult> {
-  const available = await checkFfmpegAvailable();
-  if (!available) {
-    return { success: false, originalPath: filePath, errorMessage: 'ffmpeg not available' };
+type ConversionJob = {
+  filePath: string;
+  outputPath: string;
+  /** Codec/format args placed between the stream maps and the output path. */
+  codecArgs: string[];
+  /** Write ID3v2 (AIFF needs it switched on; MP3 has it by default). */
+  writeId3: boolean;
+  context: 'convert-aiff' | 'reencode-mp3';
+  onProgress?: ProgressCallback;
+  options?: ConvertOptions;
+};
+
+/**
+ * Tag args that carry DJ tags across. -map_metadata 0 copies most fields, but a
+ * FLAC/WAV source names BPM/key 'BPM'/'INITIALKEY', which the ID3 writer would
+ * emit as TXXX frames that Rekordbox ignores, so set TBPM/TKEY explicitly.
+ */
+async function djTagArgs(filePath: string): Promise<string[]> {
+  try {
+    const meta = await parseFile(filePath, { duration: false, skipCovers: true });
+    const tags = readDjTags(meta);
+    const bpm = tags.bpm;
+    let key = tags.key;
+    if (!key) {
+      // Vorbis/FLAC keeps the key as INITIALKEY, which music-metadata doesn't map to common.key.
+      for (const native of Object.values(meta.native)) {
+        const hit = native.find(t => /^(INITIALKEY|INITIAL KEY|KEY)$/i.test(t.id) && t.value != null && String(t.value).trim());
+        if (hit) { key = String(hit.value).trim(); break; }
+      }
+    }
+    const args: string[] = [];
+    if (bpm) args.push('-metadata', `TBPM=${bpm}`, '-metadata', 'BPM=');
+    if (key) args.push('-metadata', `TKEY=${key}`, '-metadata', 'INITIALKEY=');
+    return args;
+  } catch {
+    return [];
+  }
+}
+
+function runFfmpeg(args: string[], onStderr?: (text: string) => void): Promise<{ code: number | null; stderr: string; spawnError?: Error }> {
+  return new Promise((resolve) => {
+    const proc = spawn(ffmpegPath, args);
+    let stderr = '';
+    proc.stderr.on('data', (data: Buffer) => {
+      const text = data.toString();
+      stderr += text;
+      onStderr?.(text);
+    });
+    proc.on('close', (code) => resolve({ code, stderr }));
+    proc.on('error', (err) => resolve({ code: null, stderr, spawnError: err }));
+  });
+}
+
+/**
+ * Shared conversion runner: ffmpeg into a sibling temp, then finalize. Tags and
+ * cover art are carried over. An in-place conversion moves the original into the
+ * Trash before the converted file takes its name, so it stays recoverable. Every
+ * outcome — refusals and failures included — is journaled.
+ */
+async function runConversion(job: ConversionJob): Promise<ConversionResult> {
+  const { filePath, outputPath, codecArgs, writeId3, context, onProgress, options } = job;
+  const inPlace = path.resolve(filePath) === path.resolve(outputPath);
+  const bytes = await statBytes(filePath);
+  const fail = (errorMessage: string, detail: Record<string, unknown> = {}): ConversionResult => {
+    recordWrite({ op: 'convert', src: filePath, dest: outputPath, bytes, context, outcome: 'error', error: errorMessage, detail: { inPlace, ...detail } });
+    return { success: false, originalPath: filePath, errorMessage };
+  };
+
+  if (!(await checkFfmpegAvailable())) return fail('ffmpeg not available');
+
+  const conflict = await conversionTargetError(filePath, outputPath);
+  if (conflict) {
+    log.warn(`${context} refusing to overwrite: ${conflict}`);
+    return fail(conflict, { refused: 'destination-exists' });
+  }
+  if (inPlace && options?.keepOriginal) {
+    return fail('in-place conversion would replace the original, and keepOriginal is set', { refused: 'keep-original' });
   }
 
+  const tmpPath = tempConversionPath(outputPath);
+  const args = [
+    '-i', filePath,
+    // Audio plus the first picture stream (cover art), copied untouched.
+    '-map', '0:a:0', '-map', '0:v:0?', '-c:v', 'copy', '-disposition:v:0', 'attached_pic',
+    '-map_metadata', '0',
+    ...codecArgs,
+    ...(writeId3 ? ['-write_id3v2', '1'] : []),
+    '-id3v2_version', '3',
+    ...(await djTagArgs(filePath)),
+    '-y', tmpPath,
+  ];
+
+  let duration = 0;
+  const { code, stderr, spawnError } = await runFfmpeg(args, (text) => {
+    if (!onProgress) return;
+    if (!duration) duration = parseDuration(text);
+    if (duration > 0) {
+      const elapsed = parseTime(text);
+      if (elapsed > 0) onProgress({ filePath, percent: Math.min(99, Math.round((elapsed / duration) * 100)) });
+    }
+  });
+
+  if (spawnError || code !== 0) {
+    await fs.unlink(tmpPath).catch(() => {});
+    if (spawnError) return fail(spawnError.message);
+    log.error(`ffmpeg ${context} failed:`, stderr.slice(-500));
+    if (AIFC_CORRUPT_HEADER_PATTERN.test(stderr)) return fail(`AIFC_CORRUPT_HEADER: ${filePath}`);
+    return fail(`ffmpeg exited with code ${code}: ${summarizeFfmpegError(stderr)}`);
+  }
+
+  // In place: park the original in the Trash first, so replacing it is recoverable.
+  let originalTrashPath: string | undefined;
+  if (inPlace) {
+    try {
+      const res = await safeDelete(filePath, { context: `${context}:replace-original`, detail: { replacedBy: 'converted output' } });
+      originalTrashPath = res.trashPath;
+    } catch (err) {
+      await fs.unlink(tmpPath).catch(() => {});
+      return fail(`could not move the original to the Trash before replacing it: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  try {
+    await fs.rename(tmpPath, outputPath);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (inPlace) {
+      // The original is already in the Trash; keep the converted temp rather
+      // than lose both. Its name is ignored by every scan.
+      return fail(`failed to finalize output: ${msg}. The original is in the Trash${originalTrashPath ? ` (${originalTrashPath})` : ''}; the converted file is at ${tmpPath}`, { tmpPath, originalTrashPath });
+    }
+    await fs.unlink(tmpPath).catch(() => {});
+    return fail(`failed to finalize output: ${msg}`);
+  }
+
+  onProgress?.({ filePath, percent: 100 });
+  recordWrite({ op: 'convert', src: filePath, dest: outputPath, bytes, context, outcome: 'ok', detail: inPlace ? { inPlace: true, originalTrashPath } : undefined });
+  // The output is the file going forward (callers trash the original), so a
+  // download record should follow it — unless the caller is keeping the original.
+  if (!inPlace && !options?.keepOriginal) updateDownloadedTrackPath(filePath, outputPath);
+  invalidateLibraryFileLists();
+  return { success: true, originalPath: filePath, outputPath, replacedInPlace: inPlace, originalTrashPath };
+}
+
+/**
+ * Convert to 24-bit/44.1kHz AIFF, keeping tags and cover art. An AIFF-family
+ * input keeps its filename (so Rekordbox path references survive); its original
+ * goes to the Trash. Other inputs get a new `.aif` beside the original, which
+ * this function never deletes (see deleteOriginalAfterConversion).
+ */
+export async function convertToAiff(
+  filePath: string,
+  onProgress?: ProgressCallback,
+  options?: ConvertOptions,
+): Promise<ConversionResult> {
   const ext = path.extname(filePath);
   // For an AIFF-family input, keep the SAME filename (convert in place via temp)
   // so existing Rekordbox path references aren't orphaned by a .aiff -> .aif rename.
   const isAiffInput = /\.aiff?$/i.test(ext);
   const outputPath = isAiffInput ? filePath : filePath.slice(0, -ext.length) + '.aif';
-
-  const conflict = await conversionTargetError(filePath, outputPath);
-  if (conflict) {
-    log.warn(`convertToAiff refusing to overwrite: ${conflict}`);
-    return { success: false, originalPath: filePath, errorMessage: conflict };
-  }
-
-  const tmpPath = tempConversionPath(outputPath);
-  const inPlace = path.resolve(filePath) === path.resolve(outputPath);
-
-  return new Promise((resolve) => {
-    const args = ['-i', filePath, '-c:a', 'pcm_s24be', '-ar', '44100', '-y', tmpPath];
-    const proc = spawn(ffmpegPath, args);
-    let stderr = '';
-    let duration = 0;
-
-    proc.stderr.on('data', (data: Buffer) => {
-      const text = data.toString();
-      stderr += text;
-      if (!duration) duration = parseDuration(text);
-      if (duration > 0) {
-        const elapsed = parseTime(text);
-        if (elapsed > 0) onProgress?.({ filePath, percent: Math.min(99, Math.round((elapsed / duration) * 100)) });
-      }
-    });
-
-    proc.on('close', async (code) => {
-      if (code === 0) {
-        try {
-          await fs.rename(tmpPath, outputPath);
-        } catch (err) {
-          await fs.unlink(tmpPath).catch(() => {});
-          resolve({ success: false, originalPath: filePath, errorMessage: `failed to finalize output: ${err instanceof Error ? err.message : String(err)}` });
-          return;
-        }
-        onProgress?.({ filePath, percent: 100 });
-        recordWrite({ op: 'convert', src: filePath, dest: outputPath, context: 'convert-aiff', outcome: 'ok', detail: inPlace ? { inPlace: true } : undefined });
-        resolve({ success: true, originalPath: filePath, outputPath });
-      } else {
-        await fs.unlink(tmpPath).catch(() => {});
-        log.error('ffmpeg convertToAiff failed:', stderr.slice(-500));
-        if (AIFC_CORRUPT_HEADER_PATTERN.test(stderr)) {
-          resolve({ success: false, originalPath: filePath, errorMessage: `AIFC_CORRUPT_HEADER: ${filePath}` });
-          return;
-        }
-        resolve({
-          success: false,
-          originalPath: filePath,
-          errorMessage: `ffmpeg exited with code ${code}: ${summarizeFfmpegError(stderr)}`,
-        });
-      }
-    });
-
-    proc.on('error', async (err) => {
-      await fs.unlink(tmpPath).catch(() => {});
-      resolve({ success: false, originalPath: filePath, errorMessage: err.message });
-    });
+  return runConversion({
+    filePath, outputPath, context: 'convert-aiff', onProgress, options, writeId3: true,
+    codecArgs: ['-c:a', 'pcm_s24be', '-ar', '44100'],
   });
 }
 
-export async function reencodeToMp3(filePath: string): Promise<ConversionResult> {
-  const available = await checkFfmpegAvailable();
-  if (!available) {
-    return { success: false, originalPath: filePath, errorMessage: 'ffmpeg not available' };
-  }
-
+/** Re-encode to 320kbps/44.1kHz MP3, keeping tags and cover art. MP3 input is replaced in place (original to the Trash). */
+export async function reencodeToMp3(filePath: string, options?: ConvertOptions): Promise<ConversionResult> {
   const ext = path.extname(filePath);
   // .mp3 input → re-encode in place (same filename via temp); other formats → .mp3.
   const isMp3Input = ext.toLowerCase() === '.mp3';
   const outputPath = isMp3Input ? filePath : filePath.slice(0, -ext.length) + '.mp3';
-
-  const conflict = await conversionTargetError(filePath, outputPath);
-  if (conflict) {
-    log.warn(`reencodeToMp3 refusing to overwrite: ${conflict}`);
-    return { success: false, originalPath: filePath, errorMessage: conflict };
-  }
-
-  const tmpPath = tempConversionPath(outputPath);
-  const inPlace = path.resolve(filePath) === path.resolve(outputPath);
-
-  return new Promise((resolve) => {
-    const args = ['-i', filePath, '-c:a', 'libmp3lame', '-b:a', '320k', '-ar', '44100', '-y', tmpPath];
-    const proc = spawn(ffmpegPath, args);
-    let stderr = '';
-
-    proc.stderr.on('data', (data: Buffer) => { stderr += data.toString(); });
-
-    proc.on('close', async (code) => {
-      if (code === 0) {
-        try {
-          await fs.rename(tmpPath, outputPath);
-        } catch (err) {
-          await fs.unlink(tmpPath).catch(() => {});
-          resolve({ success: false, originalPath: filePath, errorMessage: `failed to finalize output: ${err instanceof Error ? err.message : String(err)}` });
-          return;
-        }
-        recordWrite({ op: 'convert', src: filePath, dest: outputPath, context: 'reencode-mp3', outcome: 'ok', detail: inPlace ? { inPlace: true } : undefined });
-        resolve({ success: true, originalPath: filePath, outputPath });
-      } else {
-        await fs.unlink(tmpPath).catch(() => {});
-        log.error('ffmpeg reencodeToMp3 failed:', stderr.slice(-500));
-        if (AIFC_CORRUPT_HEADER_PATTERN.test(stderr)) {
-          resolve({ success: false, originalPath: filePath, errorMessage: `AIFC_CORRUPT_HEADER: ${filePath}` });
-          return;
-        }
-        resolve({
-          success: false,
-          originalPath: filePath,
-          errorMessage: `ffmpeg exited with code ${code}: ${summarizeFfmpegError(stderr)}`,
-        });
-      }
-    });
-
-    proc.on('error', async (err) => {
-      await fs.unlink(tmpPath).catch(() => {});
-      resolve({ success: false, originalPath: filePath, errorMessage: err.message });
-    });
+  return runConversion({
+    filePath, outputPath, context: 'reencode-mp3', options, writeId3: false,
+    codecArgs: ['-c:a', 'libmp3lame', '-b:a', '320k', '-ar', '44100'],
   });
 }
 

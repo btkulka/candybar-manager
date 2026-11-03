@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { getDatabase } from './db';
+import { isPathUnder } from './fileUtils';
 import { createScopedLogger } from './logger';
 import type {
   LibraryHealthTrack,
@@ -19,6 +20,8 @@ const log = createScopedLogger('LibraryStore');
 export type TrackFingerprint = {
   mtimeMs: number | null;
   sizeBytes: number | null;
+  /** mtime at which the AIFF byte-swap check last ran (read-only; set by upserts). */
+  integrityMtimeMs?: number | null;
 };
 
 type TrackRow = {
@@ -44,6 +47,7 @@ type TrackRow = {
   duration: number | null;
   lossless: number | null;
   last_scanned: number | null;
+  bpm: number | null;
 };
 
 type IssueRow = {
@@ -87,6 +91,7 @@ function rowToTrack(row: TrackRow, issues: HealthIssue[]): LibraryHealthTrack {
     hasAlbumArt: row.has_album_art === 1,
     isHealthy: row.is_healthy === 1,
     dateAdded: row.date_added,
+    bpm: row.bpm ?? null,
     issues,
     format: {
       container: row.container,
@@ -101,7 +106,9 @@ function rowToTrack(row: TrackRow, issues: HealthIssue[]): LibraryHealthTrack {
   };
 }
 
-function trackToRowValues(libraryRoot: string, track: LibraryHealthTrack, fingerprint: TrackFingerprint) {
+/** `integrityChecked`: the track's issues include a byte-swap check run against
+ *  this fingerprint (true for anything produced by checkTrackHealth). */
+function trackToRowValues(libraryRoot: string, track: LibraryHealthTrack, fingerprint: TrackFingerprint, integrityChecked = true) {
   const now = Date.now();
   return [
     libraryRoot,
@@ -125,7 +132,9 @@ function trackToRowValues(libraryRoot: string, track: LibraryHealthTrack, finger
     track.format.channels,
     track.format.duration,
     track.format.lossless === null ? null : (track.format.lossless ? 1 : 0),
-    now
+    now,
+    track.bpm ?? null,
+    integrityChecked ? fingerprint.mtimeMs : null
   ];
 }
 
@@ -133,12 +142,12 @@ function trackToRowValues(libraryRoot: string, track: LibraryHealthTrack, finger
 
 export function getExistingFingerprints(libraryRoot: string): Map<string, TrackFingerprint> {
   const rows = getDatabase()
-    .prepare('SELECT file_path, mtime_ms, size_bytes FROM library_tracks WHERE library_root = ?')
-    .all(libraryRoot) as { file_path: string; mtime_ms: number | null; size_bytes: number | null }[];
+    .prepare('SELECT file_path, mtime_ms, size_bytes, integrity_mtime FROM library_tracks WHERE library_root = ?')
+    .all(libraryRoot) as { file_path: string; mtime_ms: number | null; size_bytes: number | null; integrity_mtime: number | null }[];
 
   const map = new Map<string, TrackFingerprint>();
   for (const r of rows) {
-    map.set(r.file_path, { mtimeMs: r.mtime_ms, sizeBytes: r.size_bytes });
+    map.set(r.file_path, { mtimeMs: r.mtime_ms, sizeBytes: r.size_bytes, integrityMtimeMs: r.integrity_mtime });
   }
   return map;
 }
@@ -151,8 +160,8 @@ const UPSERT_SQL = `
     artist, title, album, year, genre,
     has_album_art, is_healthy, date_added,
     container, codec, sample_rate, bit_depth, bit_rate, channels, duration, lossless,
-    last_scanned
-  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    last_scanned, bpm, integrity_mtime
+  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   ON CONFLICT(library_root, file_path) DO UPDATE SET
     file_name = excluded.file_name,
     mtime_ms = excluded.mtime_ms,
@@ -173,7 +182,9 @@ const UPSERT_SQL = `
     channels = excluded.channels,
     duration = excluded.duration,
     lossless = excluded.lossless,
-    last_scanned = excluded.last_scanned
+    last_scanned = excluded.last_scanned,
+    bpm = excluded.bpm,
+    integrity_mtime = excluded.integrity_mtime
 `;
 
 export function upsertTrack(libraryRoot: string, track: LibraryHealthTrack, fingerprint: TrackFingerprint): void {
@@ -247,11 +258,16 @@ export function deleteTrack(libraryRoot: string, filePath: string): void {
   tx();
 }
 
-export function pruneTracksNotIn(libraryRoot: string, presentPaths: Set<string>): number {
+/**
+ * Drop rows whose files the walk didn't find. Rows under `keepUnder` (folders the
+ * walk couldn't read) are kept: their files may well exist, and this table is
+ * part of the "do I own this" record.
+ */
+export function pruneTracksNotIn(libraryRoot: string, presentPaths: Set<string>, keepUnder: string[] = []): number {
   const db = getDatabase();
   const existing = db.prepare('SELECT file_path FROM library_tracks WHERE library_root = ?')
     .all(libraryRoot) as { file_path: string }[];
-  const toDelete = existing.filter(r => !presentPaths.has(r.file_path));
+  const toDelete = existing.filter(r => !presentPaths.has(r.file_path) && !isPathUnder(r.file_path, keepUnder));
   if (toDelete.length === 0) return 0;
   const tx = db.transaction((paths: string[]) => {
     const delIssues = db.prepare('DELETE FROM library_issues WHERE library_root = ? AND file_path = ?');
@@ -408,7 +424,8 @@ export function replaceLibraryFromResult(result: LibraryHealthResult, fingerprin
     `);
     for (const track of result.tracks) {
       const fp = fingerprints?.get(track.filePath) ?? readFingerprint(track.filePath);
-      upsert.run(...trackToRowValues(result.libraryRoot, track, fp));
+      // Imported results may predate the byte-swap check: leave them unchecked.
+      upsert.run(...trackToRowValues(result.libraryRoot, track, fp, false));
       for (const issue of track.issues) {
         insIssue.run(
           result.libraryRoot,

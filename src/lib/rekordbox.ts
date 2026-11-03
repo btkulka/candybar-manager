@@ -4,6 +4,7 @@ import { fileURLToPath } from 'url';
 import { JSDOM } from 'jsdom';
 import { createScopedLogger } from './logger';
 import { getDatabase } from './db';
+import { isPathUnder } from './fileUtils';
 import type { LibraryHealthTrack } from '../types';
 
 const log = createScopedLogger('Rekordbox');
@@ -123,7 +124,7 @@ async function fileExists(p: string): Promise<boolean> {
 
 export async function findMissingFiles(tracks: RekordboxTrack[], libraryRoot?: string): Promise<MissingFile[]> {
   const missing: MissingFile[] = [];
-  const scoped = libraryRoot ? tracks.filter(t => t.filePath.startsWith(libraryRoot)) : tracks;
+  const scoped = libraryRoot ? tracks.filter(t => isPathUnder(t.filePath, [libraryRoot])) : tracks;
   const results = await Promise.all(
     scoped.map(async t => ({ t, exists: t.filePath ? await fileExists(t.filePath) : false }))
   );
@@ -179,6 +180,7 @@ function toLibraryTrack(t: RekordboxTrack): LibraryHealthTrack {
     genre: t.genre,
     hasAlbumArt: false,
     dateAdded: parseDateAdded(t.dateAdded),
+    bpm: t.bpm && t.bpm > 0 ? t.bpm : null,
     isHealthy: true,
     issues: [],
     format: {
@@ -203,7 +205,8 @@ export async function importRekordboxToLibrary(
   tracks: RekordboxTrack[],
   libraryRoot: string
 ): Promise<RekordboxImportSummary> {
-  const scoped = tracks.filter(t => t.filePath.startsWith(libraryRoot));
+  // Separator-aware: "/Music" must not also claim "/Music Old/...".
+  const scoped = tracks.filter(t => isPathUnder(t.filePath, [libraryRoot]));
   const existenceChecks = await Promise.all(
     scoped.map(async t => ({ t, exists: await fileExists(t.filePath) }))
   );
@@ -216,8 +219,8 @@ export async function importRekordboxToLibrary(
       artist, title, album, year, genre,
       has_album_art, is_healthy, date_added,
       container, codec, sample_rate, bit_depth, bit_rate, channels, duration, lossless,
-      last_scanned
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      last_scanned, bpm
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(library_root, file_path) DO UPDATE SET
       file_name = excluded.file_name,
       artist = CASE WHEN library_tracks.artist = '' THEN excluded.artist ELSE library_tracks.artist END,
@@ -231,6 +234,7 @@ export async function importRekordboxToLibrary(
       bit_rate = COALESCE(library_tracks.bit_rate, excluded.bit_rate),
       duration = COALESCE(library_tracks.duration, excluded.duration),
       lossless = COALESCE(library_tracks.lossless, excluded.lossless),
+      bpm = COALESCE(library_tracks.bpm, excluded.bpm),
       last_scanned = excluded.last_scanned
   `);
 
@@ -261,7 +265,8 @@ export async function importRekordboxToLibrary(
         r.format.channels,
         r.format.duration,
         r.format.lossless === null ? null : (r.format.lossless ? 1 : 0),
-        now
+        now,
+        r.bpm
       );
     }
   });
