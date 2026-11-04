@@ -5,9 +5,13 @@
 //   node bin/source-soundcloud-likes.mjs --user <name>   # a public profile's likes, no browser to read
 //   node bin/source-soundcloud-likes.mjs --set <url>     # a set (playlist): public ones need no browser,
 //                                                        # your own private ones go through the session
+//   node bin/source-soundcloud-likes.mjs --tracks <json> # rows already matched elsewhere (Lossless Upgrades)
 //
 // Options:
 //   --set URL            source a set instead of likes (repeatable; tracks from every set are pooled)
+//   --tracks PATH        JSON { name, tracks } of rows from lib/sourcing/freeSources.mjs toFetchRows():
+//                        SoundCloud and free Bandcamp copies, tried in file order per upgradeKey until one
+//                        lands a lossless file. No library check: these replace copies already owned
 //   --limit N            newest N likes only, or the first N tracks of each set (smoke tests)
 //   --since DATE         likes made on/after DATE (ISO, e.g. 2026-09-01); no effect on a set
 //   --list-only          classify and report; download nothing
@@ -59,6 +63,7 @@ function parseArgs(argv) {
     const a = argv[i];
     if (a === '--user') args.user = argv[++i];
     else if (a === '--set') (args.sets ||= []).push(argv[++i]);
+    else if (a === '--tracks') args.tracks = argv[++i];
     else if (a === '--limit') args.limit = Number(argv[++i]);
     else if (a === '--since') args.since = argv[++i];
     else if (a === '--list-only') args.listOnly = true;
@@ -94,7 +99,7 @@ const dedupe = tracks => {
 /** Split rows by outcome into the buckets the report reads. Every row lands in
  *  exactly one bucket, so nothing can disappear. */
 function splitRows(rows) {
-  const downloaded = [], flagged = [], queue = [], notFree = [], dropped = [], byHand = [];
+  const downloaded = [], flagged = [], queue = [], notFree = [], dropped = [], byHand = [], covered = [];
   for (const r of rows) {
     const o = r.outcome;
     if (r.free.kind === 'none') notFree.push(r);
@@ -104,9 +109,24 @@ function splitRows(rows) {
     // Finished outside the run (an emailed link, a gate done in the browser):
     // done, but no file of ours to point at.
     else if (o.status === 'by-hand') byHand.push(r);
+    // --tracks: another source for the same upgrade already landed lossless.
+    else if (o.status === 'covered') covered.push(r);
     else flagged.push(r);
   }
-  return { downloaded, flagged, queue, notFree, dropped, byHand };
+  return { downloaded, flagged, queue, notFree, dropped, byHand, covered };
+}
+
+/** --tracks: one lossless file is a usable upgrade. Several (a stem pack)
+ *  isn't, so the next source for that track still gets its turn. */
+const landedOne = files => (files || []).filter(f => f.lossless === true).length === 1;
+
+/** --tracks: the upgrades that already have a lossless file, from this
+ *  session's rows or an earlier run's ledger entry. */
+function landedKeys(rows, alreadyDownloaded) {
+  return new Set([
+    ...rows.filter(r => r.upgradeKey && r.outcome?.status === 'downloaded' && landedOne(r.outcome.files)),
+    ...alreadyDownloaded.filter(r => r.upgradeKey && landedOne(r.ledger?.files)),
+  ].map(r => r.upgradeKey));
 }
 
 function flagText(r) {
@@ -121,12 +141,13 @@ function flagText(r) {
 async function main() {
   const args = parseArgs(process.argv);
   if (args.help) {
-    log('usage: source-soundcloud-likes.mjs [--user NAME] [--set URL]... [--limit N] [--since DATE] [--list-only] [--no-gates] [--drop-lossy] [--dest DIR] [--out PATH] [--resume PATH] [--assist SEC] [--gate-timeout SEC] [--email ADDR] [--postcode ZIP] [--sc-account NAME] [--comment TEXT] [--sc-actions follow,like,comment,repost|none] [--headless] [--no-library] [--ledger PATH]');
+    log('usage: source-soundcloud-likes.mjs [--user NAME] [--set URL]... [--tracks PATH] [--limit N] [--since DATE] [--list-only] [--no-gates] [--drop-lossy] [--dest DIR] [--out PATH] [--resume PATH] [--assist SEC] [--gate-timeout SEC] [--email ADDR] [--postcode ZIP] [--sc-account NAME] [--comment TEXT] [--sc-actions follow,like,comment,repost|none] [--headless] [--no-library] [--ledger PATH]');
     process.exit(0);
   }
   const fromSets = !!args.sets?.length;
-  const outPath = args.out ? path.resolve(args.out) : path.join(sessionDir(), `soundcloud-${fromSets ? 'set' : 'likes'}-${Date.now()}.json`);
-  const destDir = path.resolve(args.dest || defaultDestDir(fromSets ? 'soundcloud-sets' : 'soundcloud-likes'));
+  const mode = args.tracks ? 'upgrade' : fromSets ? 'set' : 'likes';
+  const outPath = args.out ? path.resolve(args.out) : path.join(sessionDir(), `soundcloud-${mode}-${Date.now()}.json`);
+  const destDir = path.resolve(args.dest || defaultDestDir({ upgrade: 'upgrades', set: 'soundcloud-sets', likes: 'soundcloud-likes' }[mode]));
   const ledger = new DownloadLedger(args.ledger ? path.resolve(args.ledger) : undefined);
   const sinceMs = args.since ? Date.parse(args.since) : null;
   if (args.since && !Number.isFinite(sinceMs)) throw new Error(`--since is not a date: ${args.since}`);
@@ -203,7 +224,7 @@ async function main() {
       sourceStats = prior.stats?.library || {};
       mine = prior.mine || [];
       owned = prior.owned || []; probable = prior.probable || []; skipped = prior.ignored || []; alreadyDownloaded = prior.alreadyDownloaded || [];
-      rows = [...(prior.downloaded || []), ...(prior.flagged || []), ...(prior.queue || []), ...(prior.notFree || []), ...(prior.dropped || []), ...(prior.byHand || [])];
+      rows = [...(prior.downloaded || []), ...(prior.flagged || []), ...(prior.queue || []), ...(prior.notFree || []), ...(prior.dropped || []), ...(prior.byHand || []), ...(prior.covered || [])];
       // A gate that stalled last time is worth another go — the Hypeddit
       // rating game clears once a human plays it, a host without a walker can
       // be finished by hand with --assist, and a needs-email row becomes
@@ -220,7 +241,12 @@ async function main() {
     } else {
       // ---------- phase 1: likes (or sets) ----------
       let likes;
-      if (fromSets) {
+      if (args.tracks) {
+        log('[1/4] Reading the track list…');
+        const list = JSON.parse(fs.readFileSync(args.tracks, 'utf8'));
+        const tracks = (list.tracks || []).slice(0, args.limit || undefined);
+        likes = { source: { kind: 'tracks', name: list.name || 'track list', fetchedCount: tracks.length, via: 'list' }, tracks };
+      } else if (fromSets) {
         log(`[1/4] Reading ${args.sets.length === 1 ? 'set' : `${args.sets.length} sets`}…`);
         likes = await readSets(args.sets);
       } else if (args.user) {
@@ -240,7 +266,8 @@ async function main() {
         if (fromSets) log('      NOTE --since filters by liked-at date; a set has none, so it is ignored here');
         else tracks = tracks.filter(t => !t.likedAt || Date.parse(t.likedAt) >= sinceMs);
       }
-      log(fromSets
+      log(args.tracks ? `      "${source.name}": ${tracks.length} row(s)`
+        : fromSets
         ? `      ${tracks.length} track(s) to consider${args.limit ? ` (first ${args.limit} of each set)` : ''}`
         : `      ${source.user}: ${tracks.length} liked track(s)${args.limit ? ` (newest ${args.limit})` : ''}${args.since ? ` since ${args.since}` : ''}`);
 
@@ -254,8 +281,8 @@ async function main() {
 
       // ---------- phase 2: library ----------
       let b;
-      if (args.noLibrary) {
-        log('[2/4] Library check skipped (--no-library) — every track is wanted');
+      if (args.noLibrary || args.tracks) {
+        log(`[2/4] Library check skipped (${args.tracks ? 'these replace copies already owned' : '--no-library'}) — every track is wanted`);
         sourceStats = { skipped: true };
         b = { owned: [], probable: [], skipped: [], missing: fresh.map(t => ({ ...t, libraryStatus: 'missing', libraryConfidence: 0, libraryMatch: null })) };
       } else {
@@ -285,7 +312,7 @@ async function main() {
     if (mine.length) log(`      skipping ${mine.length} of your own track(s)`);
 
     const buildSession = (partial) => {
-      const { downloaded, flagged, queue, notFree, dropped, byHand } = splitRows(rows);
+      const { downloaded, flagged, queue, notFree, dropped, byHand, covered } = splitRows(rows);
       return {
         kind: 'soundcloud-likes',
         createdAt: new Date().toISOString(),
@@ -304,6 +331,7 @@ async function main() {
           flagged: flagged.length,
           dropped: dropped.length,
           byHand: byHand.length,
+          covered: covered.length,
           pending: queue.length,
           notFree: notFree.length,
           listOnly: !!args.listOnly,
@@ -314,7 +342,7 @@ async function main() {
           library: sourceStats,
         },
         owned, probable, ignored: skipped, alreadyDownloaded, mine,
-        downloaded, flagged, dropped, byHand, queue, notFree,
+        downloaded, flagged, dropped, byHand, covered, queue, notFree,
       };
     };
     // Written beside the target and renamed, so a full disk can never leave a
@@ -336,7 +364,10 @@ async function main() {
       fs.mkdirSync(destDir, { recursive: true });
       log(`[4/4] Downloading ${pending.length} track(s) → ${destDir}`);
       const tmp = tmpDir();
-      const needSession = pending.some(r => r.free.kind === 'native') || (args.scActions.length > 0 && pending.some(r => r.free.kind === 'gate'));
+      // A Bandcamp name-your-price needs no SoundCloud account.
+      const needSession = pending.some(r => r.free.kind === 'native')
+        || (args.scActions.length > 0 && pending.some(r => r.free.kind === 'gate' && r.free.gate?.host !== 'bandcamp.com'));
+      const landed = landedKeys(rows, alreadyDownloaded);
       if (needSession) await ensureSession();
       if (pending.some(r => r.free.kind === 'gate') && !args.noGates) await openBrowser();
 
@@ -364,6 +395,11 @@ async function main() {
           break;
         }
         const row = pending[i];
+        if (row.upgradeKey && landed.has(row.upgradeKey)) {
+          row.outcome = { status: 'covered', reason: 'an earlier source for this track already landed a lossless file' };
+          save(true);
+          continue;
+        }
         const label = `${row.artist} - ${row.title}`;
         log(`      (${i + 1}/${pending.length}) ${label} [${row.free.kind}${row.free.gate?.host ? ` · ${row.free.gate.host}` : ''}]`);
         let outcome;
@@ -401,9 +437,11 @@ async function main() {
           outcome = { status: 'not-free', reason: outcome.reason };
         }
         row.outcome = outcome;
+        if (row.upgradeKey && outcome.status === 'downloaded' && landedOne(outcome.files)) landed.add(row.upgradeKey);
         if (outcome.status === 'downloaded' || outcome.status === 'lossy-dropped') {
           ledger.record(row.scId, { artist: row.artist, title: row.title, url: row.url, via: outcome.via, files: outcome.files, dropped: outcome.dropped || [] });
-          const ev = eventFromRow(row, outcome, { origin: source.kind === 'set' ? source.set : 'likes', session: path.basename(outPath) });
+          const origin = source.kind === 'set' ? source.set : source.kind === 'tracks' ? source.name : 'likes';
+          const ev = eventFromRow(row, outcome, { origin, session: path.basename(outPath) });
           if (ev) { const h = recordEvent(ev); if (h.error) log(`          WARNING history not written: ${h.error}`); }
         }
         if (outcome.status === 'downloaded') {

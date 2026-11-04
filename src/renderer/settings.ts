@@ -1,10 +1,24 @@
 import type { ScriptOutput } from './shared';
-import type { StoreAccount } from '../types';
-import { showToast, getValue, setValue, getErrorMessage, setActiveTab } from './shared';
+import type { AppConfig, StoreAccount } from '../types';
+import { showToast, getValue, setValue, getErrorMessage, setActiveTab, requestOpenSetup } from './shared';
 import { autoRefreshLibrary } from './library';
 import { confirmAction, confirmChoice } from './confirmDialog';
 
 type StoreService = 'qobuz' | 'beatport';
+/** The Rekordbox safety-backup folder comes with the upgrade swap engine. */
+type AppConfigWithBackups = AppConfig & { rekordboxBackupDir?: string };
+
+/** Show a value saved elsewhere (setup guide, first load) in the form. */
+export function setRekordboxBackupDir(dir: string | undefined): void {
+  setValue('setting-rekordbox-backup-dir', dir ?? '');
+  // Left empty, backups go next to the library; say where.
+  const input = document.getElementById('setting-rekordbox-backup-dir') as HTMLInputElement | null;
+  if (input && !dir) {
+    void window.candybar.upgradeSwapPreflight()
+      .then((p) => { input.placeholder = p.backupDir ? `Next to your library: ${p.backupDir}` : 'Choose a folder'; })
+      .catch(() => { /* keeps the generic placeholder */ });
+  }
+}
 
 // ========== DOM Elements ==========
 
@@ -171,9 +185,9 @@ function renderAccountRowContents(row: HTMLDivElement, account: StoreAccount, co
   if (connected) {
     row.innerHTML = `
       <div class="account-row-header">
-        <span class="account-connected-badge" title="You're signed in. Searches, carts and downloads use this account.">✓ Connected</span>
+        <span class="account-connected-badge" title="You're signed in. Searches, carts and downloads use this account.">✓ Signed in</span>
         <input type="text" class="account-label" placeholder="Label (optional)" value="${escapeHtml(account.label ?? '')}" title="A name for this account, like Personal or Work" />
-        <button type="button" class="btn-ghost account-disconnect" data-tooltip="Sign out of this account. You can connect again any time.">Disconnect</button>
+        <button type="button" class="btn-ghost account-disconnect" data-tooltip="Sign out of this account. You can sign in again any time.">Sign out</button>
         <button type="button" class="btn-ghost account-remove" data-tooltip="Sign out and remove this account from the app. Your store account itself isn't affected.">Remove</button>
       </div>
       ${account.email ? `<div class="account-connected-email">${escapeHtml(account.email)}</div>` : ''}
@@ -183,7 +197,7 @@ function renderAccountRowContents(row: HTMLDivElement, account: StoreAccount, co
     row.innerHTML = `
       <div class="account-row-header">
         <input type="text" class="account-label" placeholder="Label (optional)" value="${escapeHtml(account.label ?? '')}" title="A name for this account, like Personal or Work" />
-        <button type="button" class="btn-secondary account-connect" data-tooltip="Opens the store's own sign-in page. Your password goes to the store, not to this app.">Connect</button>
+        <button type="button" class="btn-secondary account-connect" data-tooltip="Opens the store's own sign-in page. Your password goes to the store, not to Track Lab.">Sign in</button>
         <button type="button" class="btn-ghost account-remove" data-tooltip="Remove this account from the app">Remove</button>
       </div>
       <div class="setting-row">
@@ -255,7 +269,7 @@ async function handleConnect(row: HTMLDivElement, service: StoreService): Promis
       row.dataset.accountId = id;
       delete row.dataset.placeholder; // main saved it during sign-in
       renderAccountRowContents(row, account, true);
-      showToast('success', `${serviceLabel(service)} Connected`, email || label || 'Account');
+      showToast('success', `Signed in to ${serviceLabel(service)}`, email || label || 'Your account is ready to use.');
       window.dispatchEvent(new CustomEvent('store-account-changed', { detail: { service } }));
     } else {
       if (errorEl) {
@@ -263,7 +277,7 @@ async function handleConnect(row: HTMLDivElement, service: StoreService): Promis
         errorEl.style.display = '';
       }
       connectBtn.disabled = false;
-      connectBtn.textContent = 'Connect';
+      connectBtn.textContent = 'Sign in';
     }
   } catch (err) {
     if (errorEl) {
@@ -271,7 +285,7 @@ async function handleConnect(row: HTMLDivElement, service: StoreService): Promis
       errorEl.style.display = '';
     }
     connectBtn.disabled = false;
-    connectBtn.textContent = 'Connect';
+    connectBtn.textContent = 'Sign in';
   }
 }
 
@@ -366,7 +380,8 @@ let savedFormState = '';
 
 function settingsFormState(): string {
   // Read-only fields (the library folder) save as soon as they're picked.
-  const fields = settingsModal?.querySelectorAll<HTMLInputElement>('input:not([readonly]), select, textarea') ?? [];
+  // data-instant controls (the sound wave switch) apply as you flip them.
+  const fields = settingsModal?.querySelectorAll<HTMLInputElement>('input:not([readonly]):not([data-instant]), select, textarea') ?? [];
   return JSON.stringify(Array.from(fields, (f) => (f.type === 'checkbox' ? f.checked : f.value)));
 }
 
@@ -444,6 +459,7 @@ async function revertSettingsForm(): Promise<void> {
   const config = await window.candybar.getConfig();
   setValue('setting-archive-path', config.archivePath);
   setValue('setting-rekordbox-xml-path', config.rekordboxXmlPath ?? '');
+  setValue('setting-rekordbox-backup-dir', (config as AppConfigWithBackups).rekordboxBackupDir ?? '');
   if (rekordboxEnabledToggle) rekordboxEnabledToggle.checked = config.rekordboxEnabled ?? true;
   if (floatingConsoleToggle) floatingConsoleToggle.checked = config.floatingConsoleEnabled ?? true;
   applyFloatingConsoleVisibility();
@@ -462,6 +478,8 @@ async function saveSettings(): Promise<void> {
     const beatportAccounts = collectAccounts('beatport');
     const spotifyClientId = getValue('setting-spotify-client-id');
     const spotifyClientSecret = getValue('setting-spotify-client-secret');
+    // Blank keeps the default next to the library rather than saving "".
+    const rekordboxBackupDir = getValue('setting-rekordbox-backup-dir').trim();
 
     saveSettingsBtn.disabled = true;
     await window.candybar.updateConfig({
@@ -474,16 +492,17 @@ async function saveSettings(): Promise<void> {
       beatportAccounts,
       spotifyClientId,
       spotifyClientSecret,
-    });
+      ...(rekordboxBackupDir ? { rekordboxBackupDir } : {}),
+    } as Partial<AppConfigWithBackups>);
 
     currentArchivePath = archivePath;
     applyRekordboxVisibility(rekordboxEnabled);
     applyAdvancedToolsVisibility(showAdvancedTools);
     hideSettingsModal();
-    showToast('success', 'Settings Saved', 'Your settings have been saved.');
+    showToast('success', 'Settings saved', 'Your changes are in effect.');
     window.dispatchEvent(new CustomEvent('store-account-changed', { detail: { service: 'all' } }));
   } catch (err) {
-    showToast('error', 'Save Failed', getErrorMessage(err));
+    showToast('error', 'Couldn\'t save settings', getErrorMessage(err));
   } finally {
     saveSettingsBtn.disabled = false;
   }
@@ -519,11 +538,11 @@ export function initSettings(): void {
       if (existing.libraryRoot === selected) return;
       await window.candybar.updateConfig({ libraryRoot: selected });
       setLibraryRootDisplay(selected);
-      showToast('info', 'Library Root Updated', `Scanning ${selected}…`);
+      showToast('info', 'Library folder changed', `Checking ${selected}…`);
       await requestCloseSettings();
       await autoRefreshLibrary();
     } catch (err) {
-      showToast('error', 'Update Failed', getErrorMessage(err));
+      showToast('error', 'Couldn\'t change the library folder', getErrorMessage(err));
     }
   });
 
@@ -532,6 +551,13 @@ export function initSettings(): void {
   });
 
   saveSettingsBtn?.addEventListener('click', () => void saveSettings());
+
+  // The setup guide covers the same ground with instructions; hand over to it.
+  const handOverToSetup = async (step?: string) => {
+    if (await closeSettings()) requestOpenSetup(step);
+  };
+  document.getElementById('settings-open-setup')?.addEventListener('click', () => void handOverToSetup());
+  document.getElementById('settings-spotify-guide')?.addEventListener('click', () => void handOverToSetup('spotify'));
 
   document.getElementById('add-qobuz-account')?.addEventListener('click', () => {
     const existing = document.querySelectorAll('#qobuz-accounts-list .account-row').length;
@@ -620,13 +646,13 @@ function initLibraryScanStatus(): void {
     const { phase, current, total } = payload;
     statusEl.style.display = '';
     if (phase === 'discovering') {
-      statusEl.textContent = total > 0 ? `Discovering tracks… ${total} found` : 'Discovering tracks…';
+      statusEl.textContent = total > 0 ? `Finding tracks… ${total} so far` : 'Finding tracks…';
     } else if (phase === 'scanning') {
-      statusEl.textContent = `Scanning ${current} / ${total}…`;
+      statusEl.textContent = `Checking ${current} of ${total}…`;
     } else if (phase === 'duplicates') {
-      statusEl.textContent = 'Checking for duplicates…';
+      statusEl.textContent = 'Looking for duplicates…';
     } else if (phase === 'complete') {
-      statusEl.textContent = `Scan complete · ${total} tracks`;
+      statusEl.textContent = `Done — ${total} tracks checked`;
       clearTimer = setTimeout(() => {
         statusEl.style.display = 'none';
         statusEl.textContent = '';
@@ -678,10 +704,10 @@ function initRekordboxButtons(): void {
           }
         }
       }
-      showToast('success', 'Scan Complete', `${result.missing.length} missing out of ${result.total}.`);
+      showToast('success', 'Check finished', `${result.missing.length} of ${result.total} files are missing.`);
     } catch (err) {
       setStatus('Scan failed.');
-      showToast('error', 'Scan Failed', getErrorMessage(err));
+      showToast('error', 'Couldn\'t check for missing files', getErrorMessage(err));
     } finally {
       scanBtn.disabled = false;
     }
@@ -698,10 +724,10 @@ function initRekordboxButtons(): void {
       }
       const summary = await window.candybar.rekordboxImport();
       setStatus(`Imported ${summary.imported} · ${summary.missingOnDisk} missing on disk · ${summary.totalInXml} in XML`);
-      showToast('success', 'Import Complete', `Upserted ${summary.imported} tracks into the library.`);
+      showToast('success', 'Import finished', `${summary.imported} tracks copied into Track Lab\'s library list.`);
     } catch (err) {
       setStatus('Import failed.');
-      showToast('error', 'Import Failed', getErrorMessage(err));
+      showToast('error', 'Couldn\'t import from Rekordbox', getErrorMessage(err));
     } finally {
       importBtn.disabled = false;
     }
@@ -732,11 +758,11 @@ function initRekordboxButtons(): void {
       }
       const summary = await window.candybar.rekordboxResync();
       setStatus(`Resynced ${summary.imported} · ${summary.missingOnDisk} missing on disk · ${summary.totalInXml} in XML`);
-      showToast('success', 'Resync Complete', `Candybar database wiped and rebuilt with ${summary.imported} tracks from rekordbox XML.`);
+      showToast('success', 'Rebuild finished', `Track Lab\'s library list was rebuilt with ${summary.imported} tracks from your Rekordbox backup file.`);
       autoRefreshLibrary();
     } catch (err) {
       setStatus('Resync failed.');
-      showToast('error', 'Resync Failed', getErrorMessage(err));
+      showToast('error', 'Couldn\'t rebuild from Rekordbox', getErrorMessage(err));
     } finally {
       resyncBtn.disabled = false;
     }

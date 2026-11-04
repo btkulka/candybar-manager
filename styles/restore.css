@@ -1,0 +1,571 @@
+/* restore — Candybar v2 screen styles. Loaded after styles.css (the foundation),
+   so rules here win at equal specificity. Use foundation tokens and
+   components (see the top of styles.css); add only what this screen needs.
+
+   Restore a lost library (#page-restore, src/renderer/restore.ts) and
+   Recover Splice samples (#page-splice-recovery, src/renderer/spliceRecovery.ts).
+   Both are guided flows built from the shared wiz-* pieces below. */
+
+/* ===== Shared wizard pieces (Restore + Splice) ===== */
+
+/* Where you are: a row of plain-word steps. Not clickable; it only shows progress. */
+.wiz-stepper {
+  display: flex;
+  align-items: stretch;
+  gap: var(--space-xs);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: 4px;
+  margin-bottom: var(--space-2xl);
+}
+.wiz-step {
+  flex: 1 1 0;
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-sm);
+  min-height: var(--control-h);
+  padding: 6px 12px;
+  font-size: var(--fs-small);
+  font-weight: 500;
+  color: var(--text-muted);
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: default;
+  transition: background 0.15s, color 0.15s;
+}
+.wiz-step:disabled { opacity: 1; }
+.wiz-step-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wiz-step-num {
+  flex-shrink: 0;
+  display: inline-grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  font-size: var(--fs-micro);
+  font-weight: 700;
+  border-radius: 50%;
+  background: var(--bg-raised);
+  border: 1px solid var(--border-default);
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+.wiz-step.is-active {
+  color: var(--text-primary);
+  background: var(--bg-surface-hover);
+  font-weight: 600;
+}
+.wiz-step.is-active .wiz-step-num {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--on-accent);
+}
+.wiz-step.is-done { color: var(--text-secondary); }
+.wiz-step.is-done .wiz-step-num {
+  font-size: 0;
+  background: var(--accent-muted);
+  border-color: var(--border-accent);
+  color: var(--accent);
+}
+.wiz-step.is-done .wiz-step-num::before {
+  content: '';
+  width: 9px;
+  height: 5px;
+  border: 2px solid currentColor;
+  border-top: 0;
+  border-right: 0;
+  transform: translateY(-1px) rotate(-45deg);
+}
+
+.wiz-stage { display: none; }
+.wiz-stage.is-active { display: block; }
+
+/* The row at the end of a stage: a reassurance on the left, then the buttons */
+.wiz-actions {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-md);
+  padding-top: var(--space-sm);
+  margin-bottom: var(--space-lg);
+}
+
+/* A locked step card shows its question but not its controls yet */
+.step-card.is-locked .restore-step-body { display: none; }
+.step-card.is-locked { margin-bottom: var(--gap-stack); }
+.step-card.is-locked .step-card-head { margin-bottom: 0; }
+.step-card.is-done .step-card-head { margin-bottom: var(--space-md); }
+
+/* A big sentence that leads a stage ("Track Lab will look in 3 places") */
+.restore-lead-card { padding-top: var(--space-2xl); padding-bottom: var(--space-2xl); }
+.restore-lead {
+  font-size: var(--fs-h1);
+  font-weight: 700;
+  line-height: var(--lh-tight);
+  letter-spacing: var(--tracking-tight);
+  color: var(--text-primary);
+}
+.restore-lead-sub {
+  margin-top: var(--space-sm);
+  font-size: var(--fs-body);
+  color: var(--text-secondary);
+  line-height: var(--lh-normal);
+  max-width: 64ch;
+}
+.restore-lead-card .stat-row { margin-top: var(--space-xl); }
+
+/* Progress bar used while a restore runs and while Splice samples are found or downloaded */
+.wiz-progress-bar-outer {
+  height: 10px;
+  margin-top: var(--space-xl);
+  background: var(--bg-raised);
+  border-radius: var(--radius-pill);
+  overflow: hidden;
+}
+.wiz-progress-bar {
+  height: 100%;
+  background: var(--accent);
+  border-radius: var(--radius-pill);
+  transition: width 0.3s var(--ease-out);
+  position: relative;
+  overflow: hidden;
+}
+/* Moving stripe while a step is busy without countable progress */
+.wiz-progress-bar.is-indeterminate { min-width: 12%; }
+.wiz-progress-bar.is-indeterminate::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: repeating-linear-gradient(-45deg, rgba(5, 9, 12, 0.18) 0 8px, transparent 8px 16px);
+  background-size: 32px 100%;
+  animation: wiz-progress-stripe 1s linear infinite;
+}
+@keyframes wiz-progress-stripe {
+  0%   { background-position: 0 0; }
+  100% { background-position: -32px 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .wiz-progress-bar.is-indeterminate::after { animation: none; }
+}
+.restore-current-track {
+  margin-top: var(--space-md);
+  min-height: 1.4em;
+  font-size: var(--fs-small);
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Activity log, behind "Show activity log" */
+.wiz-log-body {
+  max-height: 280px;
+  overflow-y: auto;
+  padding: var(--space-sm) var(--space-md);
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  line-height: var(--lh-normal);
+  background: var(--bg-base);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+}
+.wiz-log-body:empty::before { content: 'Nothing yet.'; color: var(--text-muted); }
+.wiz-log-line {
+  display: grid;
+  grid-template-columns: 64px 110px 1fr;
+  gap: 10px;
+  padding: 2px 0;
+  color: var(--text-secondary);
+}
+#splice-download-log .wiz-log-line { display: block; }
+.wiz-log-time { color: var(--text-muted); }
+.wiz-log-phase { color: var(--accent); }
+.wiz-log-msg { color: var(--text-secondary); overflow-wrap: anywhere; }
+.wiz-log-warn .wiz-log-msg { color: var(--warning); }
+.wiz-log-error .wiz-log-msg { color: var(--danger); }
+.wiz-log-wrap { position: relative; }
+.wiz-log-copy { position: absolute; top: 4px; right: 22px; z-index: 1; }
+.wiz-log-copy.is-copied { color: var(--success); }
+
+/* Breakdown rows: "USB sticks ........ 300" */
+.wiz-breakdown { display: flex; flex-direction: column; }
+.wiz-breakdown-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: var(--space-md);
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border-subtle);
+  font-size: var(--fs-body);
+}
+.wiz-breakdown-row:last-child { border-bottom: none; }
+.wiz-breakdown-label { color: var(--text-secondary); min-width: 0; }
+.wiz-breakdown-value { color: var(--text-primary); text-align: right; }
+.wiz-breakdown-value b { font-size: var(--fs-h3); font-variant-numeric: tabular-nums; }
+
+/* Deleted on purpose: collapsed and muted, never styled as a failure */
+.wiz-quiet-group { border-style: dashed; background: transparent; }
+.wiz-quiet-group > summary { color: var(--text-secondary); }
+.wiz-quiet-list { margin: var(--space-sm) 0 0; padding-left: 1.2em; color: var(--text-muted); font-size: var(--fs-small); max-height: 240px; overflow-y: auto; }
+.wiz-quiet-note { margin-top: var(--space-md); }
+.wiz-quiet-group[hidden], .wiz-quiet-note[hidden] { display: none; }
+.callout[hidden] { display: none; }
+
+/* Inputs that hold a file path: long paths end in "…" (title shows all of it) */
+.restore-input { flex: 1; min-width: 0; }
+.restore-input-sm { width: 96px; flex-shrink: 0; }
+
+/* ===== Restore: choose your backup ===== */
+.restore-howto { margin-top: var(--space-md); }
+.restore-howto strong { color: var(--text-primary); font-weight: 600; }
+
+/* Where should Track Lab look? */
+.restore-sources { display: flex; flex-direction: column; gap: var(--space-sm); }
+.restore-source {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: var(--space-sm) var(--space-lg);
+  padding: var(--space-md) var(--space-lg);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--bg-raised);
+}
+.restore-source-main { display: flex; align-items: flex-start; gap: var(--space-md); min-width: 0; cursor: pointer; }
+.restore-source-main input[type="checkbox"] { margin-top: 3px; flex-shrink: 0; width: 18px; height: 18px; accent-color: var(--accent); }
+.restore-source-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.restore-source-text strong { font-size: var(--fs-body); font-weight: 600; color: var(--text-primary); }
+.restore-source-text span { font-size: var(--fs-small); color: var(--text-secondary); line-height: 1.45; }
+.restore-source-status { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: var(--space-sm); }
+.restore-source:has(input:disabled) .restore-source-main { cursor: default; }
+.restore-source:has(input:disabled) .restore-source-text strong { color: var(--text-secondary); }
+.restore-source.is-unavailable { background: transparent; border-style: dashed; }
+.restore-source-sub {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: var(--space-sm);
+  padding-left: 30px;
+}
+.restore-source.is-off .restore-source-sub { display: none; }
+.restore-volumes { display: flex; flex-wrap: wrap; gap: var(--space-sm); }
+.restore-volume {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-sm);
+  min-height: var(--control-h-sm);
+  padding: 4px 12px 4px 8px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-pill);
+  background: var(--bg-surface);
+  font-size: var(--fs-small);
+  font-weight: 600;
+  color: var(--text-primary);
+  cursor: pointer;
+}
+.restore-volume input { width: 16px; height: 16px; accent-color: var(--accent); }
+.restore-volumes-note { font-size: var(--fs-small); color: var(--text-muted); }
+.restore-volumes-note.is-error { color: var(--danger); }
+.restore-save-note { margin-top: var(--space-lg); }
+.restore-save-note strong { color: var(--text-primary); font-weight: 600; }
+#restore-store-errors { margin-top: var(--space-lg); margin-bottom: 0; }
+
+/* More options */
+.restore-options { display: flex; flex-direction: column; gap: var(--space-lg); }
+.restore-option { display: flex; align-items: flex-start; gap: var(--space-md); cursor: pointer; }
+.restore-option input[type="checkbox"] { margin-top: 3px; flex-shrink: 0; width: 18px; height: 18px; accent-color: var(--accent); }
+.restore-option-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.restore-option-text strong { font-size: var(--fs-body); font-weight: 600; color: var(--text-primary); }
+.restore-option-text span { font-size: var(--fs-small); color: var(--text-secondary); line-height: 1.45; }
+.restore-option-number { align-items: center; justify-content: space-between; cursor: default; }
+.restore-option-folder { flex-direction: column; align-items: stretch; cursor: default; }
+.restore-option-folder .input-row { width: 100%; }
+
+/* ===== Restore: check the plan ===== */
+.restore-plan { list-style: none; display: flex; flex-direction: column; gap: var(--space-md); }
+.restore-plan > li { display: flex; align-items: flex-start; gap: var(--space-md); }
+.restore-plan > li > div { display: flex; flex-direction: column; gap: 2px; min-width: 0; padding-top: 3px; }
+.restore-plan strong { font-size: var(--fs-body); font-weight: 600; color: var(--text-primary); }
+.restore-plan span:not(.how-step-num) { font-size: var(--fs-small); color: var(--text-secondary); overflow-wrap: anywhere; }
+#review-warnings .callout { margin-bottom: var(--space-md); }
+#review-warnings-card { margin-bottom: var(--gap-stack); }
+
+/* ===== Restore: recover tracks ===== */
+.restore-run-card .restore-current-track { margin-bottom: var(--space-lg); }
+.restore-run-stats { margin-top: var(--space-sm); }
+.restore-run-grid {
+  display: grid;
+  grid-template-columns: minmax(260px, 1fr) minmax(0, 1.3fr);
+  gap: var(--gap-stack);
+  align-items: start;
+}
+.restore-run-grid > .card { margin-bottom: 0; }
+.restore-run-grid + .disclosure { margin-top: var(--gap-stack); }
+
+/* Steps as a checklist: icon + plain name + a word for the state */
+.wiz-timeline-list { list-style: none; display: flex; flex-direction: column; gap: 2px; }
+.wiz-phase {
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+  min-height: 34px;
+  padding: 4px 8px;
+  border-radius: var(--radius-sm);
+  font-size: var(--fs-body);
+  color: var(--text-muted);
+}
+.wiz-phase-label { flex: 1; min-width: 0; }
+.wiz-phase-state { font-size: var(--fs-micro); font-weight: 600; flex-shrink: 0; }
+.wiz-phase-icon {
+  flex-shrink: 0;
+  position: relative;
+  display: inline-grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 2px solid var(--border-control);
+}
+.wiz-phase.is-active { color: var(--text-primary); background: var(--bg-raised); font-weight: 600; }
+.wiz-phase.is-active .wiz-phase-state { color: var(--accent); }
+.wiz-phase.is-active .wiz-phase-icon { border-color: var(--accent); }
+.wiz-phase.is-active .wiz-phase-icon::after {
+  content: '';
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: wiz-pulse 1.2s ease-in-out infinite;
+}
+@keyframes wiz-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .wiz-phase.is-active .wiz-phase-icon::after { animation: none; }
+}
+.wiz-phase.is-done { color: var(--text-secondary); }
+.wiz-phase.is-done .wiz-phase-state { color: var(--success); }
+.wiz-phase.is-done .wiz-phase-icon { border-color: var(--success); background: var(--success); }
+.wiz-phase.is-done .wiz-phase-icon::after {
+  content: '';
+  width: 7px;
+  height: 4px;
+  border: 2px solid var(--on-accent);
+  border-top: 0;
+  border-right: 0;
+  transform: translateY(-1px) rotate(-45deg);
+}
+.wiz-phase.is-skipped .wiz-phase-state { color: var(--text-muted); }
+.wiz-phase.is-skipped .wiz-phase-icon { border-style: dashed; }
+
+/* Store accounts while a restore runs */
+.wiz-account-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: var(--space-md); }
+.wiz-account {
+  padding: var(--space-md) var(--space-lg);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--bg-raised);
+}
+.wiz-account-head { display: flex; justify-content: space-between; align-items: center; gap: var(--space-sm); margin-bottom: var(--space-sm); }
+.wiz-account-name { min-width: 0; font-size: var(--fs-body); font-weight: 600; color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wiz-account-stats { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: var(--fs-small); color: var(--text-secondary); }
+.wiz-account-stats b { color: var(--text-primary); font-variant-numeric: tabular-nums; }
+.wiz-account-stats .wiz-ok b { color: var(--success); }
+.wiz-account-stats .wiz-bad b { color: var(--danger); }
+
+/* ===== Restore: results ===== */
+.restore-verdict { display: flex; align-items: flex-start; gap: var(--space-xl); }
+.restore-verdict-icon {
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+}
+.restore-verdict-icon svg { width: 28px; height: 28px; }
+.restore-verdict-icon.is-ok { color: var(--success); background: var(--success-soft); }
+.restore-verdict-icon.is-warn { color: var(--warning); background: var(--warning-soft); }
+.restore-stat-quiet { background: transparent; border-style: dashed; }
+.restore-stat-quiet .stat-value { color: var(--text-secondary); }
+
+.restore-why-list { display: flex; flex-direction: column; gap: var(--space-md); }
+.restore-why {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-lg);
+  padding: var(--space-md) var(--space-lg);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--bg-raised);
+}
+.restore-why-count {
+  flex-shrink: 0;
+  min-width: 48px;
+  font-size: var(--fs-h1);
+  font-weight: 700;
+  line-height: 1.2;
+  color: var(--warning);
+  font-variant-numeric: tabular-nums;
+}
+.restore-why-body { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.restore-why-body strong { font-size: var(--fs-body); font-weight: 600; color: var(--text-primary); }
+.restore-why-body p { font-size: var(--fs-small); color: var(--text-secondary); line-height: var(--lh-normal); }
+.restore-why-next { font-weight: 600; color: var(--text-primary); }
+
+.restore-report-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: var(--space-xl); }
+.restore-breakdown-block h4 { font-size: var(--fs-small); font-weight: 600; color: var(--text-muted); margin-bottom: var(--space-xs); }
+.restore-path { overflow-wrap: anywhere; font-size: var(--fs-small); }
+
+.restore-callout-details { margin-top: var(--space-sm); }
+.restore-callout-details > summary { cursor: pointer; font-size: var(--fs-small); font-weight: 600; color: var(--text-primary); }
+.restore-callout-details ul { margin: var(--space-xs) 0 0; padding-left: 1.2em; font-size: var(--fs-small); color: var(--text-secondary); }
+.restore-callout-details li { overflow-wrap: anywhere; }
+
+.restore-report-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-md);
+  margin-bottom: var(--space-md);
+}
+.restore-report-wrap { max-height: 520px; overflow: auto; border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); }
+.restore-report-table { width: 100%; border-collapse: collapse; font-size: var(--fs-small); }
+.restore-report-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  text-align: left;
+  padding: 10px 12px;
+  font-size: var(--fs-micro);
+  font-weight: 600;
+  color: var(--text-secondary);
+  background: var(--bg-surface);
+  border-bottom: 1px solid var(--border-default);
+}
+.restore-report-table td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--border-subtle); color: var(--text-secondary); vertical-align: top; }
+.restore-report-table td b { color: var(--text-primary); font-weight: 600; }
+.restore-report-table td.source { white-space: nowrap; }
+.restore-reason { display: block; font-weight: 600; color: var(--text-primary); }
+.restore-detail { display: block; margin-top: 2px; color: var(--text-muted); overflow-wrap: anywhere; }
+#restore-report-empty { padding: var(--space-xl); }
+#restore-report-empty[hidden] { display: none; }
+
+/* ===== Splice ===== */
+.splice-account-actions:empty { display: none; }
+.splice-buckets { display: flex; flex-direction: column; }
+.splice-bucket > summary .status-pill { min-width: 36px; justify-content: center; }
+.splice-bucket[hidden] { display: none; }
+.splice-bucket-head { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-lg); margin-bottom: var(--space-sm); }
+.splice-bucket .card-desc { margin: 0 0 var(--space-sm); }
+#splice-credits-balance { font-weight: 600; color: var(--text-primary); }
+
+.splice-bucket-list {
+  max-height: 320px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.splice-bucket-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+  min-width: 0;
+  min-height: 44px;
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-raised);
+  font-size: var(--fs-small);
+}
+.splice-bucket-cover {
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-xs);
+  flex-shrink: 0;
+  object-fit: cover;
+  background: var(--bg-surface-hover);
+}
+.splice-bucket-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-weight: 600;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.splice-bucket-pack {
+  flex: 0 1 auto;
+  max-width: 40%;
+  padding: 2px 8px;
+  border-radius: var(--radius-pill);
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  font-size: var(--fs-micro);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.splice-bucket-reason { flex: 0 1 auto; max-width: 55%; color: var(--text-secondary); font-size: var(--fs-small); text-align: right; }
+.splice-bucket-row a { flex-shrink: 0; color: var(--accent); font-size: var(--fs-small); font-weight: 600; text-decoration: none; }
+.splice-bucket-row a:hover { text-decoration: underline; }
+.splice-bucket-row-fail .splice-bucket-name { color: var(--text-primary); }
+
+/* ===== Narrow windows ===== */
+@media (max-width: 900px) {
+  .restore-run-grid { grid-template-columns: 1fr; }
+}
+@media (max-width: 760px) {
+  .wiz-step-label { display: none; }
+  .wiz-step.is-active .wiz-step-label { display: inline; }
+  .restore-source { grid-template-columns: 1fr; }
+  .restore-source-status { justify-content: flex-start; padding-left: 30px; }
+  .restore-lead { font-size: var(--fs-h2); }
+  .restore-verdict-icon { width: 44px; height: 44px; }
+  .wiz-log-line { grid-template-columns: 1fr; gap: 0; }
+}
+
+/* ===== Fixes and art ===== */
+/* The number field keeps its own small width (the base input rule is 100%) */
+.restore-option-number .restore-option-text { flex: 1; }
+.restore-option-number input.restore-input-sm { width: 96px; flex: 0 0 96px; }
+/* A status pill beside a step title stays at the right edge */
+#page-splice-recovery .step-card-head > .step-card-head-aside { flex: 0 0 auto; }
+/* Verdict cards carry the record art (.art-hero); the numbers sit below them */
+.restore-report-stats { margin-bottom: var(--gap-stack); }
+.art-hero.restore-lead-card { min-height: 148px; display: flex; flex-direction: column; justify-content: center; }
+.splice-report-failed .splice-bucket-list { max-height: 320px; }
+
+/* Record art on the three verdict cards (USB verdict, Restore results, Splice
+   done). The shared .art-hero waveform is 360px wide and reaches under text on
+   an 880px card, so these use a shorter one and keep text clear of both. */
+#usb-drive-overview-card.art-hero,
+#restore-report-verdict.art-hero,
+#page-splice-recovery .restore-lead-card.art-hero {
+  background:
+    url('./art/record.svg') right -96px center / 280px 280px no-repeat,
+    url('./art/waveform.svg') right 150px center / 190px 56px no-repeat,
+    linear-gradient(135deg, var(--bg-raised), var(--bg-surface) 65%);
+}
+#usb-drive-overview-card .art-hero-content,
+#restore-report-verdict .art-hero-content,
+#page-splice-recovery .art-hero .art-hero-content { max-width: calc(100% - 350px); }
+@media (max-width: 1100px) {
+  #usb-drive-overview-card.art-hero,
+  #restore-report-verdict.art-hero,
+  #page-splice-recovery .restore-lead-card.art-hero {
+    background: url('./art/record.svg') right -150px center / 260px 260px no-repeat, linear-gradient(135deg, var(--bg-raised), var(--bg-surface) 65%);
+  }
+  #usb-drive-overview-card .art-hero-content,
+  #restore-report-verdict .art-hero-content,
+  #page-splice-recovery .art-hero .art-hero-content { max-width: calc(100% - 120px); }
+}

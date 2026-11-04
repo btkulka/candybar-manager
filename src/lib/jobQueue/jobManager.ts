@@ -103,15 +103,39 @@ export class JobManager extends EventEmitter {
     return Array.from(this.jobs.values()).map(r => this.toJobInfo(r));
   }
 
+  /** The enqueue() promise of a job, for a caller that only kept its id (the
+   *  renderer enqueues first so it holds an id it can cancel, then waits).
+   *  Null once the job is unknown or pruned. */
+  wait<TResult = unknown>(jobId: JobId): Promise<TResult> | null {
+    return (this.jobs.get(jobId)?.promise as Promise<TResult> | undefined) ?? null;
+  }
+
   getSharedResult<K extends SharedResultKey>(key: K, contextKey: string): SharedResultMap[K] | null {
     return this.sharedStore.get(key, contextKey);
   }
 
+  private laneOf(type: JobType): string {
+    return this.definitions.get(type)?.lane ?? 'default';
+  }
+
+  // Each lane has `maxConcurrent` slots. Jobs start in queue order, but a job
+  // whose lane is full doesn't hold up a later one in a free lane.
   private tick(): void {
-    while (this.running.size < this.maxConcurrent && this.queue.length > 0) {
-      const jobId = this.queue.shift()!;
+    const busy = new Map<string, number>();
+    for (const id of this.running) {
+      const record = this.jobs.get(id);
+      if (record) busy.set(this.laneOf(record.type), (busy.get(this.laneOf(record.type)) ?? 0) + 1);
+    }
+    for (const jobId of [...this.queue]) {
       const record = this.jobs.get(jobId);
-      if (!record) continue;
+      if (!record) {
+        this.queue = this.queue.filter(id => id !== jobId);
+        continue;
+      }
+      const lane = this.laneOf(record.type);
+      if ((busy.get(lane) ?? 0) >= this.maxConcurrent) continue;
+      busy.set(lane, (busy.get(lane) ?? 0) + 1);
+      this.queue = this.queue.filter(id => id !== jobId);
       this.runJob(record);
     }
   }

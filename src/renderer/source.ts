@@ -1,69 +1,77 @@
 import type { QobuzCartMatch } from '../lib/qobuzCart';
 import { cartUrl } from '../lib/storeUrls';
-import type { CsvPreview, StoreMatch, LibraryMatchedRow, LibraryProbableRow, SourcePlaylistInfo } from '../types';
-import { showToast, setStatus, escapeHtml, setValue, getErrorMessage, plural, formatPriceTotal, isReleaseMatch, RELEASE_MATCH_TAG, matchNoteHtml } from './shared';
+import type {
+  CsvPreview, StoreMatch, LibraryMatchedRow, LibraryProbableRow, SourcePlaylistInfo,
+  SavedSource, SavedSourceCounts, SavedSourceInput, SavedSourceKind,
+} from '../types';
+import { showToast, setStatus, escapeHtml, setValue, getErrorMessage, plural, formatPriceTotal, isReleaseMatch, requestOpenSettings } from './shared';
 import { confirmAction } from './confirmDialog';
-import { renderSourceInput } from './sourceInputTemplate';
+import { renderSourceInput, SOURCE_KIND_ICONS } from './sourceInputTemplate';
 import { fillPlaylistCard } from './playlistCard';
 import {
-  type Store, STORE_LABEL, OTHER_VERSION_TAG, autoSelectable, isOtherVersion, parsePriceDollars, toStoreMatch,
+  type Store, STORE_LABEL, autoSelectable, isOtherVersion, parsePriceDollars, toStoreMatch,
   addToStoreCarts, isAddingToCart, toastCartOutcome, mergeAdded, uniqueByTrack,
+  matchPillHtml, qualityHtml, notForSaleReason, notForSalePillHtml, isCompressedOnly, AUTO_SELECT_CONFIDENCE, revealInContent,
 } from './storeCart';
 import { exportM3u8, exportRekordbox, exportCsv } from './libraryExport';
 import { isArtistHeader, isTitleHeader } from '../lib/csvHeaders';
+import { attachSourcingReview, claudeVerdictHtml } from './claudeReview';
+
+// Find and buy tracks: a Spotify playlist, SoundCloud set or spreadsheet is
+// checked against the Rekordbox collection, the rest is searched on Qobuz and
+// Beatport, and the ticked full-quality matches go in the store carts. Only
+// lossless matches can ever be ticked or carted; compressed-only matches are
+// listed under "Not for sale in full quality" and never sent.
+//
+// One workspace, no wizard: the picker (plus "Your playlists") is the start
+// screen, the progress card shows while a check runs, and the results take
+// over afterwards, with the picker collapsed to the "add another" strip.
 
 // ========== DOM Elements ==========
-// Late-bound refs live inside the source lane (injected at init).
 
 let runSearchBtn: HTMLButtonElement;
+let runSearchLabel: HTMLElement;
 
-// The Sources page is a single workspace (no wizard): the input bar collapses
-// away once a search runs, the progress strip shows while sourcing, and the
-// results section takes over. These three drive that flow.
 const inputBar = document.getElementById('source-input-bar') as HTMLElement;
-// While a list is on screen the picker collapses to this strip of "add another"
-// buttons; the head explains the picker when it's reopened to merge into a list.
+const pickerTitle = document.getElementById('source-picker-title') as HTMLElement;
 const addStrip = document.getElementById('source-add-strip') as HTMLElement;
 const appendHead = document.getElementById('source-append-head') as HTMLElement;
 const progressSection = document.getElementById('source-progress-section') as HTMLElement;
 const progressBar = document.getElementById('source-progress-bar') as HTMLDivElement;
-const progressMessage = document.getElementById('source-progress-message') as HTMLSpanElement;
+const progressMessage = document.getElementById('source-progress-message') as HTMLElement;
+const progressSub = document.getElementById('source-progress-sub') as HTMLElement;
 const progressCount = document.getElementById('source-progress-count') as HTMLSpanElement;
+
+const savedCard = document.getElementById('source-saved') as HTMLElement;
+const savedList = document.getElementById('source-saved-list') as HTMLElement;
+const savedDesc = document.getElementById('source-saved-desc') as HTMLElement;
+const savedTogetherBtn = document.getElementById('source-saved-together') as HTMLButtonElement;
 
 const resultsSection = document.getElementById('source-results-section') as HTMLElement;
 const groupsContainer = document.getElementById('source-groups') as HTMLDivElement;
 const emptyState = document.getElementById('source-empty') as HTMLDivElement;
 const scanSummary = document.getElementById('source-scan-summary') as HTMLDivElement;
 
-// Segment counts — the merged summary + filter control replaces the old
-// duplicate stats row + store tabs.
-const segCountNew = document.getElementById('seg-count-new') as HTMLSpanElement;
-const segCountMaybe = document.getElementById('seg-count-maybe') as HTMLSpanElement;
-const segCountOwned = document.getElementById('seg-count-owned') as HTMLSpanElement;
-const segCountNotFound = document.getElementById('seg-count-notfound') as HTMLSpanElement;
 
 const searchInput = document.getElementById('source-search') as HTMLInputElement;
 
-// Sticky buy-bar (replaces the flat filter-bar action row + separate cart lane)
+// Sticky buy bar
 const buyBar = document.getElementById('source-buybar') as HTMLElement;
 const buyBarN = document.getElementById('source-buybar-n') as HTMLElement;
 const buyBarQobuz = document.getElementById('source-buybar-qobuz') as HTMLElement;
 const buyBarBeatport = document.getElementById('source-buybar-beatport') as HTMLElement;
 const reviewCartBtn = document.getElementById('source-review-cart') as HTMLButtonElement;
-const addMoreBtn = document.getElementById('source-add-more') as HTMLButtonElement;
 const addToCartBtn = document.getElementById('source-add-to-cart') as HTMLButtonElement;
 const exportCsvBtn = document.getElementById('source-export-csv') as HTMLButtonElement;
-const clearResultsBtn = document.getElementById('clear-source-results') as HTMLButtonElement;
 
-// Cart slide-over (replaces the wizard's Cart lane)
+// Cart slide-over
 const cartDrawer = document.getElementById('source-cart-drawer') as HTMLElement;
 const cartScrim = document.getElementById('source-cart-scrim') as HTMLElement;
 const cartCloseBtn = document.getElementById('source-cart-close') as HTMLButtonElement;
 const openQobuzCartBtn = document.getElementById('source-open-qobuz-cart') as HTMLButtonElement;
 const openBeatportCartBtn = document.getElementById('source-open-beatport-cart') as HTMLButtonElement;
 const downloadPurchasesBtn = document.getElementById('source-download-purchases') as HTMLButtonElement;
-
-// Cart lane refs
+const cartDownload = document.getElementById('source-cart-download') as HTMLElement;
 const cartSection = document.getElementById('source-cart-section') as HTMLElement;
 const cartQobuzBlock = document.getElementById('source-cart-qobuz') as HTMLElement;
 const cartQobuzList = document.getElementById('source-cart-qobuz-list') as HTMLDivElement;
@@ -76,103 +84,126 @@ const cartBeatportTotal = document.getElementById('source-cart-beatport-total') 
 const autoCheckoutQobuzBtn = document.getElementById('source-auto-checkout-qobuz') as HTMLButtonElement;
 const autoCheckoutBeatportBtn = document.getElementById('source-auto-checkout-beatport') as HTMLButtonElement;
 
-// Cart-add inline progress (shown during storeCartAdd IPC so user can see per-track progress)
+// Cart-add progress (shown while tracks go into a store cart)
 const cartAddProgress = document.getElementById('source-cart-add-progress') as HTMLElement;
 const cartAddStore = document.getElementById('source-cart-add-store') as HTMLElement;
 const cartAddCount = document.getElementById('source-cart-add-count') as HTMLElement;
 const cartAddBar = document.getElementById('source-cart-add-bar') as HTMLElement;
 const cartAddMessage = document.getElementById('source-cart-add-message') as HTMLElement;
 
-// Late-bound: all CSV/Spotify picker elements are injected at init time
+// Late-bound: the picker's elements are injected at init
 let csvDropZone: HTMLDivElement;
 let csvFileDisplay: HTMLDivElement;
-let csvPreviewSection: HTMLDivElement;
+let csvPreviewSection: HTMLDetailsElement;
 let csvPreviewCount: HTMLSpanElement;
 let csvPreviewColumns: HTMLSpanElement;
 let csvPreviewThead: HTMLTableSectionElement;
 let csvPreviewTbody: HTMLTableSectionElement;
 let csvPreviewStatus: HTMLDivElement;
-let csvPreviewStatusText: HTMLSpanElement;
+let csvPreviewStatusText: HTMLElement;
 let csvFileName: HTMLSpanElement;
 let clearCsvBtn: HTMLButtonElement;
-let sourceTypeToggle: HTMLDivElement;
-let csvField: HTMLDivElement;
-let spotifyField: HTMLDivElement;
-let spotifyUrlInput: HTMLInputElement;
-let spotifyUrlStatus: HTMLSpanElement;
-let soundcloudField: HTMLDivElement;
-let soundcloudUrlInput: HTMLInputElement;
-let soundcloudUrlStatus: HTMLSpanElement;
+/** The one link field: a Spotify playlist or a SoundCloud set, told apart by the link. */
+let linkInput: HTMLInputElement;
+let linkIcon: HTMLElement;
+let linkStatus: HTMLElement;
+/** Inline error for a check that failed (what happened + what to do). */
+let runError: HTMLElement;
 
 // ========== State ==========
 
 let matches: QobuzCartMatch[] = [];
-/** Library phase-1 buckets from `library-sourcing:run`. `matched` = already in
- *  library (filtered out of store search), `probable` = uncertain library hit
- *  (store-searched AND displayed with a "probable library match" chip). Set
- *  to null when the search hasn't been run yet. */
+/** Library buckets from `library-sourcing:run`. `matched` = already in the
+ *  library (not store-searched), `probable` = an uncertain library hit (store-
+ *  searched AND shown under "You might have these"). */
 let libraryMatched: LibraryMatchedRow[] = [];
 let libraryProbable: LibraryProbableRow[] = [];
-/** Metadata of the last-imported Spotify playlist, shown as a cover-art card. */
+/** The last checked Spotify playlist / SoundCloud set, shown as a cover card. */
 let currentPlaylistInfo: SourcePlaylistInfo | null = null;
-type Segment = 'new' | 'maybe' | 'owned' | 'notfound';
-let activeSegment: Segment = 'new';
+/** The quieter groups under To buy, by key, that are expanded. */
+type Group = 'maybe' | 'owned' | 'notfound';
+let openGroups = new Set<Group>();
+/** To buy rows whose store / quality details are showing. */
+const openRows = new Set<string>();
 let searchQuery = '';
 let csvPath = '';
-type SourceType = 'csv' | 'spotify' | 'soundcloud';
-let sourceType: SourceType = 'csv';
+type SourceType = SavedSourceKind;
+let sourceType: SourceType = 'spotify';
 let spotifyPlaylistUrl = '';
 let spotifyUrlValid = false;
 let soundcloudSetUrl = '';
 let soundcloudUrlValid = false;
 let selectedQobuzIds: Set<string> = new Set();
 let selectedBeatportIds: Set<string> = new Set();
-/** When true, the next runSearch() merges its results into the existing
- *  matches array instead of replacing it. Toggled by "+ Add More Tracks". */
+/** When true, the next runSearch() merges its results into the list on screen. */
 let appendMode = false;
-/** Tracks we added to each store's cart during the current Sources session.
- *  Used to auto-trigger downloads when the user completes checkout in the
- *  embedded store panel. */
+/** Tracks put in each store's cart during this session; used for the cart
+ *  drawer and to download them once a checkout completes. */
 let lastAddedQobuz: StoreMatch[] = [];
 let lastAddedBeatport: StoreMatch[] = [];
 let downloadFiredQobuz = false;
 let downloadFiredBeatport = false;
-/** When this tab last opened a store's cart (Open Cart or Auto-Checkout).
+/** When this tab last opened a store's cart (Open cart or Fill in checkout).
  *  The purchase watcher only acts for a store with a recent entry, so a
  *  checkout started from another tab, or a later browse past an order page,
  *  never downloads this tab's list. Saved with the session, like the lists. */
 let checkoutArmedAt: Record<Store, number | null> = { qobuz: null, beatport: null };
 /** How long after opening the cart a purchase still counts as this tab's. */
 const CHECKOUT_WATCH_MS = 3 * 60 * 60 * 1000;
-/** True while a sourcing run is in flight: the input, Clear and + Add list stay locked. */
+/** True while a check is running: the picker, saved list and add strip stay locked. */
 let searching = false;
+
+/** One source to check: what kind, and its link or file path. */
+type SourceSpec = { kind: SourceType; ref: string; name?: string; relocateFrom?: number };
+/** The sources merged into the list on screen, oldest first. */
+let sessionSources: Array<{ kind: SourceType; ref: string; name: string }> = [];
+/** When the list on screen was last checked. */
+let lastRunAt: number | null = null;
+/** Playlist metadata for the check that's running (from playlist-info). */
+let runPlaylistInfo: SourcePlaylistInfo | null = null;
+
+// Saved playlists
+let savedSources: SavedSource[] = [];
+let savedLoaded = false;
+const savedSelected = new Set<number>();
+let renamingId: number | null = null;
+
+const CHECK_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>';
+const NOTE_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>';
+const SEARCH_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>';
+const INFO_SVG = '<svg class="callout-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>';
+const ERROR_SVG = '<svg class="callout-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>';
+const PENCIL_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>';
+const TRASH_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>';
+const REFRESH_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>';
+
+const KIND_LABEL: Record<SourceType, string> = { spotify: 'Spotify', soundcloud: 'SoundCloud', csv: 'Spreadsheet' };
+
+// ========== Cart drawer ==========
 
 function renderCartLines(container: HTMLDivElement, tracks: StoreMatch[]) {
   container.innerHTML = '';
   for (const t of tracks) {
     const line = document.createElement('div');
-    line.className = 'cart-line';
-    const price = t.price ? escapeHtml(t.price) : '—';
+    line.className = 'buy-cart-line';
     const art = t.image
-      ? `<img class="cart-line-art" src="${escapeHtml(t.image)}" alt="" loading="lazy" />`
-      : `<div class="cart-line-art cart-line-art--placeholder"></div>`;
+      ? `<img class="buy-cart-line-art" src="${escapeHtml(t.image)}" alt="" loading="lazy" />`
+      : `<div class="buy-cart-line-art buy-art--placeholder">${NOTE_SVG}</div>`;
     line.innerHTML = `
       ${art}
-      <div class="cart-line-title">
-        ${escapeHtml(t.title)}
-        <span class="cart-line-artist"> — ${escapeHtml(t.artist)}</span>
+      <div class="buy-cart-line-text">
+        <span class="buy-cart-line-title">${escapeHtml(t.title)}</span>
+        <span class="buy-cart-line-artist">${escapeHtml(t.artist)}</span>
       </div>
-      <span class="cart-line-price">${price}</span>
+      <span class="buy-cart-line-price">${t.price ? escapeHtml(t.price) : '—'}</span>
     `;
-    // Art fallback in case the CDN URL 404s
-    const img = line.querySelector<HTMLImageElement>('img.cart-line-art');
-    if (img) {
-      img.addEventListener('error', () => {
-        const placeholder = document.createElement('div');
-        placeholder.className = 'cart-line-art cart-line-art--placeholder';
-        img.replaceWith(placeholder);
-      }, { once: true });
-    }
+    const img = line.querySelector<HTMLImageElement>('img.buy-cart-line-art');
+    img?.addEventListener('error', () => {
+      const placeholder = document.createElement('div');
+      placeholder.className = 'buy-cart-line-art buy-art--placeholder';
+      placeholder.innerHTML = NOTE_SVG;
+      img.replaceWith(placeholder);
+    }, { once: true });
     container.appendChild(line);
   }
 }
@@ -186,32 +217,33 @@ function renderCartStage() {
   const qTracks = lastAddedQobuz;
   const bTracks = lastAddedBeatport;
 
+  cartQobuzBlock.style.display = qTracks.length > 0 ? '' : 'none';
   if (qTracks.length > 0) {
-    cartQobuzBlock.style.display = '';
     cartQobuzCount.textContent = plural(qTracks.length, 'track');
     cartQobuzTotal.textContent = cartTotal(qTracks);
     renderCartLines(cartQobuzList, qTracks);
-  } else {
-    cartQobuzBlock.style.display = 'none';
   }
-
+  cartBeatportBlock.style.display = bTracks.length > 0 ? '' : 'none';
   if (bTracks.length > 0) {
-    cartBeatportBlock.style.display = '';
     cartBeatportCount.textContent = plural(bTracks.length, 'track');
     cartBeatportTotal.textContent = cartTotal(bTracks);
     renderCartLines(cartBeatportList, bTracks);
-  } else {
-    cartBeatportBlock.style.display = 'none';
   }
+  // One primary per view: the first store's checkout leads, the other follows.
+  autoCheckoutQobuzBtn.className = 'btn-primary';
+  autoCheckoutBeatportBtn.className = qTracks.length > 0 ? 'btn-secondary' : 'btn-primary';
 
-  cartSection.style.display = (qTracks.length + bTracks.length) > 0 ? 'flex' : 'none';
+  const any = qTracks.length + bTracks.length > 0;
+  cartDownload.style.display = any ? '' : 'none';
+  cartSection.style.display = any ? 'flex' : 'none';
 }
 
-// ========== Source Type Toggle ==========
+// ========== Picker ==========
 
 let csvHasRequiredCols = false;
 
 function updateRunButton() {
+  if (!runSearchBtn) return;
   if (searching) {
     runSearchBtn.disabled = true;
   } else if (sourceType === 'csv') {
@@ -221,6 +253,17 @@ function updateRunButton() {
   } else {
     runSearchBtn.disabled = !soundcloudUrlValid;
   }
+  const hint = sourceType === 'csv' && csvPath
+    ? 'This spreadsheet needs an Artist column and a Title column'
+    : linkInput?.value.trim()
+      ? 'That link isn\'t a Spotify playlist or a SoundCloud set'
+      : 'Paste a playlist link or choose a spreadsheet first';
+  runSearchBtn.setAttribute('data-tooltip-disabled', searching ? 'A check is already running' : hint);
+  runSearchLabel.textContent = appendMode && resultsShown() ? 'Add to this list' : 'Check this playlist';
+}
+
+function resultsShown(): boolean {
+  return resultsSection.style.display !== 'none';
 }
 
 /** The picker and the add strip trade places: with a list on screen and
@@ -231,67 +274,56 @@ function setInputBarVisible(visible: boolean): void {
 }
 
 function syncAddStrip(): void {
-  const listShown = resultsSection.style.display !== 'none';
+  const listShown = resultsShown();
   const pickerShown = inputBar.style.display !== 'none';
   addStrip.style.display = listShown && !pickerShown && !searching ? '' : 'none';
-  appendHead.style.display = appendMode && pickerShown && listShown ? '' : 'none';
+  const appending = appendMode && pickerShown && listShown;
+  appendHead.style.display = appending ? '' : 'none';
+  pickerTitle.textContent = appending ? 'Add another playlist to this list' : 'Add a playlist';
+  // The saved list sits under the picker whenever it's open.
+  savedCard.style.display = pickerShown && !searching && savedLoaded ? '' : 'none';
+  // While merging another list in, the picker is the task; the buy bar waits.
+  if (appending) buyBar.style.display = 'none';
+  else if (listShown) buyBar.style.display = '';
+  updateRunButton();
+  renderSaved();
 }
 
 /** Reopen the picker above the current list, optionally on one source type;
  *  the next run merges into the list (deduped by input key). */
-function beginAppend(type?: SourceType): void {
+function beginAppend(): void {
   if (searching) return;
   appendMode = true;
   clearCsvFile();
-  if (spotifyUrlInput) {
-    spotifyUrlInput.value = '';
-    validateSpotifyUrl('');
-  }
-  if (soundcloudUrlInput) {
-    soundcloudUrlInput.value = '';
-    validateSoundCloudUrl('');
-  }
-  if (type) setSourceType(type);
+  linkInput.value = '';
+  validateLink('');
+  hideRunError();
   setInputBarVisible(true);
-  inputBar.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-  if (sourceType === 'spotify') spotifyUrlInput?.focus();
-  else if (sourceType === 'soundcloud') soundcloudUrlInput?.focus();
+  revealInContent(inputBar);
+  linkInput.focus();
 }
 
 function cancelAppend(): void {
   if (searching) return;
   appendMode = false;
-  setInputBarVisible(resultsSection.style.display === 'none');
+  setInputBarVisible(!resultsShown());
 }
 
-/** A link pasted under the wrong tab (a SoundCloud set in the Spotify field, or
- *  the reverse) moves to the right one instead of just showing ✗. */
-function movePastedLink(type: 'spotify' | 'soundcloud', value: string): void {
-  const from = type === 'spotify' ? soundcloudUrlInput : spotifyUrlInput;
-  const to = type === 'spotify' ? spotifyUrlInput : soundcloudUrlInput;
-  from.value = '';
-  to.value = value;
-  setSourceType(type);
-  validateSpotifyUrl(spotifyUrlInput.value);
-  validateSoundCloudUrl(soundcloudUrlInput.value);
-  to.focus();
-}
-
-/** Clear and New list both throw away the reviewed list and its picks, so ask
- *  first. Store carts and the library aren't touched. */
+/** "Back to your playlists" puts away the list on screen and its ticks, so
+ *  ask first. Store carts and the library aren't touched. */
 async function confirmClearResults(): Promise<void> {
   if (searching) return;
   if (matches.length + libraryMatched.length + libraryProbable.length > 0) {
     // The playlist's own count; summing the result lists double-counts, since
-    // store matches overlap the owned/maybe-owned rows.
+    // store matches overlap the maybe-owned rows.
     const info = currentPlaylistInfo;
     const count = info ? (info.fetchedCount || info.trackCount) : 0;
-    const what = info?.name ? `"${info.name}"${count ? ` (${plural(count, 'track')})` : ''}` : 'the current list';
+    const what = info?.name ? `"${info.name}"${count ? ` (${plural(count, 'track')})` : ''}` : 'the list you are looking at';
     const ok = await confirmAction({
-      title: 'Start a new list?',
-      message: `This puts away ${what} and your picks so you can start from a new playlist.`,
+      title: 'Put this list away?',
+      message: `This puts away ${what} and your ticks, and takes you back to your playlists. It stays there, so you can check it again any time.`,
       safetyNote: 'Nothing in your Qobuz or Beatport carts or your library changes.',
-      confirmLabel: 'Start a new list',
+      confirmLabel: 'Put it away',
       tone: 'caution',
     });
     if (!ok) return;
@@ -308,69 +340,69 @@ function clearResults(): void {
   lastAddedQobuz = [];
   lastAddedBeatport = [];
   checkoutArmedAt = { qobuz: null, beatport: null };
+  sessionSources = [];
+  lastRunAt = null;
   appendMode = false;
   clearPlaylistCard();
   closeCartDrawer();
   resultsSection.style.display = 'none';
   cartSection.style.display = 'none';
   buyBar.style.display = 'none';
-  downloadPurchasesBtn.style.display = 'none';
   setInputBarVisible(true);
   saveSourcesState();
 }
 
-function setSourceType(type: SourceType) {
-  sourceType = type;
-  sourceTypeToggle.querySelectorAll('.source-type-btn').forEach(btn => {
-    btn.classList.toggle('active', (btn as HTMLButtonElement).dataset.sourceType === type);
-  });
-  csvField.style.display = type === 'csv' ? '' : 'none';
-  spotifyField.style.display = type === 'spotify' ? '' : 'none';
-  soundcloudField.style.display = type === 'soundcloud' ? '' : 'none';
-  // Shown whenever a file's preview loaded, including one missing its
-  // artist/title columns: the preview carries the warning saying so.
-  csvPreviewSection.style.display = type === 'csv' && csvPath && csvPreviewThead.childElementCount > 0 ? 'block' : 'none';
-  updateRunButton();
+function setFieldHelp(el: HTMLElement, text: string, tone: '' | 'ok' | 'error') {
+  el.textContent = text;
+  el.className = `field-help${tone ? ` is-${tone}` : ''}`;
 }
 
-function validateSpotifyUrl(url: string) {
-  spotifyPlaylistUrl = url.trim();
-  if (!spotifyPlaylistUrl) {
-    spotifyUrlStatus.textContent = '';
-    spotifyUrlStatus.className = 'spotify-url-status';
-    spotifyUrlValid = false;
-    updateRunButton();
-    return;
-  }
-
-  spotifyUrlValid = /open\.spotify\.com\/playlist\/[a-zA-Z0-9]+/.test(spotifyPlaylistUrl)
-    || /^spotify:playlist:[a-zA-Z0-9]+$/.test(spotifyPlaylistUrl)
-    || /^[a-zA-Z0-9]{22}$/.test(spotifyPlaylistUrl);
-
-  spotifyUrlStatus.textContent = spotifyUrlValid ? '\u2713' : '\u2717';
-  spotifyUrlStatus.className = `spotify-url-status ${spotifyUrlValid ? 'valid' : 'invalid'}`;
-  updateRunButton();
-}
-
+const SPOTIFY_PLAYLIST = /open\.spotify\.com\/(?:intl-[a-z]+\/)?playlist\/[a-zA-Z0-9]+|^spotify:playlist:[a-zA-Z0-9]+$|^[a-zA-Z0-9]{22}$/;
 /** A set link (soundcloud.com/<user>/sets/<name>, optionally with a secret
  *  /s-TOKEN segment) or an on.soundcloud.com share link, which the main
- *  process expands. A track or profile link is rejected here rather than
- *  failing later at resolve time. */
-function validateSoundCloudUrl(url: string) {
-  soundcloudSetUrl = url.trim();
-  if (!soundcloudSetUrl) {
-    soundcloudUrlStatus.textContent = '';
-    soundcloudUrlStatus.className = 'spotify-url-status';
-    soundcloudUrlValid = false;
-    updateRunButton();
-    return;
+ *  process expands. */
+const SOUNDCLOUD_SET = /^(https?:\/\/)?(www\.|m\.)?soundcloud\.com\/[^/?#\s]+\/sets\/[^/?#\s]+|^(https?:\/\/)?on\.soundcloud\.com\/[A-Za-z0-9]+/i;
+
+/** Read the link field: which service it is, whether it's a playlist/set, and
+ *  what to tell the person. A track, album or profile link is turned away here
+ *  rather than failing later. */
+function validateLink(raw: string) {
+  const v = raw.trim();
+  spotifyPlaylistUrl = '';
+  soundcloudSetUrl = '';
+  spotifyUrlValid = false;
+  soundcloudUrlValid = false;
+  let icon: keyof typeof SOURCE_KIND_ICONS = 'link';
+
+  if (!v) {
+    if (!csvPath) sourceType = 'spotify';
+    setFieldHelp(linkStatus, '', '');
+  } else if (/spotify/i.test(v) || /^[a-zA-Z0-9]{22}$/.test(v)) {
+    sourceType = 'spotify';
+    icon = 'spotify';
+    spotifyPlaylistUrl = v;
+    spotifyUrlValid = SPOTIFY_PLAYLIST.test(v);
+    setFieldHelp(linkStatus, spotifyUrlValid
+      ? 'Spotify playlist. Ready to check.'
+      : /open\.spotify\.com\/(?:intl-[a-z]+\/)?(track|album|artist|show|episode)\//.test(v)
+        ? "That's a link to a single track, album or artist. Copy the link of a playlist instead."
+        : "That doesn't look like a Spotify playlist link. It should start with https://open.spotify.com/playlist/",
+    spotifyUrlValid ? 'ok' : 'error');
+  } else if (/soundcloud/i.test(v)) {
+    sourceType = 'soundcloud';
+    icon = 'soundcloud';
+    soundcloudSetUrl = v;
+    soundcloudUrlValid = SOUNDCLOUD_SET.test(v);
+    setFieldHelp(linkStatus, soundcloudUrlValid
+      ? 'SoundCloud set. Ready to check.'
+      : "That's a SoundCloud link, but not to a set. A set link has /sets/ in it, like soundcloud.com/artist/sets/name.",
+    soundcloudUrlValid ? 'ok' : 'error');
+  } else {
+    sourceType = 'spotify';
+    setFieldHelp(linkStatus, "Track Lab doesn't recognise that link. Paste a link to a Spotify playlist or a SoundCloud set, or use a spreadsheet below.", 'error');
   }
-
-  soundcloudUrlValid = /^(https?:\/\/)?(www\.|m\.)?soundcloud\.com\/[^/?#\s]+\/sets\/[^/?#\s]+/i.test(soundcloudSetUrl)
-    || /^(https?:\/\/)?on\.soundcloud\.com\/[A-Za-z0-9]+/i.test(soundcloudSetUrl);
-
-  soundcloudUrlStatus.textContent = soundcloudUrlValid ? '\u2713' : '\u2717';
-  soundcloudUrlStatus.className = `spotify-url-status ${soundcloudUrlValid ? 'valid' : 'invalid'}`;
+  linkIcon.innerHTML = SOURCE_KIND_ICONS[icon];
+  linkIcon.dataset.kind = icon;
   updateRunButton();
 }
 
@@ -390,12 +422,12 @@ function renderCsvPreview(preview: CsvPreview) {
   ).join('');
 
   csvHasRequiredCols = preview.hasArtistColumn && preview.hasTitleColumn;
-  // Say why Find Sources stays off, instead of leaving a dead button.
-  const missing = [!preview.hasArtistColumn && 'artist', !preview.hasTitleColumn && 'title'].filter(Boolean);
+  // Say why the check button stays off, instead of leaving a dead button.
+  const missing = [!preview.hasArtistColumn && 'an Artist', !preview.hasTitleColumn && 'a Title'].filter(Boolean);
   setCsvStatus(missing.length > 0
-    ? `No ${missing.join(' or ')} column found. Name the columns "Artist" and "Title" (an Exportify export works as is), then choose the file again.`
+    ? `Track Lab couldn't find ${missing.join(' or ')} column. Name the columns "Artist" and "Title" (a playlist saved with Exportify works as it is), then choose the file again.`
     : '');
-  csvPreviewSection.style.display = 'block';
+  csvPreviewSection.style.display = '';
   updateRunButton();
 }
 
@@ -413,44 +445,87 @@ function hideCsvPreview() {
   updateRunButton();
 }
 
-/** Restore a persisted Spotify playlist URL from config on app startup.
- *  Hydrates the input field, flips sourceType to 'spotify', and re-runs
- *  URL validation so the Run button wakes up correctly. */
+/** Restore a Spotify playlist link saved in config by older builds. */
 export function restoreSourceSpotifyUrl(url: string) {
-  if (!url) return;
-  if (spotifyUrlInput) spotifyUrlInput.value = url;
-  setSourceType('spotify');
-  validateSpotifyUrl(url);
+  if (!url || !linkInput) return;
+  setLink(url);
+}
+
+/** Put a link in the field (clearing any spreadsheet) and read it. */
+function setLink(url: string) {
+  if (csvPath) clearCsvFile();
+  linkInput.value = url;
+  validateLink(url);
 }
 
 export async function setSourceCsvFile(filePath: string) {
   csvPath = filePath;
+  sourceType = 'csv';
   setValue('source-csv', filePath);
-  const name = filePath.split('/').pop() || filePath;
-  csvFileName.textContent = name;
+  csvFileName.textContent = fileNameOf(filePath);
   csvDropZone.classList.add('has-file');
+  inputBar.classList.add('has-csv');
+  // A spreadsheet replaces any pasted link.
+  linkInput.value = '';
+  setFieldHelp(linkStatus, '', '');
+  linkIcon.innerHTML = SOURCE_KIND_ICONS.link;
+  updateRunButton();
 
   try {
     const preview = await window.candybar.previewCsv(filePath);
+    if (csvPath !== filePath) return; // a different file was picked meanwhile
     renderCsvPreview(preview);
   } catch (err) {
     console.error('Failed to preview CSV:', err);
     hideCsvPreview();
-    showToast('error', "Couldn't read that CSV", getErrorMessage(err));
+    showToast('error', "Couldn't open that spreadsheet", getErrorMessage(err));
   }
 }
 
 function clearCsvFile() {
+  const had = !!csvPath;
   csvPath = '';
   setValue('source-csv', '');
   csvFileName.textContent = '';
   csvDropZone.classList.remove('has-file');
+  inputBar.classList.remove('has-csv');
   hideCsvPreview();
+  if (had) validateLink(linkInput.value);
 }
 
-// ========== Results Rendering ==========
+function fileNameOf(p: string): string {
+  return p.split('/').pop() || p;
+}
 
-/** Shared search-filter predicate for a store match. */
+/** A spreadsheet's name for the saved list: its file name without ".csv". */
+function csvDisplayName(p: string): string {
+  return fileNameOf(p).replace(/\.csv$/i, '');
+}
+
+// ========== Run errors ==========
+
+function showRunError(message: string) {
+  const needsSpotify = /spotify/i.test(message) && /(credential|client id|settings)/i.test(message);
+  runError.innerHTML = `
+    ${ERROR_SVG}
+    <div class="callout-body">
+      <strong>Track Lab couldn't check this playlist</strong>
+      <p>${needsSpotify
+        ? 'Track Lab needs to be connected to Spotify before it can read playlists.'
+        : 'Check the link or file, then try again. If it keeps happening, the details below say why.'}</p>
+      ${needsSpotify ? '' : `<details class="buy-error-details"><summary>Show details</summary><p>${escapeHtml(message)}</p></details>`}
+    </div>
+    ${needsSpotify ? '<div class="callout-actions"><button type="button" class="btn-secondary btn-sm" data-run-error="spotify">Connect Spotify</button></div>' : ''}`;
+  runError.style.display = '';
+  runError.querySelector('[data-run-error="spotify"]')?.addEventListener('click', () => requestOpenSettings('spotify'));
+}
+
+function hideRunError() {
+  if (runError) runError.style.display = 'none';
+}
+
+// ========== Results ==========
+
 function matchesSearch(m: QobuzCartMatch): boolean {
   if (!searchQuery) return true;
   const q = searchQuery.toLowerCase();
@@ -464,63 +539,55 @@ function matchesSearch(m: QobuzCartMatch): boolean {
 }
 
 /** A store match that can actually be bought: found, and lossless. A
- *  lossy-only match counts as not found, the same as on Upgrades. */
+ *  compressed-only match counts as not for sale, the same as on Upgrades. */
 function hasLosslessMatch(m: QobuzCartMatch): boolean {
   return m.status === 'matched' && m.lossless;
 }
 
 /** Store matches belonging to a store-backed segment.
- *   - new:      not in library + a lossless store match was found (the buyable tracks)
- *   - maybe:    a probable library hit, but a lossless store match exists to buy anyway
- *   - notfound: searched, but no lossless store match came back (lossy-only included) */
-function segmentMatches(seg: 'new' | 'maybe' | 'notfound'): QobuzCartMatch[] {
-  return matches.filter(m => {
-    if (!matchesSearch(m)) return false;
+ *   - new:      not in library + a lossless store match (the buyable tracks)
+ *   - maybe:    a probable library hit, with a lossless match to buy anyway
+ *   - notfound: searched, but no lossless match (compressed-only included) */
+function segmentMatches(seg: 'new' | 'maybe' | 'notfound', list: QobuzCartMatch[] = matches, filtered = true): QobuzCartMatch[] {
+  return list.filter(m => {
+    if (filtered && !matchesSearch(m)) return false;
     if (seg === 'notfound') return !hasLosslessMatch(m);
     if (seg === 'maybe') return hasLosslessMatch(m) && m.libraryStatus === 'probable';
     return hasLosslessMatch(m) && m.libraryStatus !== 'probable';
   });
 }
 
-/** Why a track has nothing to buy. Same wording as Upgrades' "No lossless source". */
-function notFoundReason(m: QobuzCartMatch): string {
-  if (m.status === 'error') return m.error || 'Store search failed';
-  if (m.status === 'matched' && !m.lossless) {
-    return `Only a lossy copy on ${m.source ? STORE_LABEL[m.source] : 'the store'} (${Math.round(m.confidence * 100)}% match), excluded`;
-  }
-  return m.error || 'No lossless match on Qobuz or Beatport';
+/** The four counts of one check, unfiltered, as saved with the playlist. */
+function countsFor(storeMatches: QobuzCartMatch[], owned: LibraryMatchedRow[]): SavedSourceCounts {
+  return {
+    toBuy: segmentMatches('new', storeMatches, false).length,
+    maybeOwned: segmentMatches('maybe', storeMatches, false).length,
+    owned: owned.length,
+    notForSale: segmentMatches('notfound', storeMatches, false).length,
+  };
 }
 
-/** Small inline check icon for the fake row checkboxes. */
-const CHECK_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="20 6 9 17 4 12"/></svg>';
-
-function emptyRow(text: string): HTMLElement {
-  const d = document.createElement('div');
-  d.className = 'empty-state';
-  d.innerHTML = `<p>${escapeHtml(text)}</p>`;
-  return d;
+function artHtml(url: string | null | undefined): string {
+  return url
+    ? `<img class="buy-art" src="${escapeHtml(url)}" alt="" loading="lazy" />`
+    : `<div class="buy-art buy-art--placeholder">${NOTE_SVG}</div>`;
 }
 
-/** Swap a failed <img> cover for a placeholder <div>. Qobuz covers are
- *  constructed from the album id and occasionally 404, which would otherwise
- *  render as a broken-image icon. Handles both the results list and the
- *  recent-matches preview. */
+/** Swap a failed cover <img> for a placeholder. Qobuz covers are built from
+ *  the album id and occasionally 404. */
 function attachArtFallback(root: HTMLElement) {
-  root.querySelectorAll<HTMLImageElement>('img.source-result-art, img.recent-art').forEach((img) => {
-    const baseClass = img.classList.contains('recent-art') ? 'recent-art' : 'source-result-art';
+  root.querySelectorAll<HTMLImageElement>('img.buy-art').forEach((img) => {
     img.addEventListener('error', () => {
       const placeholder = document.createElement('div');
-      placeholder.className = `${baseClass} ${baseClass}--placeholder`;
+      placeholder.className = 'buy-art buy-art--placeholder';
+      placeholder.innerHTML = NOTE_SVG;
       img.replaceWith(placeholder);
     }, { once: true });
   });
 }
 
-/**
- * Build (or update) the playlist card, reusing a single `#source-playlist-card`
- * element so it can be moved between the progress and results sections
- * without losing identity.
- */
+/** The playlist card is one element moved between the progress card and the
+ *  results, so it keeps its identity (and loaded cover). */
 function buildPlaylistCard(info: SourcePlaylistInfo): HTMLElement {
   let card = document.getElementById('source-playlist-card') as HTMLElement | null;
   if (!card) {
@@ -530,33 +597,29 @@ function buildPlaylistCard(info: SourcePlaylistInfo): HTMLElement {
   return fillPlaylistCard(card, info);
 }
 
-/** Show the playlist card at the top of the progress hero (during the scan). */
 function showPlaylistCard(info: SourcePlaylistInfo) {
   currentPlaylistInfo = info;
   const card = buildPlaylistCard(info);
   progressSection.insertBefore(card, progressSection.firstChild);
 }
 
-/** Once results are shown, move the same card above the results summary. */
 function movePlaylistCardToResults() {
   if (!currentPlaylistInfo) return;
   const card = document.getElementById('source-playlist-card');
   if (card) resultsSection.insertBefore(card, resultsSection.firstChild);
 }
 
-/** Drop the card on a fresh (replace-mode) run so a new import starts clean. */
 function clearPlaylistCard() {
   currentPlaylistInfo = null;
   document.getElementById('source-playlist-card')?.remove();
 }
 
-// ---------- Sources state persistence (survives HMR + app restarts) ----------
-// The sourcing scan (library check + Qobuz/Beatport search) is the expensive
-// step, so we snapshot the whole reviewable state — results, library buckets,
-// selections, and the tracks already pushed to a cart — into localStorage and
-// rehydrate it on init. That way a code edit (HMR reload) OR quitting and
-// reopening the app drops you back into your cart instead of forcing another
-// full scan. "Clear" wipes it. Cheap enough to save on every mutation.
+// ---------- Session persistence (survives HMR + app restarts) ----------
+// The check (library + Qobuz/Beatport search) is the slow step, so the whole
+// reviewable state — results, library buckets, ticks, what's in the carts —
+// is snapshotted into localStorage and rehydrated on init. "Start a new list"
+// wipes it. The saved playlists (candybar.db) are the long-lived list of
+// sources; this snapshot is just the list on screen.
 const SOURCES_STATE_KEY = 'candybar:sources-state:v1';
 
 function saveSourcesState() {
@@ -577,21 +640,33 @@ function saveSourcesState() {
       spotifyPlaylistUrl,
       soundcloudSetUrl,
       csvPath,
-      segment: activeSegment,
+      openGroups: [...openGroups],
       searchQuery,
+      sessionSources,
+      lastRunAt,
       resultsShown: resultsSection.style.display === 'block'
     };
     localStorage.setItem(SOURCES_STATE_KEY, JSON.stringify(snapshot));
   } catch {
-    // localStorage unavailable or over quota (huge scan) — non-fatal, skip persistence.
+    // localStorage unavailable or over quota (huge list) — non-fatal, skip persistence.
   }
 }
 
-/** Set once a saved session is rehydrated. Its input row (source type + link
- *  or CSV) then wins over the legacy config keys read at startup. */
+/** Set once a saved session is rehydrated. Its input row then wins over the
+ *  legacy config keys read at startup. */
 let snapshotRestored = false;
 export function hasRestoredSourcesSession(): boolean {
   return snapshotRestored;
+}
+
+/** The legacy single-source fields of a snapshot saved before sessionSources. */
+type LegacySnapshot = { sourceType?: string; spotifyPlaylistUrl?: string; soundcloudSetUrl?: string; csvPath?: string };
+
+function legacySessionSource(s: LegacySnapshot): SourceSpec | null {
+  if (s.sourceType === 'spotify' && s.spotifyPlaylistUrl) return { kind: 'spotify', ref: s.spotifyPlaylistUrl };
+  if (s.sourceType === 'soundcloud' && s.soundcloudSetUrl) return { kind: 'soundcloud', ref: s.soundcloudSetUrl };
+  if (s.csvPath && (s.sourceType === 'csv' || !s.sourceType)) return { kind: 'csv', ref: s.csvPath };
+  return null;
 }
 
 function restoreSourcesState() {
@@ -619,30 +694,40 @@ function restoreSourcesState() {
   downloadFiredQobuz = snapshot.downloadFiredQobuz ?? true;
   downloadFiredBeatport = snapshot.downloadFiredBeatport ?? true;
   checkoutArmedAt = { qobuz: snapshot.checkoutArmedAt?.qobuz ?? null, beatport: snapshot.checkoutArmedAt?.beatport ?? null };
-  activeSegment = snapshot.segment ?? 'new';
   searchQuery = snapshot.searchQuery ?? '';
+  sessionSources = Array.isArray(snapshot.sessionSources) ? snapshot.sessionSources : [];
+  lastRunAt = typeof snapshot.lastRunAt === 'number' ? snapshot.lastRunAt : null;
 
-  // Restore the input row (source type + pasted Spotify/SoundCloud URL, or the
-  // CSV file so the source lane summary + Run button survive an HMR reload).
-  if (snapshot.sourceType === 'spotify') {
-    setSourceType('spotify');
-    if (snapshot.spotifyPlaylistUrl && spotifyUrlInput) {
-      spotifyUrlInput.value = snapshot.spotifyPlaylistUrl;
-      validateSpotifyUrl(snapshot.spotifyPlaylistUrl);
-    }
-  } else if (snapshot.sourceType === 'soundcloud') {
-    setSourceType('soundcloud');
-    if (snapshot.soundcloudSetUrl && soundcloudUrlInput) {
-      soundcloudUrlInput.value = snapshot.soundcloudSetUrl;
-      validateSoundCloudUrl(snapshot.soundcloudSetUrl);
-    }
-  } else if (snapshot.csvPath) {
-    void setSourceCsvFile(snapshot.csvPath);
-  }
+  openGroups = new Set(Array.isArray(snapshot.openGroups) ? snapshot.openGroups : []);
+
+  // Restore the input row (the pasted link, or the spreadsheet).
+  if (snapshot.sourceType === 'spotify' && snapshot.spotifyPlaylistUrl) setLink(snapshot.spotifyPlaylistUrl);
+  else if (snapshot.sourceType === 'soundcloud' && snapshot.soundcloudSetUrl) setLink(snapshot.soundcloudSetUrl);
+  else if (snapshot.sourceType === 'csv' && snapshot.csvPath) void setSourceCsvFile(snapshot.csvPath);
   if (searchInput) searchInput.value = searchQuery;
 
   const hasResults = matches.length > 0 || libraryMatched.length > 0 || libraryProbable.length > 0;
   if (!snapshot.resultsShown || !hasResults) return;
+
+  // A list checked before playlists were saved: put it in Your playlists
+  // (without overwriting a newer check of the same playlist).
+  if (sessionSources.length === 0) {
+    const legacy = legacySessionSource(snapshot);
+    if (legacy) {
+      const name = currentPlaylistInfo?.name || (legacy.kind === 'csv' ? csvDisplayName(legacy.ref) : legacy.ref);
+      sessionSources = [{ kind: legacy.kind, ref: legacy.ref, name }];
+      void persistSaved({
+        kind: legacy.kind,
+        ref: legacy.ref,
+        name,
+        imageUrl: currentPlaylistInfo?.imageUrl ?? null,
+        owner: currentPlaylistInfo?.owner ?? '',
+        trackCount: currentPlaylistInfo ? (currentPlaylistInfo.fetchedCount || currentPlaylistInfo.trackCount) : matches.length + libraryMatched.length,
+        counts: countsFor(matches, libraryMatched),
+        checkedAt: lastRunAt ?? undefined,
+      }, { keepExisting: true });
+    }
+  }
 
   // Rebuild the results view exactly as runSearch() leaves it.
   resultsSection.style.display = 'block';
@@ -650,114 +735,164 @@ function restoreSourcesState() {
     const card = buildPlaylistCard(currentPlaylistInfo);
     resultsSection.insertBefore(card, resultsSection.firstChild);
   }
-  updateSegmentCounts();
-  setActiveSegment(activeSegment);
+  updateSummary();
+  renderResults();
   updateBuyBar();
   setInputBarVisible(false);
-  // If a prior session already pushed tracks to a cart, keep the download path live.
-  if (lastAddedQobuz.length + lastAddedBeatport.length > 0) {
-    downloadPurchasesBtn.style.display = 'inline-flex';
-  }
 }
 
-/**
- * Build (or refresh) the two library-phase-1 sections that sit above the
- * store-match grid: "Already in library" (with M3U8/Rekordbox/CSV exports)
- * and "Probably in library" (per-row treat-as-missing toggle). Rendered into
- * a dynamically-inserted `#source-library-sections` container so the existing
- * HTML doesn't need to change.
- */
-/** "Maybe already owned" group — a related version is in the library, but a
- *  store match exists so the user can buy the specific mix anyway. */
-function renderMaybeGroup(): HTMLElement {
-  const list = segmentMatches('maybe');
+// ---------- Groups ----------
+// The list opens on To buy (everything sensible already ticked). The three
+// quieter groups sit under it as one-line summaries you can expand.
+
+const CHEVRON_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="6 9 12 15 18 9"/></svg>';
+
+/** Designed empty state for a group, or for a search with no hits. */
+function emptyGroup(title: string, text: string): HTMLElement {
+  const d = document.createElement('div');
+  d.className = 'empty-state buy-empty';
+  if (searchQuery) {
+    d.innerHTML = `
+      <span class="empty-state-icon">${SEARCH_SVG}</span>
+      <h4>No tracks match "${escapeHtml(searchQuery)}"</h4>
+      <p>Try a different artist or title, or clear the search to see everything.</p>
+      <div class="empty-state-actions"><button type="button" class="btn-secondary btn-sm" data-clear-search>Clear the search</button></div>`;
+    d.querySelector('[data-clear-search]')?.addEventListener('click', () => {
+      searchQuery = '';
+      searchInput.value = '';
+      renderResults();
+      saveSourcesState();
+    });
+  } else {
+    d.innerHTML = `
+      <span class="empty-state-icon">${CHECK_SVG}</span>
+      <h4>${escapeHtml(title)}</h4>
+      <p>${escapeHtml(text)}</p>`;
+  }
+  return d;
+}
+
+function probableReason(p: LibraryProbableRow | undefined): string {
+  if (!p) return '';
+  if (/not in rekordbox/i.test(p.reason ?? '')) return " You have the file, but it isn't in Rekordbox yet.";
+  return '';
+}
+
+/** One of the quieter groups as a disclosure: a summary line, the list inside. */
+function quietGroup(key: Group, summary: string, hint: string, body: (into: HTMLElement) => void): HTMLElement {
+  const d = document.createElement('details');
+  d.className = 'disclosure buy-quiet';
+  d.dataset.group = key;
+  // A search opens every group with a hit, so nothing found stays hidden.
+  d.open = openGroups.has(key) || !!searchQuery;
+  d.innerHTML = `<summary><span class="buy-quiet-title">${summary}</span><span class="disclosure-hint">${escapeHtml(hint)}</span></summary>`;
+  const inner = document.createElement('div');
+  inner.className = 'disclosure-body';
+  body(inner);
+  d.appendChild(inner);
+  d.addEventListener('toggle', () => {
+    if (searchQuery) return;
+    if (d.open) openGroups.add(key); else openGroups.delete(key);
+    saveSourcesState();
+  });
+  return d;
+}
+
+/** "You might have these": a related version is in the library, and a store
+ *  match exists so the specific mix can be bought anyway. */
+function maybeRows(into: HTMLElement, list: QobuzCartMatch[]) {
   const probableByKey = new Map<string, LibraryProbableRow>(
     libraryProbable.map(r => [`${r.artist.toLowerCase()} - ${r.title.toLowerCase()}`, r])
   );
-  const group = document.createElement('div');
-  group.className = 'source-group';
-  group.innerHTML = `
-    <div class="source-group-head">
-      <span class="source-group-title">Maybe already owned</span>
-      <span class="source-group-desc">A related version is in your library. Buy anyway if it's a different mix you want.</span>
-    </div>`;
-  if (list.length === 0) {
-    group.appendChild(emptyRow(searchQuery ? `No tracks match "${searchQuery}".` : 'Nothing flagged as maybe-owned.'));
-    return group;
-  }
+  const intro = document.createElement('p');
+  intro.className = 'buy-quiet-intro';
+  intro.textContent = "Something close is already in your library, like another mix of the same track. If it isn't the one you want, choose Buy anyway to move it up to To buy.";
+  into.appendChild(intro);
   const ul = document.createElement('div');
-  ul.className = 'source-group-list';
+  ul.className = 'buy-list';
   for (const m of list) {
     const p = probableByKey.get(m.trackInput.key);
+    const pct = p ? Math.round(p.confidence * 100) : 0;
+    const price = m.qobuzTrack?.price ?? m.beatportTrack?.price ?? '';
     const suspected = p
-      ? `you may own <span class="own">${escapeHtml(p.suspectedFileArtist)} — ${escapeHtml(p.suspectedFileTitle)}</span> · ${Math.round(p.confidence * 100)}% match`
-      : 'a similar track is already in your library';
+      ? `You might have <b>${escapeHtml(p.suspectedFileArtist)} — ${escapeHtml(p.suspectedFileTitle)}</b> <span class="term" tabindex="0" data-tooltip="${escapeHtml(`Track Lab is ${pct}% sure it's the same track.${probableReason(p)}`)}">(${pct}% alike)</span>`
+      : 'A similar track is already in your library';
     const row = document.createElement('div');
-    row.className = 'src-row info';
+    row.className = 'buy-row buy-row--info';
     row.innerHTML = `
-      <div class="src-trk">
-        <span class="t">${escapeHtml(m.trackInput.artist)} — ${escapeHtml(m.trackInput.title)}</span>
-        <span class="sub">${suspected}</span>
-      </div>
-      <button class="btn-primary btn-sm src-buy-anyway" data-tooltip="Not the same track after all? Move it to New to buy so you can add it to a cart.">Buy anyway</button>`;
-    row.querySelector('.src-buy-anyway')?.addEventListener('click', () => treatProbableAsMissing(m.trackInput.key));
+      <span class="buy-trk">
+        <span class="buy-t">${escapeHtml(m.trackInput.title)}</span>
+        <span class="buy-a">${escapeHtml(m.trackInput.artist)}</span>
+        <span class="buy-sub">${suspected}</span>
+        ${claudeVerdictHtml(m)}
+      </span>
+      <span class="buy-where">
+        <span class="buy-price">${escapeHtml(price || '—')}</span>
+        <span class="buy-store">${m.source ? STORE_LABEL[m.source] : ''}</span>
+      </span>
+      <button type="button" class="btn-secondary btn-sm buy-anyway" data-tooltip="Not the same track after all? Move it to To buy so you can add it to a cart.">Buy anyway</button>`;
+    row.querySelector('.buy-anyway')?.addEventListener('click', () => treatProbableAsMissing(m.trackInput.key));
     ul.appendChild(row);
   }
-  group.appendChild(ul);
-  return group;
+  into.appendChild(ul);
 }
 
-/** "Already in library" group — confirmed duplicates, plus the playlist-export
- *  actions (M3U8 / Rekordbox / CSV) which belong to the owned set. */
-function renderOwnedGroup(): HTMLElement {
-  const q = searchQuery.toLowerCase();
-  const rows = libraryMatched.filter(r => !q || `${r.artist} ${r.title}`.toLowerCase().includes(q));
-  const group = document.createElement('div');
-  group.className = 'source-group';
-  group.innerHTML = `
-    <div class="source-group-head">
-      <span class="source-group-title">Already in library</span>
-      <span class="source-group-desc">Confirmed duplicates — nothing to buy.</span>
-      <div class="source-group-actions">
-        <button class="btn-sm btn-ghost" id="src-export-m3u8" data-tooltip="Save these as a playlist file most music apps can open (M3U8)">Export M3U8</button>
-        <button class="btn-sm btn-ghost" id="src-export-rbxml" data-tooltip="Save these as a file Rekordbox can import as a playlist">Export Rekordbox</button>
-        <button class="btn-sm btn-ghost" id="src-export-owned-csv" data-tooltip="Save these as a spreadsheet (CSV)">Export CSV</button>
-      </div>
+/** "Already in your library", with ways to make a playlist of them. */
+function ownedRows(into: HTMLElement, rows: LibraryMatchedRow[]) {
+  const head = document.createElement('div');
+  head.className = 'buy-quiet-actions';
+  head.innerHTML = `
+    <p class="buy-quiet-intro">Nothing to buy. You can make a playlist of these to import into Rekordbox.</p>
+    <div class="buy-group-actions">
+      <button type="button" class="btn-secondary btn-sm" id="src-export-rbxml" data-tooltip="Save these tracks as a Rekordbox playlist file (.xml) you can import in Rekordbox.">Make a Rekordbox playlist</button>
+      <button type="button" class="btn-ghost btn-sm" id="src-export-m3u8" data-tooltip="Save these tracks as an M3U8 playlist file, which most music apps can open.">Save as M3U8</button>
+      <button type="button" class="btn-ghost btn-sm" id="src-export-owned-csv" data-tooltip="Save these tracks as a spreadsheet (CSV file).">Save as spreadsheet</button>
     </div>`;
-  if (rows.length === 0) {
-    group.appendChild(emptyRow(searchQuery ? `No tracks match "${searchQuery}".` : 'No owned matches.'));
-  } else {
-    const ul = document.createElement('div');
-    ul.className = 'source-group-list';
-    for (const r of rows.slice(0, 200)) {
-      const file = r.filePath.split('/').pop() || r.filePath;
-      const row = document.createElement('div');
-      row.className = 'src-row info';
-      row.innerHTML = `
-        <div class="src-trk">
-          <span class="t">${escapeHtml(r.artist)} — ${escapeHtml(r.title)}</span>
-          <span class="sub own" title="${escapeHtml(r.filePath)}">→ ${escapeHtml(file)}</span>
-        </div>`;
-      ul.appendChild(row);
-    }
-    group.appendChild(ul);
-    if (rows.length > 200) group.appendChild(emptyRow(`+ ${rows.length - 200} more`));
+  into.appendChild(head);
+  const ul = document.createElement('div');
+  ul.className = 'buy-list';
+  for (const r of rows.slice(0, 200)) {
+    const row = document.createElement('div');
+    row.className = 'buy-row buy-row--info';
+    row.innerHTML = `
+      <span class="buy-trk">
+        <span class="buy-t">${escapeHtml(r.title)}</span>
+        <span class="buy-a">${escapeHtml(r.artist)}</span>
+      </span>
+      <span class="buy-file" tabindex="0" data-tooltip="${escapeHtml(r.filePath)}">${escapeHtml(fileNameOf(r.filePath))}</span>`;
+    ul.appendChild(row);
+  }
+  into.appendChild(ul);
+  if (rows.length > 200) {
+    const more = document.createElement('p');
+    more.className = 'buy-more';
+    more.textContent = `And ${plural(rows.length - 200, 'more track')}. Search to find one.`;
+    into.appendChild(more);
   }
   // Export the same (filtered) rows the user is looking at, not the full set.
-  group.querySelector('#src-export-m3u8')?.addEventListener('click', () => void exportM3u8(rows));
-  group.querySelector('#src-export-rbxml')?.addEventListener('click', () => void exportRekordbox(rows));
-  group.querySelector('#src-export-owned-csv')?.addEventListener('click', () => void exportCsv(
+  head.querySelector('#src-export-m3u8')?.addEventListener('click', () => void exportM3u8(rows));
+  head.querySelector('#src-export-rbxml')?.addEventListener('click', () => void exportRekordbox(rows));
+  head.querySelector('#src-export-owned-csv')?.addEventListener('click', () => void exportCsv(
     rows.map(r => ({ artist: r.artist, title: r.title, album: r.album, genre: r.genre })),
     'library-matched'
   ));
-  return group;
 }
 
-/**
- * Flip a "probably in library" row into the sourcing list. Re-runs the
- * lossless auto-select against the corresponding store match so a confident
- * match gets auto-checked the moment it moves buckets.
- */
+/** "Not for sale in full quality": nothing found, a failed search, or only a
+ *  compressed copy (never tickable, never carted). */
+function notForSaleRows(into: HTMLElement, list: QobuzCartMatch[]) {
+  const intro = document.createElement('p');
+  intro.className = 'buy-quiet-intro';
+  intro.textContent = "Qobuz and Beatport don't sell these in full quality. Tracks only sold as compressed files (like MP3) are listed here and never go in a cart.";
+  into.appendChild(intro);
+  const ul = document.createElement('div');
+  ul.className = 'buy-list';
+  for (const m of list) ul.appendChild(buildNotFoundRow(m));
+  into.appendChild(ul);
+}
+
+/** Move a "You might have these" track to To buy, ticking it when the match is
+ *  a confident full-quality copy of the same version. */
 function treatProbableAsMissing(inputKey: string) {
   libraryProbable = libraryProbable.filter(r =>
     `${r.artist.toLowerCase()} - ${r.title.toLowerCase()}` !== inputKey
@@ -768,214 +903,278 @@ function treatProbableAsMissing(inputKey: string) {
     m.libraryMatchPath = undefined;
     m.libraryMatchConfidence = undefined;
     m.inLibrary = false;
-    // Auto-select if the existing match is a confident lossless copy of this version.
     if (autoSelectable(m)) {
       if (m.source === 'qobuz' && m.qobuzTrack) selectedQobuzIds.add(m.qobuzTrack.id);
       else if (m.source === 'beatport' && m.beatportTrack) selectedBeatportIds.add(m.beatportTrack.id);
     }
   }
-  updateSegmentCounts();
-  setActiveSegment('new'); // jump to "New to buy" so the promoted track is visible
+  updateSummary();
+  renderResults();
   updateBuyBar();
+  showToast('info', 'Moved to To buy', 'Tick it there to add it to a cart.');
 }
 
-/** Build one clean, selectable track row for the New / Not-found groups. */
+/** Whether a match needs a look before buying (shown on the row itself). */
+function needsCheck(m: QobuzCartMatch): boolean {
+  return isOtherVersion(m) || isReleaseMatch(m) || m.confidence < AUTO_SELECT_CONFIDENCE;
+}
+
+/** One tickable To buy row: title, artist and price up front; the store,
+ *  quality and how sure the match is behind "Details". */
 function buildTrackRow(match: QobuzCartMatch): HTMLElement {
   if (!hasLosslessMatch(match)) return buildNotFoundRow(match);
+  const store = match.source;
+  const track = store === 'qobuz' ? match.qobuzTrack : store === 'beatport' ? match.beatportTrack : null;
+  if (!store || !track) return buildNotFoundRow(match);
+  const set = store === 'qobuz' ? selectedQobuzIds : selectedBeatportIds;
+  const rowKey = `${store}:${track.id}:${match.trackInput.key}`;
+  const open = openRows.has(rowKey);
+
   const el = document.createElement('div');
-  el.className = 'src-row';
-  const pct = Math.round(match.confidence * 100);
-  const pctHtml = `<span class="src-pct ${pct >= 90 ? 'hi' : 'mid'}" title="How sure we are this is the same track. 90% or more is a strong match.">${pct}%</span>`;
-  const versionTag = isOtherVersion(match) ? OTHER_VERSION_TAG : '';
-  // A flagged row names what was asked for, so the mismatch can be judged.
-  const askedFor = isOtherVersion(match) ? ` · you asked for ${escapeHtml(match.trackInput.title)}` : '';
+  el.className = 'buy-row buy-row--pick';
+  el.classList.toggle('sel', set.has(track.id));
+  el.classList.toggle('is-open', open);
 
-  const bindToggle = (id: string, set: Set<string>) => {
-    el.tabIndex = 0;
-    el.setAttribute('role', 'checkbox');
-    el.setAttribute('aria-checked', String(set.has(id)));
-    const toggle = () => {
-      const on = !el.classList.contains('sel');
-      el.classList.toggle('sel', on);
-      el.setAttribute('aria-checked', String(on));
-      if (on) set.add(id); else set.delete(id);
-      updateBuyBar();
-    };
-    el.addEventListener('click', toggle);
-    el.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); }
-    });
-  };
-
-  // A release-level Qobuz hit or a match with a caveat says so on the row.
-  const releaseTag = isReleaseMatch(match) ? RELEASE_MATCH_TAG : '';
-  const note = matchNoteHtml(match);
-  if (releaseTag) el.classList.add('release-match');
-
-  if (match.source === 'qobuz' && match.qobuzTrack) {
-    const qt = match.qobuzTrack;
-    if (selectedQobuzIds.has(qt.id)) el.classList.add('sel');
-    el.innerHTML = `
-      <span class="src-cbx">${CHECK_SVG}</span>
-      <span class="src-badge qobuz">Qobuz</span>
-      <span class="src-trk"><span class="t">${escapeHtml(qt.name)}${versionTag}${releaseTag}</span><span class="a">${escapeHtml(qt.artists.join(', '))}${askedFor}</span>${note}</span>
-      <span class="src-qual">${qt.quality ? `<span class="fmt">${escapeHtml(qt.quality)}</span> · ` : ''}<span class="price">${escapeHtml(qt.price || '—')}</span></span>
-      ${pctHtml}`;
-    bindToggle(qt.id, selectedQobuzIds);
-    return el;
-  }
-
-  if (match.source === 'beatport' && match.beatportTrack) {
-    const bt = match.beatportTrack;
-    if (selectedBeatportIds.has(bt.id)) el.classList.add('sel');
-    const sub = [bt.artists.join(', '), bt.bpm ? `${bt.bpm} BPM` : '', bt.key].filter(Boolean).join(' · ');
-    el.innerHTML = `
-      <span class="src-cbx">${CHECK_SVG}</span>
-      <span class="src-badge beatport">Beatport</span>
-      <span class="src-trk"><span class="t">${escapeHtml(bt.name)}${versionTag}</span><span class="a">${escapeHtml(sub)}${askedFor}</span>${note}</span>
-      <span class="src-qual"><span class="fmt">Lossless</span> · <span class="price">${escapeHtml(bt.price || '—')}</span></span>
-      ${pctHtml}`;
-    bindToggle(bt.id, selectedBeatportIds);
-    return el;
-  }
-
-  return buildNotFoundRow(match);
-}
-
-/** A Not-found row: no store match, a failed search, or only a lossy copy
- *  (never selectable, never carted). */
-function buildNotFoundRow(match: QobuzCartMatch): HTMLElement {
-  const el = document.createElement('div');
-  el.className = 'src-row info';
-  const lossy = match.status === 'matched' && !match.lossless;
-  const quality = lossy ? (match.qobuzTrack?.quality || 'lossy') : '';
+  const bt = store === 'beatport' ? match.beatportTrack : null;
+  const sub = [track.artists.join(', '), bt?.bpm ? `${bt.bpm} BPM` : '', bt?.key ?? ''].filter(Boolean).join(' · ');
+  const flag = needsCheck(match) ? matchPillHtml(match) : '';
+  const askedFor = isOtherVersion(match) || isReleaseMatch(match)
+    ? `<p>In your list: <b>${escapeHtml(match.trackInput.artist)} — ${escapeHtml(match.trackInput.title)}</b></p>`
+    : '';
+  const note = match.note ? `<p>${escapeHtml(match.note)}</p>` : '';
+  const detailsId = `buy-row-more-${Math.random().toString(36).slice(2, 9)}`;
   el.innerHTML = `
-    <span class="src-badge notfound">No source</span>
-    <span class="src-trk"><span class="t">${escapeHtml(match.trackInput.artist)} — ${escapeHtml(match.trackInput.title)}</span><span class="sub">${escapeHtml(notFoundReason(match))}</span></span>
-    ${lossy ? `<span class="src-tag-lossy">${escapeHtml(quality)}</span>` : ''}`;
+    <div class="buy-row-main" role="checkbox" tabindex="0" aria-checked="${set.has(track.id)}">
+      <span class="buy-cbx" aria-hidden="true">${CHECK_SVG}</span>
+      ${artHtml(store === 'qobuz' ? match.qobuzTrack?.image : null)}
+      <span class="buy-trk">
+        <span class="buy-t">${escapeHtml(track.name)}</span>
+        <span class="buy-a">${escapeHtml(sub)}</span>
+        ${claudeVerdictHtml(match)}
+      </span>
+      ${flag ? `<span class="buy-pill">${flag}</span>` : ''}
+      <span class="buy-price">${escapeHtml(track.price || '—')}</span>
+    </div>
+    <button type="button" class="btn-icon buy-row-expand" aria-expanded="${open}" aria-controls="${detailsId}" aria-label="Details for ${escapeHtml(track.name)}" data-tooltip="Where it's from and how sure the match is">${CHEVRON_SVG}</button>
+    <div class="buy-row-more" id="${detailsId}" ${open ? '' : 'hidden'}>
+      <div class="buy-row-facts">
+        <span>On ${STORE_LABEL[store]}</span>
+        <span>${qualityHtml(match)}</span>
+        <span>${matchPillHtml(match)}</span>
+      </div>
+      ${askedFor}${note}
+      <button type="button" class="btn-ghost btn-sm buy-row-open" data-tooltip="Open this track's page in the ${STORE_LABEL[store]} panel, to listen before you buy. Nothing is added to your cart.">Open on ${STORE_LABEL[store]}</button>
+    </div>`;
+  attachArtFallback(el);
+
+  const main = el.querySelector<HTMLElement>('.buy-row-main')!;
+  const toggle = () => {
+    const on = !el.classList.contains('sel');
+    el.classList.toggle('sel', on);
+    main.setAttribute('aria-checked', String(on));
+    if (on) set.add(track.id); else set.delete(track.id);
+    updateBuyBar();
+  };
+  main.addEventListener('click', (e) => {
+    if ((e.target as HTMLElement).closest('.term, .buy-match')) return; // tooltips, not ticks
+    toggle();
+  });
+  main.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); }
+  });
+  const expand = el.querySelector<HTMLButtonElement>('.buy-row-expand')!;
+  const more = el.querySelector<HTMLElement>('.buy-row-more')!;
+  expand.addEventListener('click', () => {
+    const nowOpen = more.hidden;
+    more.hidden = !nowOpen;
+    expand.setAttribute('aria-expanded', String(nowOpen));
+    el.classList.toggle('is-open', nowOpen);
+    if (nowOpen) openRows.add(rowKey); else openRows.delete(rowKey);
+  });
+  el.querySelector('.buy-row-open')?.addEventListener('click', () => {
+    if (track.url) void window.candybar.storePanelOpen(store, track.url);
+  });
   return el;
 }
 
-/** Render the active segment's group into the groups container. */
+function buildNotFoundRow(match: QobuzCartMatch): HTMLElement {
+  const el = document.createElement('div');
+  el.className = 'buy-row buy-row--info';
+  el.innerHTML = `
+    <span class="buy-trk">
+      <span class="buy-t">${escapeHtml(match.trackInput.title)}</span>
+      <span class="buy-a">${escapeHtml(match.trackInput.artist)}</span>
+      <span class="buy-sub">${escapeHtml(notForSaleReason(match))}</span>
+    </span>
+    ${notForSalePillHtml(match)}`;
+  return el;
+}
+
+/** Render To buy, then the quieter groups that have something in them. */
 function renderResults() {
   groupsContainer.innerHTML = '';
   emptyState.style.display = 'none';
 
-  if (activeSegment === 'owned') { groupsContainer.appendChild(renderOwnedGroup()); return; }
-  if (activeSegment === 'maybe') { groupsContainer.appendChild(renderMaybeGroup()); return; }
+  // ---- To buy ----
+  const toBuy = segmentMatches('new');
+  const group = document.createElement('section');
+  group.className = 'buy-group';
+  group.setAttribute('aria-labelledby', 'buy-group-tobuy');
+  group.innerHTML = `
+    <div class="buy-group-head">
+      <div class="buy-group-text">
+        <h3 class="buy-group-title" id="buy-group-tobuy">To buy <span class="buy-group-count">${toBuy.length.toLocaleString()}</span></h3>
+        <p class="card-desc">Not in your library, and for sale in full quality. Strong matches are ticked for you. Tap a track to tick or untick it.</p>
+      </div>
+      ${toBuy.length > 0 ? `<div class="buy-group-actions">
+        <button type="button" class="btn-ghost btn-sm" data-select="all" data-tooltip="Tick every track here, except ones marked to check first (a different version or a whole release).">Tick all</button>
+        <button type="button" class="btn-ghost btn-sm" data-select="none">Untick all</button>
+      </div>` : ''}
+    </div>`;
 
-  const seg = activeSegment; // 'new' | 'notfound'
-  const list = segmentMatches(seg);
-  const group = document.createElement('div');
-  group.className = 'source-group';
-  group.innerHTML = seg === 'new'
-    ? `<div class="source-group-head">
-         <span class="source-group-title">New to buy</span>
-         <span class="source-group-desc">Not in your library, with a lossless copy for sale. Strong same-version matches are pre-selected; lossy-only matches are under Not found.</span>
-         <div class="source-group-actions"><button class="btn-sm btn-ghost" id="src-select-lossless" data-tooltip="Select every track available in full (lossless) quality. Matches flagged as a different version or a whole-release match stay unticked, and compressed copies are never added.">Select all lossless</button></div>
-       </div>`
-    : `<div class="source-group-head">
-         <span class="source-group-title">Not found</span>
-         <span class="source-group-desc">No lossless match on Qobuz or Beatport. Lossy-only copies are listed here and never added to a cart.</span>
-       </div>`;
+  // Ben's rule, said where the tracks would have been.
+  const compressed = matches.filter(isCompressedOnly).length;
+  if (compressed > 0 && !searchQuery) {
+    const note = document.createElement('div');
+    note.className = 'callout callout--info buy-rule';
+    note.innerHTML = `
+      ${INFO_SVG}
+      <div class="callout-body">
+        <p>${plural(compressed, 'track')} ${compressed === 1 ? 'is' : 'are'} only sold as a compressed file (like an MP3), so ${compressed === 1 ? "it isn't" : "they aren't"} here. Only full-quality copies can go in a cart. <button type="button" class="btn-link" data-goto="notfound">See ${compressed === 1 ? 'it' : 'them'}</button></p>
+      </div>`;
+    note.querySelector('[data-goto]')?.addEventListener('click', () => {
+      openGroups.add('notfound');
+      renderResults();
+      revealInContent(groupsContainer.querySelector<HTMLElement>('[data-group="notfound"]'), 'start');
+    });
+    group.appendChild(note);
+  }
 
-  if (list.length === 0) {
-    group.appendChild(emptyRow(
-      searchQuery
-        ? `No tracks match "${searchQuery}".`
-        : (seg === 'new' ? 'Nothing new to buy in this list.' : 'Every track had a lossless match.')
-    ));
+  if (toBuy.length === 0) {
+    group.appendChild(emptyGroup('Nothing new to buy', "Every track in this list is already in your library, might be, or isn't for sale in full quality. See below."));
   } else {
     const ul = document.createElement('div');
-    ul.className = 'source-group-list';
-    for (const m of list) ul.appendChild(buildTrackRow(m));
+    ul.className = 'buy-list';
+    for (const m of toBuy) ul.appendChild(buildTrackRow(m));
     group.appendChild(ul);
   }
   groupsContainer.appendChild(group);
 
-  group.querySelector<HTMLButtonElement>('#src-select-lossless')?.addEventListener('click', () => {
+  group.querySelectorAll<HTMLButtonElement>('[data-select]').forEach(btn => btn.addEventListener('click', () => {
     for (const m of segmentMatches('new')) {
-      if (isOtherVersion(m) || isReleaseMatch(m)) continue;
-      if (m.source === 'qobuz' && m.qobuzTrack) selectedQobuzIds.add(m.qobuzTrack.id);
-      else if (m.source === 'beatport' && m.beatportTrack) selectedBeatportIds.add(m.beatportTrack.id);
+      const id = m.source === 'qobuz' ? m.qobuzTrack?.id : m.beatportTrack?.id;
+      const set = m.source === 'qobuz' ? selectedQobuzIds : selectedBeatportIds;
+      if (!id) continue;
+      if (btn.dataset.select === 'none') set.delete(id);
+      else if (!isOtherVersion(m) && !isReleaseMatch(m)) set.add(id);
     }
     renderResults();
     updateBuyBar();
-  });
-}
+  }));
 
-/** Update the four segment counts and the slim scan-done summary line. The
- *  badge counts track the visible (search-filtered) list; the scan summary
- *  reflects the full, unfiltered scan. */
-function updateSegmentCounts() {
+  // ---- The quieter groups ----
+  const maybe = segmentMatches('maybe');
   const q = searchQuery.toLowerCase();
-  segCountNew.textContent = String(segmentMatches('new').length);
-  segCountMaybe.textContent = String(segmentMatches('maybe').length);
-  segCountNotFound.textContent = String(segmentMatches('notfound').length);
-  segCountOwned.textContent = String(
-    libraryMatched.filter(r => !q || `${r.artist} ${r.title}`.toLowerCase().includes(q)).length
-  );
-
-  // Scan summary is the whole scan, independent of any active filter. Only
-  // lossless matches count as found; a lossy-only match is "No source".
-  const totalChecked = matches.length + libraryMatched.length;
-  const notFoundCount = matches.filter(m => !hasLosslessMatch(m)).length;
-  const lossyOnly = matches.filter(m => m.status === 'matched' && !m.lossless).length;
-  const qFound = matches.filter(m => hasLosslessMatch(m) && m.source === 'qobuz').length;
-  const bFound = matches.filter(m => hasLosslessMatch(m) && m.source === 'beatport').length;
-  if (totalChecked > 0) {
-    scanSummary.style.display = 'flex';
-    scanSummary.innerHTML = `
-      <span class="ok">✓ Checked ${plural(totalChecked, 'track')} against your library</span>
-      <span class="sep">·</span>
-      <span class="chip" title="Tracks with a lossless copy on Qobuz">Qobuz <b>${qFound}</b></span>
-      <span class="chip" title="Tracks with a lossless copy on Beatport">Beatport <b>${bFound}</b></span>
-      <span class="chip" title="${lossyOnly > 0 ? `No lossless copy on either store (${lossyOnly} only lossy, excluded)` : 'No lossless copy on either store'}">No source <b>${notFoundCount}</b></span>`;
-  } else {
-    scanSummary.style.display = 'none';
+  const owned = libraryMatched.filter(r => !q || `${r.artist} ${r.title}`.toLowerCase().includes(q));
+  const notFound = segmentMatches('notfound');
+  const quiet = document.createElement('div');
+  quiet.className = 'buy-quiet-list';
+  if (maybe.length > 0) {
+    quiet.appendChild(quietGroup('maybe',
+      `You might have <b>${maybe.length.toLocaleString()}</b> of these already`,
+      'Check before buying', (into) => maybeRows(into, maybe)));
   }
+  if (owned.length > 0) {
+    quiet.appendChild(quietGroup('owned',
+      `<b>${owned.length.toLocaleString()}</b> already in your library`,
+      'Nothing to buy', (into) => ownedRows(into, owned)));
+  }
+  if (notFound.length > 0) {
+    quiet.appendChild(quietGroup('notfound',
+      `<b>${notFound.length.toLocaleString()}</b> not for sale in full quality`,
+      'Compressed only, or not found', (into) => notForSaleRows(into, notFound)));
+  }
+  if (quiet.childElementCount > 0) groupsContainer.appendChild(quiet);
 }
 
-/** The selected lossless matches for one store as cart payloads, one per store
- *  track: exactly what "Add to carts" sends, so the buy-bar totals agree. */
+/** The summary sentence over the whole list (unfiltered). */
+function updateSummary() {
+  const total = matches.length + libraryMatched.length;
+  if (total === 0) {
+    scanSummary.style.display = 'none';
+    return;
+  }
+  const c = countsFor(matches, libraryMatched);
+  const sentences: string[] = [];
+  sentences.push(c.owned === 0
+    ? `None of these ${plural(total, 'track')} are in your library yet.`
+    : `You already have ${c.owned.toLocaleString()} of these ${plural(total, 'track')}.`);
+  if (c.maybeOwned > 0) {
+    sentences.push(`${plural(c.maybeOwned, 'track')} might already be in your library, so check ${c.maybeOwned === 1 ? 'it' : 'them'} before buying.`);
+  }
+  if (c.notForSale > 0) {
+    sentences.push(`${c.notForSale.toLocaleString()} ${c.notForSale === 1 ? "isn't" : "aren't"} for sale in full quality.`);
+  }
+  const combined = sessionSources.length > 1
+    ? `<p class="buy-summary-sources">This list combines ${sessionSources.length} playlists: ${sessionSources.map(s => escapeHtml(s.name)).join(', ')}.</p>`
+    : '';
+  scanSummary.style.display = '';
+  scanSummary.innerHTML = `
+    <h3 class="buy-summary-title">${c.toBuy > 0 ? `${plural(c.toBuy, 'track')} to buy in full quality` : 'Nothing new to buy'}</h3>
+    <p>${sentences.join(' ')}</p>
+    ${combined}`;
+}
+
+/** The ticked full-quality matches for one store as cart payloads, one per
+ *  store track: exactly what "Add to carts" sends, so the totals agree. */
 function selectedForCart(store: Store): StoreMatch[] {
   const ids = store === 'qobuz' ? selectedQobuzIds : selectedBeatportIds;
   return uniqueByTrack(matches
-    // Belt-and-suspenders lossless guard — the UI disables these checkboxes
-    // but this keeps any DOM-tampering / future refactors from slipping lossy
-    // tracks into a cart.
+    // Belt-and-braces lossless guard: compressed rows can't be ticked, but
+    // this keeps DOM tampering or a future refactor from carting one.
     .filter(m => m.lossless && m.source === store && ids.has((store === 'qobuz' ? m.qobuzTrack : m.beatportTrack)!.id))
     .map(m => toStoreMatch(m, store)));
 }
 
-/** Update the sticky buy-bar: selected count, per-store totals, action state. */
+/** "12 tracks are in your carts" — the moment after adding, with the way to
+ *  check out. Hidden until Track Lab has put something in a cart. */
+function renderCartHero() {
+  const hero = document.getElementById('source-cart-hero');
+  if (!hero) return;
+  const n = lastAddedQobuz.length + lastAddedBeatport.length;
+  hero.hidden = n === 0;
+  if (n === 0) return;
+  const where = [
+    lastAddedQobuz.length ? `${cartTotal(lastAddedQobuz)} on Qobuz` : '',
+    lastAddedBeatport.length ? `${cartTotal(lastAddedBeatport)} on Beatport` : '',
+  ].filter(Boolean).join(' and ');
+  (document.getElementById('source-cart-hero-title') as HTMLElement).textContent = `${plural(n, 'track')} ${n === 1 ? 'is' : 'are'} in your carts`;
+  (document.getElementById('source-cart-hero-text') as HTMLElement).textContent =
+    `${where}. Check out in the store, then download them into your new-music folder. Nothing is bought until you check out.`;
+}
+
+/** The sticky buy bar: "12 tracks selected · $28.62 on Qobuz" and the one action. */
 function updateBuyBar() {
-  // Show the bar whenever the results pane is up (so Clear / Export / + Add list
-  // stay reachable even for an all-empty result), hidden only when results are.
-  buyBar.style.display = resultsSection.style.display === 'block' ? '' : 'none';
+  const listShown = resultsSection.style.display === 'block';
+  const appending = appendMode && inputBar.style.display !== 'none';
+  buyBar.style.display = listShown && !appending ? '' : 'none';
 
   const qSel = selectedForCart('qobuz');
   const bSel = selectedForCart('beatport');
+  const n = qSel.length + bSel.length;
 
-  buyBarN.textContent = String(qSel.length + bSel.length);
-  buyBarQobuz.textContent = `Qobuz ${qSel.length} · ${cartTotal(qSel)}`;
-  buyBarBeatport.textContent = `Beatport ${bSel.length} · ${cartTotal(bSel)}`;
-  addToCartBtn.disabled = isAddingToCart() || (qSel.length + bSel.length) === 0;
-  // A scan in flight owns the results: no clearing them or queueing another list.
-  clearResultsBtn.disabled = searching;
-  addMoreBtn.disabled = searching;
+  buyBarN.textContent = n > 0 ? `${plural(n, 'track')} selected` : 'No tracks selected';
+  buyBarQobuz.textContent = qSel.length > 0 ? `${cartTotal(qSel)} on Qobuz` : '';
+  buyBarBeatport.textContent = bSel.length > 0 ? `${cartTotal(bSel)} on Beatport` : '';
+  const stores = (qSel.length > 0 ? 1 : 0) + (bSel.length > 0 ? 1 : 0);
+  addToCartBtn.textContent = n > 0 ? `Add ${plural(n, 'track')} to ${stores > 1 ? 'carts' : 'cart'}` : 'Add to carts';
+  addToCartBtn.disabled = isAddingToCart() || n === 0;
+  addToCartBtn.setAttribute('data-tooltip-disabled', isAddingToCart() ? 'Wait for the tracks going in now to finish' : 'Tick at least one track first');
   reviewCartBtn.style.display = (lastAddedQobuz.length + lastAddedBeatport.length) > 0 ? '' : 'none';
+  renderCartHero();
 
-  // Selection changes are the main post-search mutation — persist for HMR.
+  // Ticks are the main change after a check — persist them.
   saveSourcesState();
-}
-
-function setActiveSegment(seg: Segment) {
-  activeSegment = seg;
-  document.querySelectorAll<HTMLElement>('#source-segments .source-seg').forEach(btn => {
-    btn.classList.toggle('active', btn.dataset.seg === seg);
-  });
-  renderResults();
 }
 
 // ---- Cart slide-over ----
@@ -995,77 +1194,290 @@ function closeCartDrawer() {
   cartDrawerReturnFocus = null;
 }
 
-// ========== Search Workflow ==========
+// ========== Saved playlists ==========
 
-async function runSearch() {
-  if (sourceType === 'csv' && !csvPath) {
-    showToast('warning', 'No CSV', 'Select a CSV file first.');
+function formatChecked(ts: number): string {
+  const d = new Date(ts);
+  const today = new Date();
+  const startOf = (x: Date) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+  const days = Math.round((startOf(today) - startOf(d)) / 86_400_000);
+  if (days <= 0) return 'checked today';
+  if (days === 1) return 'checked yesterday';
+  const opts: Intl.DateTimeFormatOptions = d.getFullYear() === today.getFullYear()
+    ? { month: 'short', day: 'numeric' }
+    : { month: 'short', day: 'numeric', year: 'numeric' };
+  return `checked ${d.toLocaleDateString(undefined, opts)}`;
+}
+
+function savedSummary(s: SavedSource): string {
+  const parts = [plural(s.trackCount, 'track'), formatChecked(s.lastCheckedAt)];
+  parts.push(s.counts.toBuy > 0 ? `${s.counts.toBuy.toLocaleString()} to buy` : 'nothing new to buy');
+  return parts.join(' · ');
+}
+
+async function loadSaved(): Promise<void> {
+  try {
+    const res = await window.candybar.savedSourcesList();
+    if (res.success && res.sources) savedSources = res.sources;
+  } catch (err) {
+    console.error('Failed to read saved playlists:', err);
+  } finally {
+    savedLoaded = true;
+    for (const id of [...savedSelected]) if (!savedSources.some(s => s.id === id)) savedSelected.delete(id);
+    syncAddStrip();
+  }
+}
+
+async function persistSaved(input: SavedSourceInput, opts?: { keepExisting?: boolean }): Promise<SavedSource | null> {
+  try {
+    const res = await window.candybar.savedSourcesSave(input, opts);
+    if (!res.success || !res.source) {
+      console.warn('Could not save the playlist:', res.error);
+      return null;
+    }
+    const saved = res.source;
+    savedSources = [saved, ...savedSources.filter(s => s.id !== saved.id)]
+      .sort((a, b) => b.lastCheckedAt - a.lastCheckedAt);
+    renderSaved();
+    return saved;
+  } catch (err) {
+    console.error('Failed to save the playlist:', err);
+    return null;
+  }
+}
+
+function specOf(s: SavedSource): SourceSpec {
+  return { kind: s.kind, ref: s.ref, name: s.name };
+}
+
+function renderSaved(): void {
+  if (!savedLoaded) return;
+  const appending = appendMode && resultsShown();
+  const runnable = [...savedSelected].filter(id => savedSources.some(s => s.id === id && !s.missing));
+  savedTogetherBtn.hidden = runnable.length < 2 || searching;
+  savedTogetherBtn.textContent = appending ? `Add ${runnable.length} to this list` : `Check ${runnable.length} together`;
+  savedTogetherBtn.setAttribute('data-tooltip', appending
+    ? 'Merge the ticked playlists into the list you are looking at, without repeats.'
+    : 'Check the ticked playlists as one list, without repeats.');
+  savedDesc.textContent = appending
+    ? 'Pick one to merge into the list you are looking at.'
+    : 'Every playlist you check is kept here. Check one again to see what\'s new since last time.';
+
+  if (savedSources.length === 0) {
+    savedList.innerHTML = `
+      <li class="buy-saved-empty">
+        <span class="empty-state-icon">${NOTE_SVG}</span>
+        <p>Playlists you check are kept here, so you can check them again in one click.</p>
+      </li>`;
     return;
   }
-  if (sourceType === 'spotify' && !spotifyUrlValid) {
-    showToast('warning', 'Invalid URL', 'Enter a valid Spotify playlist URL.');
-    return;
+
+  savedList.innerHTML = '';
+  for (const s of savedSources) {
+    const li = document.createElement('li');
+    li.className = 'buy-saved-row';
+    li.dataset.id = String(s.id);
+    if (s.missing) li.classList.add('is-missing');
+    const art = s.imageUrl
+      ? `<img class="buy-saved-art" src="${escapeHtml(s.imageUrl)}" alt="" loading="lazy" />`
+      : `<div class="buy-saved-art buy-saved-art--placeholder">${SOURCE_KIND_ICONS[s.kind]}</div>`;
+    const name = renamingId === s.id
+      ? `<form class="buy-saved-rename" data-rename-form>
+           <label class="sr-only" for="buy-rename-${s.id}">New name</label>
+           <input type="text" id="buy-rename-${s.id}" value="${escapeHtml(s.name)}" maxlength="200" />
+           <button type="submit" class="btn-primary btn-sm">Save</button>
+           <button type="button" class="btn-ghost btn-sm" data-act="rename-cancel">Cancel</button>
+         </form>
+         <p class="field-help">Leave it empty to go back to "${escapeHtml(s.originalName)}".</p>`
+      : `<div class="buy-saved-name">${escapeHtml(s.name)}</div>`;
+    const missing = s.missing
+      ? `<p class="field-help is-warn buy-saved-missing">This file isn't where it was any more. It may have been moved or renamed. <button type="button" class="btn-link" data-act="relocate">Find the file…</button></p>`
+      : '';
+    const checkLabel = appending ? 'Add to this list' : 'Check again';
+    const checkTip = appending
+      ? 'Merge this playlist into the list you are looking at, without repeats.'
+      : 'Check this playlist again against your library and the stores. Nothing is bought.';
+    li.innerHTML = `
+      <label class="buy-saved-pick" data-tooltip="${escapeHtml(appending ? 'Tick to add several at once' : 'Tick two or more to check them together')}">
+        <input type="checkbox" ${savedSelected.has(s.id) ? 'checked' : ''} ${s.missing || searching ? 'disabled' : ''} aria-label="Select ${escapeHtml(s.name)}" />
+      </label>
+      ${art}
+      <div class="buy-saved-main">
+        ${name}
+        <div class="buy-saved-meta"><span class="buy-kind buy-kind--${s.kind}">${KIND_LABEL[s.kind]}</span><span>${escapeHtml(savedSummary(s))}</span></div>
+        ${missing}
+      </div>
+      <div class="buy-saved-actions">
+        <button type="button" class="btn-secondary btn-sm" data-act="check" ${s.missing || searching ? 'disabled' : ''}
+          data-tooltip="${escapeHtml(checkTip)}" data-tooltip-disabled="${escapeHtml(s.missing ? 'Find the file first' : 'A check is already running')}">${REFRESH_SVG}${checkLabel}</button>
+        <button type="button" class="btn-icon" data-act="rename" aria-label="Rename ${escapeHtml(s.name)}" data-tooltip="Rename">${PENCIL_SVG}</button>
+        <button type="button" class="btn-icon" data-act="remove" aria-label="Remove ${escapeHtml(s.name)} from your playlists" data-tooltip="Remove from this list">${TRASH_SVG}</button>
+      </div>`;
+    li.querySelector<HTMLImageElement>('img.buy-saved-art')?.addEventListener('error', function () {
+      const ph = document.createElement('div');
+      ph.className = 'buy-saved-art buy-saved-art--placeholder';
+      ph.innerHTML = SOURCE_KIND_ICONS[s.kind];
+      this.replaceWith(ph);
+    }, { once: true });
+    savedList.appendChild(li);
   }
-  if (sourceType === 'soundcloud' && !soundcloudUrlValid) {
-    showToast('warning', 'Invalid URL', 'Enter a SoundCloud set link (soundcloud.com/…/sets/…).');
-    return;
+  if (renamingId !== null) {
+    const input = savedList.querySelector<HTMLInputElement>(`#buy-rename-${renamingId}`);
+    input?.focus();
+    input?.select();
   }
-  if (searching) return;
+}
+
+async function onSavedAction(id: number, act: string): Promise<void> {
+  const s = savedSources.find(x => x.id === id);
+  if (!s || searching) return;
+  if (act === 'check') {
+    hideRunError();
+    await runSearch(specOf(s));
+  } else if (act === 'rename') {
+    renamingId = id;
+    renderSaved();
+  } else if (act === 'rename-cancel') {
+    renamingId = null;
+    renderSaved();
+  } else if (act === 'remove') {
+    const ok = await confirmAction({
+      title: `Remove "${s.name}" from your playlists?`,
+      message: 'Track Lab forgets this playlist and its last check. You can add it again any time by checking it.',
+      safetyNote: s.kind === 'csv'
+        ? "The spreadsheet file itself isn't touched."
+        : `The playlist itself isn't touched on ${KIND_LABEL[s.kind]}.`,
+      confirmLabel: 'Remove',
+      tone: 'caution',
+    });
+    if (!ok) return;
+    const res = await window.candybar.savedSourcesRemove(id);
+    if (!res.success) {
+      showToast('error', "Couldn't remove that playlist", res.error ?? 'Try again in a moment.');
+      return;
+    }
+    savedSources = savedSources.filter(x => x.id !== id);
+    savedSelected.delete(id);
+    renderSaved();
+  } else if (act === 'relocate') {
+    const picked = await window.candybar.selectPath('file');
+    if (!picked) return;
+    await runSearch({ kind: 'csv', ref: picked, relocateFrom: id });
+  }
+}
+
+async function submitRename(id: number, value: string): Promise<void> {
+  const res = await window.candybar.savedSourcesUpdate(id, { name: value.trim() || null });
+  renamingId = null;
+  if (res.success && res.source) {
+    const updated = res.source;
+    savedSources = savedSources.map(x => (x.id === id ? updated : x));
+  } else {
+    showToast('error', "Couldn't rename that playlist", res.error ?? 'Try again in a moment.');
+  }
+  renderSaved();
+}
+
+/** Check several saved playlists as one list: the first replaces (or, in
+ *  "add to this list" mode, merges), the rest merge in. */
+async function runSavedTogether(): Promise<void> {
+  const list = savedSources.filter(s => savedSelected.has(s.id) && !s.missing);
+  if (list.length === 0 || searching) return;
+  hideRunError();
+  for (let i = 0; i < list.length; i++) {
+    if (i > 0) appendMode = true;
+    const ok = await runSearch(specOf(list[i]));
+    if (!ok) break;
+  }
+  savedSelected.clear();
+  renderSaved();
+}
+
+// ========== Check ==========
+
+/** Put a source into the picker, so the session snapshot and the picker agree
+ *  with what's being checked. */
+function applySpec(spec: SourceSpec): void {
+  if (spec.kind === 'csv') {
+    void setSourceCsvFile(spec.ref);
+    csvHasRequiredCols = true; // checked before; the run itself re-reads it
+  } else {
+    setLink(spec.ref);
+  }
+}
+
+function currentSpec(): SourceSpec | null {
+  if (sourceType === 'csv') return csvPath ? { kind: 'csv', ref: csvPath } : null;
+  if (sourceType === 'spotify') return spotifyUrlValid ? { kind: 'spotify', ref: spotifyPlaylistUrl } : null;
+  return soundcloudUrlValid ? { kind: 'soundcloud', ref: soundcloudSetUrl } : null;
+}
+
+/** Check one source: the library check, then the store search. Returns true
+ *  when results landed. With no `spec`, checks what's in the picker. */
+async function runSearch(spec?: SourceSpec): Promise<boolean> {
+  if (searching) return false;
+  if (spec) applySpec(spec);
+  const source = spec ?? currentSpec();
+  if (!source) {
+    showToast('warning', 'Add a playlist first',
+      sourceType === 'csv' ? 'Choose a spreadsheet (CSV file) to check.'
+        : sourceType === 'spotify' ? 'Paste a link to a Spotify playlist.'
+        : 'Paste a link to a SoundCloud set (it has /sets/ in it).');
+    return false;
+  }
 
   // One run at a time: two would interleave progress on the shared channels
   // and race to write the results.
   searching = true;
-  setStatus('Searching...');
+  runPlaylistInfo = null;
+  hideRunError();
+  setStatus('Checking…');
   updateRunButton();
-  clearResultsBtn.disabled = true;
-  addMoreBtn.disabled = true;
   progressSection.style.display = 'block';
-  // In append mode we keep the existing results visible (and existing
-  // selections) so newly-found tracks stream in alongside them. In replace
-  // mode we clear everything and tear down any prior cart stage.
   if (!appendMode) {
     resultsSection.style.display = 'none';
     cartSection.style.display = 'none';
-    downloadPurchasesBtn.style.display = 'none';
     matches = [];
     selectedQobuzIds = new Set();
     selectedBeatportIds = new Set();
     lastAddedQobuz = [];
     lastAddedBeatport = [];
+    sessionSources = [];
     clearPlaylistCard();
   }
   progressBar.style.width = '0%';
-  progressMessage.textContent = sourceType === 'spotify'
-    ? 'Fetching Spotify playlist...'
-    : sourceType === 'soundcloud' ? 'Fetching SoundCloud set...' : 'Starting search...';
+  progressMessage.textContent = source.kind === 'spotify'
+    ? 'Getting the playlist from Spotify…'
+    : source.kind === 'soundcloud' ? 'Getting the set from SoundCloud…' : 'Reading the spreadsheet…';
+  progressSub.textContent = 'Then Track Lab checks it against your library and looks for full-quality copies on Qobuz and Beatport.';
   progressCount.textContent = '';
   (progressSection as HTMLElement & { _resetStats?: () => void })._resetStats?.();
 
-  // Collapse the input bar; the progress strip is now the focus.
+  // Collapse the picker; the progress card is now the focus.
   setInputBarVisible(false);
+  revealInContent(progressSection);
 
+  let ok = false;
   try {
     const result = await window.candybar.librarySourcingRun(
-      sourceType === 'spotify' ? { spotifyPlaylistUrl }
-        : sourceType === 'soundcloud' ? { soundcloudSetUrl }
-        : { csvPath }
+      source.kind === 'spotify' ? { spotifyPlaylistUrl: source.ref }
+        : source.kind === 'soundcloud' ? { soundcloudSetUrl: source.ref }
+        : { csvPath: source.ref }
     );
 
     if (!result.success || !result.result) {
-      showToast('error', 'Search Failed', result.error || 'Unknown error');
-      setInputBarVisible(true);
-      return;
+      showRunError(result.error || 'The check stopped without saying why.');
+      setInputBarVisible(!resultsShown() || appendMode);
+      setStatus('Error');
+      return false;
     }
 
     const { matched: freshMatched, probable: freshProbable, storeMatches: freshStoreMatches } = result.result;
 
-    // How many rows were actually appended (post-dedupe) — drives the
-    // auto-select slice so we never re-touch previously-loaded rows.
+    // Rows actually added (after removing repeats) — drives auto-tick so
+    // rows already on screen keep the ticks they have.
     let appendedCount = freshStoreMatches.length;
     if (appendMode) {
-      // Dedupe by the input key (artist - title lowercased) so importing
-      // overlapping playlists doesn't duplicate rows in the results list.
-      // Library buckets dedupe by a composite "artist - title" key too.
       const existingKeys = new Set(matches.map(m => m.trackInput.key));
       const fresh = freshStoreMatches.filter(m => !existingKeys.has(m.trackInput.key));
       appendedCount = fresh.length;
@@ -1082,80 +1494,93 @@ async function runSearch() {
       libraryProbable = freshProbable;
     }
 
-    // Auto-select high-confidence LOSSLESS matches only. Non-lossless (or
-    // unverifiable-lossless) matches must be explicitly reviewed — the user
-    // buys DJ-grade tracks only — and so must a match for a different version
-    // (a remix's original, a sped-up edit). Tracks in the local library (confirmed OR
-    // probable) are skipped so we don't nudge the user to re-buy what they
-    // already own. "Probable" rows start unchecked; toggling "treat as
-    // missing" on one flips its libraryStatus and the user can then select
-    // manually.
-    const toAutoSelect = appendMode
-      ? matches.slice(matches.length - appendedCount)
-      : matches;
+    // Auto-tick confident FULL-QUALITY matches of the same version only.
+    // Compressed (or unverifiable) matches and different versions must be
+    // reviewed by hand; tracks in the library (confirmed OR probable) are
+    // never nudged into a re-buy.
+    const toAutoSelect = appendMode ? matches.slice(matches.length - appendedCount) : matches;
     for (const m of toAutoSelect) {
       if (!autoSelectable(m)) continue;
       if (m.libraryStatus === 'confirmed' || m.libraryStatus === 'probable') continue;
       if (m.inLibrary) continue; // legacy guard for older matches missing libraryStatus
-      if (m.source === 'qobuz' && m.qobuzTrack) {
-        selectedQobuzIds.add(m.qobuzTrack.id);
-      } else if (m.source === 'beatport' && m.beatportTrack) {
-        selectedBeatportIds.add(m.beatportTrack.id);
-      }
+      if (m.source === 'qobuz' && m.qobuzTrack) selectedQobuzIds.add(m.qobuzTrack.id);
+      else if (m.source === 'beatport' && m.beatportTrack) selectedBeatportIds.add(m.beatportTrack.id);
     }
     appendMode = false;
+
+    // Keep it in Your playlists, with this check's own counts.
+    const info = runPlaylistInfo as SourcePlaylistInfo | null;
+    const name = info?.name || (source.kind === 'csv' ? csvDisplayName(source.ref) : source.name || source.ref);
+    if (!sessionSources.some(s => s.kind === source.kind && s.ref === source.ref)) {
+      sessionSources = [...sessionSources, { kind: source.kind, ref: source.ref, name }];
+    }
+    lastRunAt = Date.now();
+    void persistSaved({
+      kind: source.kind,
+      ref: source.ref,
+      name,
+      imageUrl: info?.imageUrl ?? null,
+      owner: info?.owner ?? '',
+      trackCount: info ? (info.fetchedCount || info.trackCount) : freshMatched.length + freshStoreMatches.length,
+      counts: countsFor(freshStoreMatches, freshMatched),
+    }).then(async (saved) => {
+      // A moved spreadsheet was re-pointed: carry its name over and drop the old entry.
+      const fromId = source.relocateFrom;
+      if (!saved || fromId === undefined || fromId === saved.id) return;
+      const old = savedSources.find(x => x.id === fromId);
+      if (old?.renamed) {
+        const res = await window.candybar.savedSourcesUpdate(saved.id, { name: old.name });
+        if (res.success && res.source) savedSources = savedSources.map(x => (x.id === saved.id ? res.source! : x));
+      }
+      await window.candybar.savedSourcesRemove(fromId);
+      savedSources = savedSources.filter(x => x.id !== fromId);
+      renderSaved();
+    });
 
     resultsSection.style.display = 'block';
     setInputBarVisible(false);
     movePlaylistCardToResults();
-    updateSegmentCounts();
-    setActiveSegment('new');
+    updateSummary();
+    renderResults();
     updateBuyBar();
     setStatus('Idle');
     saveSourcesState();
+    ok = true;
+    return true;
   } catch (err) {
-    const message = getErrorMessage(err);
-    showToast('error', 'Search Failed', message);
-    setInputBarVisible(true);
+    showRunError(getErrorMessage(err));
+    setInputBarVisible(!resultsShown() || appendMode);
     setStatus('Error');
+    return false;
   } finally {
     searching = false;
-    syncAddStrip();
-    updateRunButton();
-    clearResultsBtn.disabled = false;
-    addMoreBtn.disabled = false;
+    if (!ok && !resultsShown()) clearPlaylistCard();
     progressSection.style.display = 'none';
     (progressSection as HTMLElement & { _stopTimer?: () => void })._stopTimer?.();
+    syncAddStrip();
   }
 }
 
 async function addSelectedToCart() {
   if (isAddingToCart()) {
-    showToast('info', 'Already Adding', 'Wait for the current cart add to finish.');
+    showToast('info', 'Still adding', 'Wait for the tracks going in now to finish.');
     return;
   }
   const qobuzToAdd = selectedForCart('qobuz');
   const beatportToAdd = selectedForCart('beatport');
 
   if (qobuzToAdd.length === 0 && beatportToAdd.length === 0) {
-    showToast('warning', 'No Tracks Selected', 'Select at least one track.');
+    showToast('warning', 'No tracks ticked', 'Tick at least one track to add it to a cart.');
     return;
   }
 
-  const parts: string[] = [];
-  if (qobuzToAdd.length) parts.push(`${qobuzToAdd.length} Qobuz`);
-  if (beatportToAdd.length) parts.push(`${beatportToAdd.length} Beatport`);
-  showToast('info', 'Adding to Cart', `Adding ${parts.join(' + ')}…`);
-
-  // Disable the trigger + show the inline progress card; each store runs in
-  // its own phase so the user sees Qobuz progress, then Beatport progress.
   addToCartBtn.disabled = true;
-  cartAddProgress.style.display = 'block';
+  cartAddProgress.style.display = '';
   const outcome = await addToStoreCarts({ qobuz: qobuzToAdd, beatport: beatportToAdd }, (store, p) => {
     cartAddStore.textContent = STORE_LABEL[store];
-    cartAddCount.textContent = `${p.current} / ${p.total}`;
+    cartAddCount.textContent = `${p.current.toLocaleString()} of ${p.total.toLocaleString()}`;
     cartAddBar.style.width = `${p.total > 0 ? Math.round((p.current / p.total) * 100) : 0}%`;
-    cartAddMessage.textContent = p.currentTrack ? `${p.message} — ${p.currentTrack}` : p.message;
+    cartAddMessage.textContent = p.currentTrack ? `Adding ${p.currentTrack}` : p.message;
   });
   cartAddProgress.style.display = 'none';
   toastCartOutcome(outcome);
@@ -1171,12 +1596,7 @@ async function addSelectedToCart() {
     downloadFiredBeatport = false;
   }
 
-  // If any tracks landed in a cart, slide open the cart drawer so the user can
-  // see totals + check out, and surface the "Review carts" button for reopening.
-  if (outcome.added.qobuz.length + outcome.added.beatport.length > 0) {
-    downloadPurchasesBtn.style.display = 'inline-flex';
-    openCartDrawer();
-  }
+  if (outcome.added.qobuz.length + outcome.added.beatport.length > 0) openCartDrawer();
   updateBuyBar();
 }
 
@@ -1216,15 +1636,16 @@ function isPurchaseConfirmation(store: Store, rawUrl: string): boolean {
 
 /** Drive the panel through cart → checkout → payment review, stopping before
  *  the final commit. Returns the scraped total (or null) once the page shows
- *  a Place Order CTA. Caller should confirm with the user before clicking. */
+ *  a Place Order button. The caller confirms with the user before clicking. */
 async function driveToPlaceOrder(store: 'qobuz' | 'beatport'): Promise<{ ready: boolean; total: string | null; itemCount?: number | null; error?: string }> {
   const MAX_STEPS = 6;
   const STEP_WAIT_MS = 2200;
+  const label = STORE_LABEL[store];
 
   for (let step = 0; step < MAX_STEPS; step++) {
     const res = await window.candybar.storePanelCheckoutAdvance(store);
     if (!res.success || !res.result) {
-      return { ready: false, total: null, error: res.error ?? 'Advance failed' };
+      return { ready: false, total: null, error: res.error ?? `The ${label} checkout didn't move on.` };
     }
     const r = res.result;
     if (r.phase === 'place-order-ready') {
@@ -1234,12 +1655,12 @@ async function driveToPlaceOrder(store: 'qobuz' | 'beatport'): Promise<{ ready: 
       await new Promise(r => setTimeout(r, STEP_WAIT_MS));
       continue;
     }
-    // 'unknown' — no advance button visible. Page may still be loading, wait
-    // once more and retry. If still unknown on retry, bail.
+    // 'unknown' — no next-step button visible. The page may still be loading:
+    // wait once more and retry, then give up.
     await new Promise(r => setTimeout(r, STEP_WAIT_MS));
     const retry = await window.candybar.storePanelCheckoutAdvance(store);
     if (!retry.success || !retry.result) {
-      return { ready: false, total: null, error: retry.error ?? 'Advance failed' };
+      return { ready: false, total: null, error: retry.error ?? `The ${label} checkout didn't move on.` };
     }
     if (retry.result.phase === 'place-order-ready') {
       return { ready: true, total: retry.result.total, itemCount: retry.result.itemCount ?? null };
@@ -1248,18 +1669,18 @@ async function driveToPlaceOrder(store: 'qobuz' | 'beatport'): Promise<{ ready: 
       await new Promise(r => setTimeout(r, STEP_WAIT_MS));
       continue;
     }
-    return { ready: false, total: null, error: `Couldn't find the next checkout step on this page. Click the store's Checkout button in the panel, then run Auto-Checkout again.` };
+    return { ready: false, total: null, error: `Track Lab couldn't find the next checkout step on this page. Press ${label}'s own Checkout button in the panel, then choose Fill in checkout for me again.` };
   }
-  return { ready: false, total: null, error: `Checkout didn't reach a Place Order page after ${MAX_STEPS} steps.` };
+  return { ready: false, total: null, error: `The ${label} checkout didn't reach the last step after ${MAX_STEPS} tries. Finish it yourself in the panel.` };
 }
 
 async function runAutoCheckout(store: 'qobuz' | 'beatport') {
   const button = store === 'qobuz' ? autoCheckoutQobuzBtn : autoCheckoutBeatportBtn;
-  const label = store === 'qobuz' ? 'Qobuz' : 'Beatport';
+  const label = STORE_LABEL[store];
   const tracks = store === 'qobuz' ? lastAddedQobuz : lastAddedBeatport;
 
   if (tracks.length === 0) {
-    showToast('warning', 'Nothing to check out', `No ${label} tracks queued in this session.`);
+    showToast('warning', 'Nothing to check out', `Track Lab hasn't put anything in your ${label} cart yet.`);
     return;
   }
 
@@ -1268,16 +1689,15 @@ async function runAutoCheckout(store: 'qobuz' | 'beatport') {
   button.textContent = `Opening ${label}…`;
 
   try {
-    // Make sure the panel is open on the cart URL before we start driving.
+    // Open the panel on the cart before driving it.
     armCheckoutWatch(store);
     await window.candybar.storePanelOpen(store, cartUrl(store));
-    // Give the page a moment to render after the partition warm-up.
     await new Promise(r => setTimeout(r, 1500));
 
-    button.textContent = `Driving ${label} checkout…`;
+    button.textContent = `Filling in the ${label} checkout…`;
     const drive = await driveToPlaceOrder(store);
     if (!drive.ready) {
-      showToast('error', 'Auto-checkout stalled', drive.error ?? 'Unknown failure');
+      showToast('error', 'The checkout stopped part way', drive.error ?? `Finish it yourself in the ${label} panel.`);
       return;
     }
 
@@ -1286,8 +1706,8 @@ async function runAutoCheckout(store: 'qobuz' | 'beatport') {
     // added (Upgrades, an earlier session). Show the store's own count when the
     // checkout page gives one; otherwise say what the count actually is.
     const countDetail = typeof drive.itemCount === 'number'
-      ? { label: 'Items in cart', value: String(drive.itemCount) }
-      : { label: 'Added this session', value: String(tracks.length) };
+      ? { label: 'Items in the cart', value: String(drive.itemCount) }
+      : { label: 'Added by Track Lab', value: String(tracks.length) };
     const confirmed = await confirmAction({
       title: `Buy everything in your ${label} cart?`,
       message: `This places a real order for the whole ${label} cart and charges your ${label} payment method.`,
@@ -1303,20 +1723,20 @@ async function runAutoCheckout(store: 'qobuz' | 'beatport') {
       armMs: 1500,
     });
     if (!confirmed) {
-      showToast('info', 'Auto-checkout cancelled', 'No order placed.');
+      showToast('info', 'No order placed', `Your ${label} cart is as you left it.`);
       return;
     }
 
-    button.textContent = `Placing ${label} order…`;
+    button.textContent = `Placing your ${label} order…`;
     const commit = await window.candybar.storePanelPlaceOrder(store);
     if (commit.success) {
       showToast('success', `${label} order placed`,
-        `Complete any 3DS prompt in the panel. Downloads auto-start on confirmation.`);
+        'If your bank asks you to approve it, do that in the panel. Your downloads start once the order is confirmed.');
     } else {
-      showToast('error', `${label} order failed`, commit.error ?? 'Place Order click failed');
+      showToast('error', `The ${label} order didn't go through`, commit.error ?? 'Finish it yourself in the panel.');
     }
   } catch (err) {
-    showToast('error', 'Auto-checkout error', err instanceof Error ? err.message : String(err));
+    showToast('error', 'The checkout stopped', err instanceof Error ? err.message : String(err));
   } finally {
     button.disabled = false;
     button.textContent = originalText;
@@ -1324,237 +1744,237 @@ async function runAutoCheckout(store: 'qobuz' | 'beatport') {
 }
 
 async function exportResults() {
-  const filtered = matches;
-  if (filtered.length === 0) {
-    showToast('warning', 'Nothing to Export', 'No results to export.');
+  if (matches.length === 0) {
+    showToast('warning', 'Nothing to save', 'There are no tracks in this list yet.');
     return;
   }
 
-  const defaultName = `source-results-${new Date().toISOString().slice(0, 10)}.csv`;
+  const defaultName = `track-lab-list-${new Date().toISOString().slice(0, 10)}.csv`;
   const filePath = await window.candybar.showSaveDialog(defaultName);
   if (!filePath) return;
 
-  const tracks = filtered.map(m => {
+  const rows = matches.map(m => {
     const source = m.source || 'not_found';
     const matchArtist = m.qobuzTrack?.artists.join(', ') || m.beatportTrack?.artists.join(', ') || '';
     const matchTitle = m.qobuzTrack?.name || m.beatportTrack?.name || '';
     const url = m.qobuzTrack?.url || m.beatportTrack?.url || '';
     const quality = m.qobuzTrack?.quality || '';
     const price = m.qobuzTrack?.price || m.beatportTrack?.price || '';
-    return {
-      artist: m.trackInput.artist,
-      title: m.trackInput.title,
-      source,
-      match_artist: matchArtist,
-      match_title: matchTitle,
-      confidence: String(Math.round(m.confidence * 100)),
-      quality,
-      price,
-      url
-    };
+    return [
+      m.trackInput.artist, m.trackInput.title, source, matchArtist, matchTitle,
+      String(Math.round(m.confidence * 100)), quality, price, url,
+    ].map(v => `"${(v || '').replace(/"/g, '""')}"`).join(',');
   });
-
   const headers = ['Artist', 'Title', 'Source', 'Match Artist', 'Match Title', 'Confidence', 'Quality', 'Price', 'URL'];
-  const rows = tracks.map(t => [
-    t.artist, t.title, t.source, t.match_artist, t.match_title,
-    t.confidence, t.quality, t.price, t.url
-  ].map(v => `"${(v || '').replace(/"/g, '""')}"`).join(','));
-
   const csvContent = [headers.join(','), ...rows].join('\n');
 
   try {
     const result = await window.candybar.sourceExportCsv(csvContent, filePath);
     if (result.success) {
-      showToast('success', 'Exported', `Results saved to ${filePath}`);
+      showToast('success', 'Spreadsheet saved', `Saved to ${filePath}`);
     } else {
-      showToast('error', 'Export Failed', result.error || 'Could not export results.');
+      showToast('error', "Couldn't save the spreadsheet", result.error || 'Try a different folder.');
     }
   } catch {
-    showToast('error', 'Export Failed', 'Could not export results.');
+    showToast('error', "Couldn't save the spreadsheet", 'Try a different folder.');
+  }
+}
+
+async function downloadList(list: StoreMatch[], label?: string): Promise<void> {
+  const where = label ? `${label} ` : '';
+  showToast('info', `Downloading your ${where}purchases`, `Getting ${plural(list.length, 'track')}…`);
+  try {
+    const res = await window.candybar.storeDownloadPurchases(list);
+    if (res.success) {
+      const got = res.downloaded ?? 0;
+      showToast(got === list.length ? 'success' : 'warning', got === list.length ? 'Downloads finished' : 'Some downloads are still missing',
+        `${got.toLocaleString()} of ${plural(list.length, 'track')} downloaded to ${res.destDir ?? 'your new-music folder'}.`);
+    } else {
+      showToast('error', "The downloads didn't start", res.error ?? 'Try again in a moment.');
+    }
+  } catch (e) {
+    showToast('error', "The downloads didn't start", getErrorMessage(e, 'Try again in a moment.'));
   }
 }
 
 // ========== Init ==========
 
 export function initSource() {
-  // Inject source-picker markup and bind the newly-created elements.
   const slot = document.getElementById('source-source-slot');
   if (slot) {
     slot.innerHTML = renderSourceInput({
       actionId: 'run-source-search',
-      actionLabel: 'Find Sources',
-      actionHint: 'Check each track against your library, then look for the missing ones on Qobuz and Beatport. Nothing is bought.',
-      actionDisabledHint: 'Choose a CSV file with artist and title columns, or paste a Spotify playlist or SoundCloud set link',
-      actionDisabled: true,
-      includePreviewStatus: true,
+      actionLabel: 'Check this playlist',
+      actionHint: 'Check each track against your library, then look for the rest in full quality on Qobuz and Beatport. Nothing is bought.',
+      actionDisabledHint: 'Paste a playlist link or choose a spreadsheet first',
       ids: {
-        previewStatus: 'source-csv-preview-status',
-        previewStatusText: 'source-csv-preview-status-text',
-        soundcloudField: 'source-soundcloud-field',
-        soundcloudInput: 'source-soundcloud-set-url',
-        soundcloudStatus: 'source-soundcloud-url-status',
-        toggle: 'source-type-toggle',
-        csvField: 'source-csv-field',
+        linkInput: 'source-link',
+        linkIcon: 'source-link-icon',
+        linkStatus: 'source-link-status',
         dropZone: 'source-csv-drop-zone',
         fileDisplay: 'source-csv-file-display',
         pathInput: 'source-csv',
         clearBtn: 'clear-source-csv',
         browseTarget: 'source-csv',
-        spotifyField: 'source-spotify-field',
-        spotifyInput: 'source-spotify-playlist-url',
-        spotifyStatus: 'source-spotify-url-status',
         previewSection: 'source-csv-preview-section',
         previewCount: 'source-csv-preview-count',
         previewColumns: 'source-csv-preview-columns',
         previewThead: 'source-csv-preview-thead',
         previewTbody: 'source-csv-preview-tbody',
+        previewStatus: 'source-csv-preview-status',
+        previewStatusText: 'source-csv-preview-status-text',
       },
     });
   }
 
-  // Bind refs for injected elements
+  runError = document.createElement('div');
+  runError.className = 'callout callout--danger buy-run-error';
+  runError.setAttribute('role', 'alert');
+  runError.style.display = 'none';
+  inputBar.insertBefore(runError, document.getElementById('source-source-slot'));
+
   runSearchBtn = document.getElementById('run-source-search') as HTMLButtonElement;
+  runSearchLabel = runSearchBtn.querySelector('.buy-action-label') as HTMLElement;
   csvDropZone = document.getElementById('source-csv-drop-zone') as HTMLDivElement;
   csvFileDisplay = document.getElementById('source-csv-file-display') as HTMLDivElement;
-  csvPreviewSection = document.getElementById('source-csv-preview-section') as HTMLDivElement;
+  csvPreviewSection = document.getElementById('source-csv-preview-section') as HTMLDetailsElement;
   csvPreviewCount = document.getElementById('source-csv-preview-count') as HTMLSpanElement;
   csvPreviewColumns = document.getElementById('source-csv-preview-columns') as HTMLSpanElement;
   csvPreviewThead = document.getElementById('source-csv-preview-thead') as HTMLTableSectionElement;
   csvPreviewTbody = document.getElementById('source-csv-preview-tbody') as HTMLTableSectionElement;
   csvPreviewStatus = document.getElementById('source-csv-preview-status') as HTMLDivElement;
-  csvPreviewStatusText = document.getElementById('source-csv-preview-status-text') as HTMLSpanElement;
+  csvPreviewStatusText = document.getElementById('source-csv-preview-status-text') as HTMLElement;
   csvFileName = csvFileDisplay.querySelector('.file-name') as HTMLSpanElement;
   clearCsvBtn = document.getElementById('clear-source-csv') as HTMLButtonElement;
-  sourceTypeToggle = document.getElementById('source-type-toggle') as HTMLDivElement;
-  csvField = document.getElementById('source-csv-field') as HTMLDivElement;
-  spotifyField = document.getElementById('source-spotify-field') as HTMLDivElement;
-  spotifyUrlInput = document.getElementById('source-spotify-playlist-url') as HTMLInputElement;
-  spotifyUrlStatus = document.getElementById('source-spotify-url-status') as HTMLSpanElement;
-  soundcloudField = document.getElementById('source-soundcloud-field') as HTMLDivElement;
-  soundcloudUrlInput = document.getElementById('source-soundcloud-set-url') as HTMLInputElement;
-  soundcloudUrlStatus = document.getElementById('source-soundcloud-url-status') as HTMLSpanElement;
+  linkInput = document.getElementById('source-link') as HTMLInputElement;
+  linkIcon = document.getElementById('source-link-icon') as HTMLElement;
+  linkStatus = document.getElementById('source-link-status') as HTMLElement;
 
-  // Run search
-  runSearchBtn.addEventListener('click', () => runSearch());
+  validateLink('');
 
-  // CSV Drop Zone. "Drop CSV or click to browse": a click anywhere on the
-  // empty zone opens the same file picker as its Browse button.
+  runSearchBtn.addEventListener('click', () => void runSearch());
+  // The link field: read as you type (briefly debounced), right away on paste,
+  // and Enter runs the check like the button does.
+  let linkDebounce: ReturnType<typeof setTimeout>;
+  linkInput.addEventListener('input', () => {
+    if (csvPath && linkInput.value.trim()) clearCsvFile();
+    clearTimeout(linkDebounce);
+    linkDebounce = setTimeout(() => validateLink(linkInput.value), 200);
+  });
+  linkInput.addEventListener('paste', () => setTimeout(() => {
+    clearTimeout(linkDebounce);
+    if (csvPath) clearCsvFile();
+    validateLink(linkInput.value);
+    hideRunError();
+  }, 0));
+  linkInput.addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter') return;
+    e.preventDefault();
+    clearTimeout(linkDebounce);
+    validateLink(linkInput.value);
+    if (!runSearchBtn.disabled) void runSearch();
+  });
+
+  // Spreadsheet: drop it anywhere on the card, or click the empty drop zone /
+  // Choose file… to pick one.
   csvDropZone.addEventListener('click', (event) => {
     if (csvDropZone.classList.contains('has-file')) return;
-    if ((event.target as HTMLElement).closest('button')) return; // Browse handles itself
+    if ((event.target as HTMLElement).closest('button')) return;
     csvDropZone.querySelector<HTMLButtonElement>('[data-browse]')?.click();
   });
-  csvDropZone.addEventListener('dragover', (event) => {
+  inputBar.addEventListener('dragover', (event) => {
+    if (!event.dataTransfer?.types.includes('Files')) return;
     event.preventDefault();
     csvDropZone.classList.add('is-dragging');
   });
-
-  csvDropZone.addEventListener('dragleave', (event) => {
-    event.preventDefault();
+  inputBar.addEventListener('dragleave', (event) => {
+    if (inputBar.contains(event.relatedTarget as Node | null)) return;
     csvDropZone.classList.remove('is-dragging');
   });
-
-  csvDropZone.addEventListener('drop', (event) => {
-    event.preventDefault();
-    csvDropZone.classList.remove('is-dragging');
-
+  inputBar.addEventListener('drop', (event) => {
     const file = event.dataTransfer?.files?.[0];
     if (!file) return;
-
+    event.preventDefault();
+    csvDropZone.classList.remove('is-dragging');
     if (!file.name.toLowerCase().endsWith('.csv')) {
-      showToast('error', 'Invalid File', 'Please drop a CSV file.');
+      showToast('error', "That isn't a CSV file", 'Drop a spreadsheet saved as CSV, with Artist and Title columns.');
       return;
     }
-
     const path = 'path' in file ? (file as File & { path: string }).path : '';
     if (!path) {
-      showToast('error', 'Read Error', 'Could not read dropped file path.');
+      showToast('error', "Couldn't open that file", 'Use Choose file… to pick it instead.');
       return;
     }
-
-    setSourceCsvFile(path);
+    hideRunError();
+    void setSourceCsvFile(path);
   });
 
   clearCsvBtn.addEventListener('click', (event) => {
     event.stopPropagation();
     clearCsvFile();
+    linkInput.focus();
   });
 
-  // Source type toggle
-  sourceTypeToggle.querySelectorAll('.source-type-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-      const type = (btn as HTMLButtonElement).dataset.sourceType as SourceType;
-      setSourceType(type);
-    });
+  // Saved playlists: row actions, ticks, rename form, "check together"
+  savedList.addEventListener('click', (e) => {
+    const btn = (e.target as HTMLElement).closest<HTMLButtonElement>('[data-act]');
+    const row = (e.target as HTMLElement).closest<HTMLElement>('.buy-saved-row');
+    if (!btn || !row || btn.disabled) return;
+    void onSavedAction(Number(row.dataset.id), btn.dataset.act!);
   });
-
-  // Spotify URL input (debounced)
-  let spotifyUrlDebounce: ReturnType<typeof setTimeout>;
-  spotifyUrlInput.addEventListener('input', () => {
-    if (/soundcloud\.com\//i.test(spotifyUrlInput.value)) {
-      movePastedLink('soundcloud', spotifyUrlInput.value.trim());
-      return;
+  savedList.addEventListener('change', (e) => {
+    const box = e.target as HTMLInputElement;
+    const row = box.closest<HTMLElement>('.buy-saved-row');
+    if (box.type !== 'checkbox' || !row) return;
+    const id = Number(row.dataset.id);
+    if (box.checked) savedSelected.add(id); else savedSelected.delete(id);
+    renderSaved();
+  });
+  savedList.addEventListener('submit', (e) => {
+    const form = (e.target as HTMLElement).closest<HTMLFormElement>('[data-rename-form]');
+    const row = form?.closest<HTMLElement>('.buy-saved-row');
+    if (!form || !row) return;
+    e.preventDefault();
+    void submitRename(Number(row.dataset.id), form.querySelector('input')?.value ?? '');
+  });
+  savedList.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && renamingId !== null) {
+      e.preventDefault();
+      e.stopPropagation();
+      renamingId = null;
+      renderSaved();
     }
-    clearTimeout(spotifyUrlDebounce);
-    spotifyUrlDebounce = setTimeout(() => {
-      validateSpotifyUrl(spotifyUrlInput.value);
-    }, 250);
   });
+  savedTogetherBtn.addEventListener('click', () => void runSavedTogether());
 
-  // SoundCloud set URL input (debounced)
-  let soundcloudUrlDebounce: ReturnType<typeof setTimeout>;
-  soundcloudUrlInput.addEventListener('input', () => {
-    if (/open\.spotify\.com\/|^spotify:/i.test(soundcloudUrlInput.value.trim())) {
-      movePastedLink('spotify', soundcloudUrlInput.value.trim());
-      return;
-    }
-    clearTimeout(soundcloudUrlDebounce);
-    soundcloudUrlDebounce = setTimeout(() => {
-      validateSoundCloudUrl(soundcloudUrlInput.value);
-    }, 250);
-  });
-
-  // Segment switching (New / Maybe owned / Owned / Not found)
-  document.querySelectorAll<HTMLElement>('#source-segments .source-seg').forEach(btn => {
-    btn.addEventListener('click', () => {
-      const seg = btn.dataset.seg as Segment | undefined;
-      if (seg) setActiveSegment(seg);
-    });
-  });
-
-  // Cart slide-over open/close
+  // Cart slide-over
   reviewCartBtn.addEventListener('click', () => openCartDrawer());
+  document.getElementById('source-cart-hero-open')?.addEventListener('click', () => openCartDrawer());
   cartCloseBtn.addEventListener('click', () => closeCartDrawer());
   cartScrim.addEventListener('click', () => closeCartDrawer());
-  cartCloseBtn.setAttribute('aria-label', 'Close carts');
   document.addEventListener('keydown', (e) => {
     if (e.key !== 'Escape' || e.defaultPrevented || cartDrawer.style.display === 'none') return;
     e.preventDefault();
     closeCartDrawer();
   });
 
-  // Search filter
   searchInput.addEventListener('input', () => {
     searchQuery = searchInput.value;
     renderResults();
-    updateSegmentCounts();
   });
 
-  // Add to cart
-  addToCartBtn.addEventListener('click', () => addSelectedToCart());
+  addToCartBtn.addEventListener('click', () => void addSelectedToCart());
 
-  // "+ Add list" and the add strip's Spotify / SoundCloud / CSV buttons reopen
-  // the picker above the current list; the next run merges into it.
-  addMoreBtn.addEventListener('click', () => beginAppend());
+  // "Add another playlist" reopens the picker above the list; the next check
+  // merges into it.
   addStrip.querySelectorAll<HTMLButtonElement>('[data-add-source]').forEach((btn) => {
-    btn.addEventListener('click', () => beginAppend(btn.dataset.addSource as SourceType));
+    btn.addEventListener('click', () => beginAppend());
   });
   document.getElementById('source-append-cancel')?.addEventListener('click', cancelAppend);
   document.getElementById('source-new-list')?.addEventListener('click', () => void confirmClearResults());
 
-  // Open cart in embedded store panel. Close the review drawer first — its
-  // full-window scrim would otherwise sit over the app (and the drawer itself
-  // hides behind the panel); the native cart panel replaces it.
+  // Open a cart in the store panel. Close the drawer first: its scrim would
+  // otherwise sit over the app, and the panel replaces it.
   openQobuzCartBtn.addEventListener('click', () => {
     closeCartDrawer();
     armCheckoutWatch('qobuz');
@@ -1566,53 +1986,31 @@ export function initSource() {
     void window.candybar.storePanelOpen('beatport', cartUrl('beatport'));
   });
 
-  // Auto-checkout — drives the panel from cart → Place Order page, asks the
-  // user to confirm with the scraped total, then clicks Place Order. 3DS stays
-  // interactive in the panel.
-  autoCheckoutQobuzBtn.addEventListener('click', () => runAutoCheckout('qobuz'));
-  autoCheckoutBeatportBtn.addEventListener('click', () => runAutoCheckout('beatport'));
-
-  // Accordion toggles: click a header to collapse/expand its body.
-  document.querySelectorAll<HTMLButtonElement>('[data-accordion-toggle]').forEach(btn => {
-    btn.addEventListener('click', () => {
-      const expanded = btn.getAttribute('aria-expanded') !== 'false';
-      const next = !expanded;
-      btn.setAttribute('aria-expanded', String(next));
-      const block = btn.closest<HTMLElement>('.cart-store-block');
-      if (block) block.dataset.collapsed = String(!next);
-    });
-  });
+  // "Fill in checkout for me": drives the panel from cart to the Place order
+  // page, asks with the store's total, then places it. 3-D Secure stays in the panel.
+  autoCheckoutQobuzBtn.addEventListener('click', () => void runAutoCheckout('qobuz'));
+  autoCheckoutBeatportBtn.addEventListener('click', () => void runAutoCheckout('beatport'));
 
   downloadPurchasesBtn.addEventListener('click', async () => {
     const all = [...lastAddedQobuz, ...lastAddedBeatport];
     if (all.length === 0) {
-      showToast('warning', 'Nothing to download', 'No tracks were added to cart in this session.');
+      showToast('warning', 'Nothing to download', "Track Lab hasn't put anything in your carts this time.");
       return;
     }
     downloadPurchasesBtn.disabled = true;
-    showToast('info', 'Starting downloads', `Fetching ${plural(all.length, 'purchased track')}…`);
     try {
-      const res = await window.candybar.storeDownloadPurchases(all);
-      if (res.success) {
-        showToast('success', 'Downloads complete',
-          `${res.downloaded ?? 0} of ${all.length} downloaded → ${res.destDir ?? 'library'}`);
-      } else {
-        showToast('error', 'Downloads Failed', res.error ?? 'Unknown error');
-      }
-    } catch (e) {
-      showToast('error', 'Downloads Failed', getErrorMessage(e, 'Download failed'));
+      await downloadList(all);
     } finally {
       downloadPurchasesBtn.disabled = false;
     }
   });
 
-  // Watch panel navigation for purchase-confirmation URLs → auto-trigger
-  // downloads of the tracks we pushed to each cart. Only for a store whose
-  // cart this tab opened recently (armCheckoutWatch), and once per checkout.
+  // Watch the panel for a purchase-confirmation page → download what this tab
+  // put in that store's cart. Only for a store whose cart this tab opened
+  // recently (armCheckoutWatch), and once per checkout.
   window.candybar.onStorePanelNavigated(async ({ url }) => {
     if (!url) return;
-    // Log every navigation so we can tighten the success-URL patterns when the
-    // user tells us where they landed after completing checkout.
+    // Log every navigation so the success-URL patterns can be tightened.
     console.log('[panel-nav]', url);
     for (const store of ['qobuz', 'beatport'] as const) {
       const armedAt = checkoutArmedAt[store];
@@ -1624,38 +2022,23 @@ export function initSource() {
       if (store === 'qobuz') downloadFiredQobuz = true; else downloadFiredBeatport = true;
       checkoutArmedAt[store] = null;
       saveSourcesState();
-      const label = STORE_LABEL[store];
-      showToast('info', `${label} Purchase Detected`, `Starting downloads for ${plural(list.length, 'track')}…`);
-      try {
-        const res = await window.candybar.storeDownloadPurchases(list);
-        if (res.success) {
-          showToast('success', `${label} Downloads Started`,
-            `${res.downloaded ?? 0} downloaded → ${res.destDir ?? 'library'}`);
-        } else {
-          showToast('error', `${label} Downloads Failed`, res.error ?? 'Unknown error');
-        }
-      } catch (e) {
-        showToast('error', `${label} Downloads Failed`, getErrorMessage(e, 'Download failed'));
-      }
+      await downloadList(list, STORE_LABEL[store]);
     }
   });
 
-  // Export CSV
-  exportCsvBtn.addEventListener('click', () => exportResults());
+  exportCsvBtn.addEventListener('click', () => void exportResults());
 
-  // Clear results
-  clearResultsBtn.addEventListener('click', () => void confirmClearResults());
-
-  // Progress UX — elapsed, ETA, live counts, last-found preview.
-  const progressPercent = document.getElementById('source-progress-percent') as HTMLSpanElement | null;
-  const progressElapsed = document.getElementById('source-progress-elapsed') as HTMLSpanElement | null;
+  // ---- Progress: plain-words headline, time left, live tally, recent feed ----
   const progressEta = document.getElementById('source-progress-eta') as HTMLSpanElement | null;
-  const progressQobuzCount = document.getElementById('source-progress-qobuz-count') as HTMLSpanElement | null;
-  const progressBeatportCount = document.getElementById('source-progress-beatport-count') as HTMLSpanElement | null;
-  const progressNotFoundCount = document.getElementById('source-progress-notfound-count') as HTMLSpanElement | null;
+  const progressTally = document.getElementById('source-progress-tally') as HTMLElement | null;
+  const progressQobuzCount = document.getElementById('source-progress-qobuz-count') as HTMLElement | null;
+  const progressBeatportCount = document.getElementById('source-progress-beatport-count') as HTMLElement | null;
+  const progressNotFoundCount = document.getElementById('source-progress-notfound-count') as HTMLElement | null;
   const progressRecent = document.getElementById('source-progress-recent') as HTMLDivElement | null;
+  const progressRecentWrap = document.getElementById('source-progress-recent-wrap') as HTMLElement | null;
 
   let searchStartedAt = 0;
+  let storeStartedAt = 0;
   let elapsedTimer: ReturnType<typeof setInterval> | null = null;
   let liveQobuz = 0;
   let liveBeatport = 0;
@@ -1663,133 +2046,162 @@ export function initSource() {
   let lastTotal = 0;
   let lastCurrent = 0;
 
-  function formatSeconds(s: number): string {
-    if (s < 60) return `${s}s`;
-    const m = Math.floor(s / 60); const r = s % 60;
-    return `${m}m ${r}s`;
+  function timeLeft(seconds: number): string {
+    if (seconds < 45) return 'less than a minute left';
+    const minutes = Math.round(seconds / 60);
+    return `about ${plural(Math.max(1, minutes), 'minute')} left`;
   }
 
-  function updateElapsedEta() {
-    if (!searchStartedAt) return;
-    const elapsed = Math.floor((Date.now() - searchStartedAt) / 1000);
-    if (progressElapsed) progressElapsed.textContent = formatSeconds(elapsed);
-    if (progressEta) {
-      if (lastCurrent > 0 && lastCurrent < lastTotal) {
-        const remaining = Math.round((elapsed / lastCurrent) * (lastTotal - lastCurrent));
-        progressEta.textContent = `· ~${formatSeconds(remaining)} left`;
-      } else {
-        progressEta.textContent = '';
-      }
+  function updateEta() {
+    if (!progressEta) return;
+    if (storeStartedAt && lastCurrent > 2 && lastCurrent < lastTotal) {
+      const elapsed = (Date.now() - storeStartedAt) / 1000;
+      progressEta.textContent = timeLeft((elapsed / lastCurrent) * (lastTotal - lastCurrent));
+    } else {
+      progressEta.textContent = '';
     }
+  }
+
+  function setMeter(pct: number) {
+    progressBar.style.width = `${pct}%`;
+    progressBar.parentElement?.setAttribute('aria-valuenow', String(pct));
   }
 
   function resetSearchStats() {
     liveQobuz = liveBeatport = liveNotFound = 0;
     lastTotal = lastCurrent = 0;
+    storeStartedAt = 0;
     if (progressQobuzCount) progressQobuzCount.textContent = '0';
     if (progressBeatportCount) progressBeatportCount.textContent = '0';
     if (progressNotFoundCount) progressNotFoundCount.textContent = '0';
+    if (progressTally) progressTally.hidden = true;
     if (progressRecent) progressRecent.innerHTML = '';
-    if (progressPercent) progressPercent.textContent = '0%';
-    if (progressElapsed) progressElapsed.textContent = '0s';
+    if (progressRecentWrap) progressRecentWrap.hidden = true;
     if (progressEta) progressEta.textContent = '';
+    setMeter(0);
     searchStartedAt = Date.now();
     if (elapsedTimer) clearInterval(elapsedTimer);
-    elapsedTimer = setInterval(updateElapsedEta, 500);
+    elapsedTimer = setInterval(updateEta, 1000);
   }
 
   function stopSearchTimer() {
     if (elapsedTimer) { clearInterval(elapsedTimer); elapsedTimer = null; }
+    searchStartedAt = 0;
   }
 
   (progressSection as HTMLElement & { _resetStats?: () => void; _stopTimer?: () => void })._resetStats = resetSearchStats;
   (progressSection as HTMLElement & { _resetStats?: () => void; _stopTimer?: () => void })._stopTimer = stopSearchTimer;
 
-  // Phase-1 (library match) progress. Phase 1 runs BEFORE the store search —
-  // the hero shows "Checking library…" then switches to store progress once
-  // phase-2 events start flowing.
+  // Library check progress (runs before the store search).
   window.candybar.onLibrarySourcingPhase1Progress((payload) => {
-    const label = payload.phase === 'parsing'
-      ? 'Loading input'
-      : payload.phase === 'scanning'
-        ? 'Scanning library'
-        : payload.phase === 'matching'
-          ? 'Matching tracks'
-          : 'Checking library';
-    progressMessage.textContent = payload.message || label;
-    if (payload.total > 0) {
-      const pct = Math.round((payload.current / payload.total) * 100);
-      progressBar.style.width = `${pct}%`;
-      if (progressPercent) progressPercent.textContent = `${pct}%`;
-      progressCount.textContent = `${payload.current} / ${payload.total}`;
+    if (!searching) return;
+    const total = payload.total;
+    if (payload.phase === 'parsing') {
+      progressMessage.textContent = total > 1
+        ? `Getting the playlist: ${payload.current.toLocaleString()} of ${plural(total, 'track')}…`
+        : progressMessage.textContent;
+    } else if (payload.phase === 'scanning') {
+      progressMessage.textContent = 'Reading your Rekordbox collection…';
+      progressSub.textContent = 'Then Track Lab looks for full-quality copies on Qobuz and Beatport.';
+    } else if (payload.phase === 'matching') {
+      progressMessage.textContent = `Checking ${plural(total, 'track')} against your library…`;
+      progressSub.textContent = 'Then Track Lab looks for full-quality copies of the rest on Qobuz and Beatport.';
+    } else if (payload.phase === 'complete') {
+      progressMessage.textContent = 'Library checked.';
+    }
+    if (total > 0 && payload.phase !== 'parsing') {
+      setMeter(Math.round((payload.current / total) * 100));
+      progressCount.textContent = `${payload.current.toLocaleString()} of ${plural(total, 'track')}`;
     }
   });
 
-  // Phase-2 (store search) progress.
+  // Store search progress.
   window.candybar.onLibrarySourcingPhase2Progress((payload) => {
+    if (!searching) return;
+    if (!storeStartedAt) storeStartedAt = Date.now();
     lastTotal = payload.total;
     lastCurrent = payload.current;
     const pct = payload.total > 0 ? Math.round((payload.current / payload.total) * 100) : 0;
-    progressBar.style.width = `${pct}%`;
-    if (progressPercent) progressPercent.textContent = `${pct}%`;
-    progressMessage.textContent = `Store search: ${payload.currentTrack}`;
-    progressCount.textContent = `${payload.current} / ${payload.total}`;
-    updateElapsedEta();
+    setMeter(pct);
+    if (payload.total === 0) {
+      progressMessage.textContent = 'You already have every track in this list.';
+      progressSub.textContent = 'Nothing to look for in the stores.';
+    } else {
+      progressMessage.textContent = `Looking for full-quality copies of ${plural(payload.total, 'track')}…`;
+      progressSub.textContent = payload.current > 0 && payload.currentTrack && !/preparing/i.test(payload.currentTrack)
+        ? `Now looking for: ${payload.currentTrack}`
+        : 'On Qobuz first, then Beatport.';
+    }
+    progressCount.textContent = payload.total > 0 ? `${payload.current.toLocaleString()} of ${payload.total.toLocaleString()} looked up` : '';
+    if (progressTally) progressTally.hidden = payload.total === 0;
+    updateEta();
   });
 
-  // Phase-2 per-match events drive the live-recent-matches feed.
   window.candybar.onLibrarySourcingPhase2Match((match) => {
-    onStreamingMatch(match);
+    if (searching) onStreamingMatch(match);
   });
 
-  // Playlist metadata arrives once the Spotify fetch resolves (before the
-  // library scan) — show the cover-art card immediately.
+  // Playlist details arrive once Spotify/SoundCloud answer (before the slow
+  // library check), so the cover card shows straight away.
   window.candybar.onLibrarySourcingPlaylistInfo((info) => {
+    runPlaylistInfo = info;
     showPlaylistCard(info);
     saveSourcesState();
   });
 
   function onStreamingMatch(match: QobuzCartMatch) {
-    // Same rule as the results: only a lossless match counts as found.
+    // Same rule as the results: only a lossless match counts as for sale.
     const lossless = hasLosslessMatch(match);
-    if (lossless && match.source === 'qobuz') { liveQobuz++; if (progressQobuzCount) progressQobuzCount.textContent = String(liveQobuz); }
-    else if (lossless && match.source === 'beatport') { liveBeatport++; if (progressBeatportCount) progressBeatportCount.textContent = String(liveBeatport); }
-    else { liveNotFound++; if (progressNotFoundCount) progressNotFoundCount.textContent = String(liveNotFound); }
+    if (lossless && match.source === 'qobuz') { liveQobuz++; if (progressQobuzCount) progressQobuzCount.textContent = liveQobuz.toLocaleString(); }
+    else if (lossless && match.source === 'beatport') { liveBeatport++; if (progressBeatportCount) progressBeatportCount.textContent = liveBeatport.toLocaleString(); }
+    else { liveNotFound++; if (progressNotFoundCount) progressNotFoundCount.textContent = liveNotFound.toLocaleString(); }
 
     if (!progressRecent) return;
+    if (progressRecentWrap) progressRecentWrap.hidden = false;
     const found = lossless && match.source && (match.qobuzTrack || match.beatportTrack);
-    const art = found
-      ? (match.qobuzTrack?.image
-          ? `<img class="recent-art" src="${escapeHtml(match.qobuzTrack.image)}" alt="" loading="lazy" />`
-          : `<div class="recent-art recent-art--placeholder"></div>`)
-      : `<div class="recent-art recent-art--miss">—</div>`;
-    const title = found
-      ? (match.qobuzTrack?.name ?? match.beatportTrack?.name ?? '')
-      : `${match.trackInput.artist} — ${match.trackInput.title}`;
-    const lossyOnly = match.status === 'matched' && !match.lossless;
+    const title = found ? (match.qobuzTrack?.name ?? match.beatportTrack?.name ?? '') : match.trackInput.title;
     const artist = found
       ? (match.qobuzTrack?.artists.join(', ') ?? match.beatportTrack?.artists.join(', ') ?? '')
-      : lossyOnly ? 'only a lossy copy, excluded' : 'not found';
-    const badgeClass = found ? match.source : 'notfound';
-    const badgeText = found ? STORE_LABEL[match.source!] : 'Miss';
-    const pct = Math.round((match.confidence ?? 0) * 100);
+      : match.trackInput.artist;
+    const pill = found
+      ? `<span class="status-pill status-pill--ok">For sale on ${STORE_LABEL[match.source!]}</span>`
+      : notForSalePillHtml(match);
     const row = document.createElement('div');
-    row.className = 'recent-match';
+    row.className = 'buy-recent';
     row.innerHTML = `
-      ${art}
-      <div class="recent-match-info">
-        <div class="recent-match-title">${escapeHtml(title)}</div>
-        <div class="recent-match-sub">${escapeHtml(artist)}</div>
+      ${artHtml(found ? match.qobuzTrack?.image : null)}
+      <div class="buy-recent-text">
+        <span class="buy-t">${escapeHtml(title)}</span>
+        <span class="buy-a">${escapeHtml(artist)}</span>
       </div>
-      <span class="recent-match-badge recent-match-badge--${badgeClass}">${badgeText}</span>
-      ${found ? `<span class="recent-match-pct">${pct}%</span>` : ''}
-    `;
+      ${pill}`;
     attachArtFallback(row);
     progressRecent.prepend(row);
-    while (progressRecent.children.length > 4) progressRecent.removeChild(progressRecent.lastElementChild!);
+    while (progressRecent.children.length > 3) progressRecent.removeChild(progressRecent.lastElementChild!);
   }
 
-  // Persist reviewable state across HMR / renderer reloads, and rehydrate it now.
+  // Persist the list on screen across reloads, and bring it back now.
   window.addEventListener('beforeunload', saveSourcesState);
   restoreSourcesState();
+  void loadSaved();
+
+  // "Check with Claude" (claudeReview.ts): it reads the rows with a
+  // full-quality match and its verdicts tick or untick them. Only lossless,
+  // not-maybe-owned matches are ever ticked; nothing is carted here.
+  attachSourcingReview({
+    rows: () => {
+      const probableByKey = new Map(libraryProbable.map(r => [`${r.artist.toLowerCase()} - ${r.title.toLowerCase()}`, r]));
+      return matches.filter(hasLosslessMatch).map(m => ({ match: m, probable: probableByKey.get(m.trackInput.key) }));
+    },
+    apply: (items) => {
+      for (const { match, verdict } of items) {
+        const id = match.source === 'qobuz' ? match.qobuzTrack?.id : match.beatportTrack?.id;
+        const set = match.source === 'qobuz' ? selectedQobuzIds : selectedBeatportIds;
+        if (!id) continue;
+        if (verdict.verdict === 'buy') { if (match.lossless && match.libraryStatus !== 'probable') set.add(id); } else set.delete(id);
+      }
+      renderResults();
+      updateBuyBar();
+    },
+  });
 }

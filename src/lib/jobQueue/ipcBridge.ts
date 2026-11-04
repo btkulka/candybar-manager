@@ -8,12 +8,13 @@ import { libraryHealthJob } from './jobs/libraryHealth';
 import { albumArtScanJob } from './jobs/albumArtScan';
 import { catalogExportJob } from './jobs/catalogExport';
 import { usbHealthScanJob } from './jobs/usbHealthScan';
+import { claudeJobs, type ClaudeJobDeps } from './jobs/claude';
 
 const log = createScopedLogger('JobBridge');
 
 let manager: JobManager | null = null;
 
-export function initJobQueue(): void {
+export function initJobQueue(claudeDeps?: ClaudeJobDeps): void {
   manager = new JobManager(1);
 
   manager.register(libraryScanJob);
@@ -22,6 +23,9 @@ export function initJobQueue(): void {
   manager.register(albumArtScanJob);
   manager.register(catalogExportJob);
   manager.register(usbHealthScanJob);
+  // Each Claude job has its own lane, so a long SoundCloud run doesn't hold up
+  // a tag lookup, and none of them hold up a library scan.
+  if (claudeDeps) for (const def of claudeJobs(claudeDeps)) manager.register(def);
 
   // Forward job events to all renderer windows
   const broadcast = (channel: string, payload: unknown) => {

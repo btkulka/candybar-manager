@@ -1,0 +1,257 @@
+/* usb — Candybar v2 screen styles. Loaded after styles.css (the foundation),
+   so rules here win at equal specificity. Use foundation tokens and
+   components (see the top of styles.css); add only what this screen needs.
+
+   Check a USB stick (#page-usb-health, src/renderer/usbHealth.ts):
+   one stick → one card and a "Check <name>" button; several → choice cards;
+   results lead with a verdict, then What to fix; the track list, player table
+   and file types sit behind disclosures under "The details". */
+
+/* ===== Pick a stick ===== */
+.usb-volume-list { min-height: 72px; }
+.usb-looking {
+  padding: var(--space-xl) 0;
+  font-size: var(--fs-body);
+  color: var(--text-muted);
+  text-align: center;
+}
+.usb-empty { padding: var(--space-2xl) var(--space-xl); }
+.usb-empty .btn-secondary svg { width: 16px; height: 16px; color: currentColor; }
+.empty-state-icon.usb-empty-icon--danger { background: var(--danger-soft); border-color: rgba(255, 107, 94, 0.3); }
+.empty-state-icon.usb-empty-icon--danger svg { color: var(--danger); }
+
+/* One stick plugged in: shown, not chosen */
+.usb-single {
+  display: flex;
+  align-items: center;
+  gap: var(--space-lg);
+  padding: var(--space-lg) var(--space-xl);
+  border: 1px solid var(--border-accent);
+  border-radius: var(--radius-md);
+  background: var(--bg-raised);
+}
+.usb-single-icon {
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  width: 48px;
+  height: 48px;
+  border-radius: var(--radius-md);
+  color: var(--accent);
+  background: var(--accent-muted);
+}
+.usb-single-icon svg { width: 26px; height: 26px; }
+.usb-single-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
+.usb-single-text strong { font-size: var(--fs-h3); font-weight: 600; color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.usb-single-text span { font-size: var(--fs-small); color: var(--text-secondary); }
+.usb-single .usb-drive-verdict { flex-shrink: 1; white-space: normal; text-align: left; }
+.usb-drive-path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Several drives: choice cards */
+.usb-drive-grid { grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); }
+.usb-drive-card { min-width: 0; }
+.usb-drive-card .usb-drive-name { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.usb-drive-card .usb-drive-verdict { margin-top: 6px; white-space: normal; text-align: left; }
+
+/* ===== Checking ===== */
+.usb-progress-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: var(--space-md);
+  margin-bottom: var(--space-md);
+}
+.usb-progress-head strong { font-size: var(--fs-h3); font-weight: 600; color: var(--text-primary); }
+.usb-progress-count { font-size: var(--fs-small); color: var(--text-secondary); font-variant-numeric: tabular-nums; }
+.usb-progress-card .progress-bar-container { height: 8px; background: var(--bg-raised); border-radius: var(--radius-pill); }
+.usb-progress-card .progress-bar-fill { border-radius: var(--radius-pill); }
+.usb-progress-card .card-desc { margin-top: var(--space-md); }
+
+/* ===== Verdict ===== */
+.usb-verdict {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-xl);
+  margin-bottom: var(--space-xl);
+}
+.usb-verdict-icon {
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+}
+.usb-verdict-icon svg { width: 28px; height: 28px; stroke-width: 2.5; }
+.usb-verdict--ok .usb-verdict-icon { color: var(--success); background: var(--success-soft); }
+.usb-verdict--warn .usb-verdict-icon { color: var(--warning); background: var(--warning-soft); }
+.usb-verdict--danger .usb-verdict-icon { color: var(--danger); background: var(--danger-soft); }
+.usb-verdict-body { flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
+.usb-verdict-headline {
+  font-size: var(--fs-display);
+  font-weight: 700;
+  line-height: var(--lh-tight);
+  letter-spacing: var(--tracking-tight);
+  color: var(--text-primary);
+}
+.usb-verdict-sentence { font-size: var(--fs-body); color: var(--text-secondary); line-height: var(--lh-normal); max-width: 62ch; }
+.usb-verdict-drive {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: var(--space-xs);
+  font-size: var(--fs-small);
+  color: var(--text-muted);
+}
+.usb-verdict-drive svg { width: 16px; height: 16px; color: var(--text-secondary); }
+.usb-verdict-drive strong { color: var(--text-primary); font-weight: 600; }
+
+.usb-storage-bar {
+  width: 100%;
+  max-width: 360px;
+  height: 6px;
+  margin-top: var(--space-xs);
+  border-radius: var(--radius-pill);
+  background: var(--bg-raised);
+  overflow: hidden;
+}
+.usb-storage-fill { height: 100%; background: var(--accent); border-radius: var(--radius-pill); }
+.usb-storage-bar.warn .usb-storage-fill { background: var(--warning); }
+.usb-storage-bar.danger .usb-storage-fill { background: var(--danger); }
+
+.usb-stat-row { grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); }
+
+/* ===== What to fix ===== */
+.usb-checklist { display: flex; flex-direction: column; gap: var(--space-md); }
+.usb-fix-item {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-md);
+  padding: var(--space-lg);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-raised);
+}
+.usb-fix-icon {
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+}
+.usb-fix-icon svg { width: 16px; height: 16px; stroke-width: 2.5; }
+.usb-fix-item.is-error .usb-fix-icon { color: var(--danger); background: var(--danger-soft); }
+.usb-fix-item.is-warning .usb-fix-icon { color: var(--warning); background: var(--warning-soft); }
+.usb-fix-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+.usb-fix-title { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-sm) var(--space-md); }
+.usb-fix-title strong { font-size: var(--fs-h3); font-weight: 600; color: var(--text-primary); line-height: 28px; }
+.usb-fix-meaning { font-size: var(--fs-body); color: var(--text-secondary); line-height: var(--lh-normal); }
+.usb-fix-todo { font-size: var(--fs-body); color: var(--text-secondary); line-height: var(--lh-normal); }
+.usb-fix-todo strong { color: var(--text-primary); font-weight: 600; }
+.usb-fix-show { align-self: flex-start; font-size: var(--fs-small); }
+
+.usb-pass-list ul { list-style: none; display: flex; flex-direction: column; gap: var(--space-sm); }
+.usb-pass-list.has-problems { margin-top: var(--space-sm); padding-top: var(--space-lg); border-top: 1px solid var(--border-subtle); }
+.usb-pass-heading { font-size: var(--fs-small); font-weight: 600; color: var(--text-muted); margin-bottom: var(--space-sm); }
+.usb-pass-list li { display: flex; align-items: flex-start; gap: var(--space-sm); font-size: var(--fs-body); color: var(--text-secondary); line-height: var(--lh-normal); }
+.usb-pass-list li strong { color: var(--text-primary); font-weight: 600; margin-right: 4px; }
+.usb-pass-icon { flex-shrink: 0; display: grid; place-items: center; width: 20px; height: 20px; margin-top: 1px; color: var(--success); }
+.usb-pass-icon svg { width: 16px; height: 16px; stroke-width: 2.5; }
+
+/* ===== The details ===== */
+/* A quiet label above a run of disclosures ("The details"). Used on the USB
+   and Restore results; candidate for the foundation. */
+.details-heading {
+  margin: var(--space-2xl) 0 var(--space-md);
+  font-size: var(--fs-small);
+  font-weight: 600;
+  color: var(--text-muted);
+}
+.disclosure > summary .status-pill { flex-shrink: 0; }
+
+.usb-table-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: var(--space-md);
+  margin-bottom: var(--space-md);
+}
+.usb-table-container {
+  max-height: 520px;
+  overflow: auto;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+}
+.usb-table-container .data-table th { background: var(--bg-surface); }
+#usb-data-table .col-format { width: 88px; }
+#usb-data-table .col-bitrate { width: 96px; }
+#usb-data-table .col-issues { width: 240px; }
+#usb-table-empty { padding: var(--space-2xl) var(--space-xl); }
+
+.usb-disclosure-desc { margin: 0 0 var(--space-md); }
+
+/* Which players can read it: scrolls sideways rather than squeezing 11 players */
+.usb-matrix-wrap { overflow-x: auto; }
+.usb-matrix { width: 100%; border-collapse: collapse; font-size: var(--fs-small); }
+.usb-matrix th, .usb-matrix td { padding: 8px 10px; border-bottom: 1px solid var(--border-subtle); text-align: center; white-space: nowrap; }
+.usb-matrix thead th { vertical-align: bottom; }
+.usb-matrix-corner, .usb-matrix-label { text-align: left; color: var(--text-secondary); font-weight: 600; }
+.usb-matrix-device-name { font-weight: 700; color: var(--text-primary); }
+.usb-matrix-device-cat { font-size: var(--fs-micro); color: var(--text-muted); font-weight: 500; }
+.usb-matrix-col.is-fail .usb-matrix-device-name { color: var(--text-secondary); }
+.usb-matrix-row-count {
+  display: block;
+  font-size: var(--fs-micro);
+  font-weight: 500;
+  color: var(--text-muted);
+}
+.usb-matrix-mark { display: inline-grid; place-items: center; }
+.usb-matrix-mark svg { width: 16px; height: 16px; stroke-width: 2.5; }
+.usb-matrix-cell.pass { color: var(--success); }
+.usb-matrix-cell.fail { color: var(--danger); }
+.usb-matrix-row-verdict th, .usb-matrix-row-verdict td { border-bottom: 0; padding-top: 12px; }
+
+/* File types */
+.usb-format-bars { display: flex; flex-direction: column; gap: var(--space-md); }
+.usb-format-row { display: grid; grid-template-columns: minmax(160px, 220px) 1fr auto; align-items: center; gap: var(--space-lg); }
+.usb-format-name { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.usb-format-name strong { font-size: var(--fs-body); font-weight: 700; color: var(--text-primary); }
+.usb-format-note { display: inline-flex; align-items: center; gap: 4px; font-size: var(--fs-small); }
+.usb-format-note svg { width: 14px; height: 14px; flex-shrink: 0; }
+.usb-format-note.is-ok { color: var(--text-secondary); }
+.usb-format-note.is-ok svg { color: var(--success); }
+.usb-format-note.is-warn { color: var(--warning); }
+.usb-format-note.is-danger { color: var(--danger); }
+.usb-format-bar-track { height: 8px; border-radius: var(--radius-pill); background: var(--bg-raised); overflow: hidden; }
+.usb-format-bar-fill { height: 100%; border-radius: var(--radius-pill); }
+.usb-format-bar-fill.is-ok { background: var(--accent); }
+.usb-format-bar-fill.is-warn { background: var(--warning); }
+.usb-format-bar-fill.is-danger { background: var(--danger); }
+.usb-format-count { font-size: var(--fs-small); color: var(--text-primary); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.usb-format-pct { color: var(--text-muted); }
+
+/* ===== Narrow windows ===== */
+@media (max-width: 760px) {
+  .usb-single { flex-wrap: wrap; }
+  .usb-single .usb-drive-verdict { flex-basis: 100%; }
+  .usb-verdict { gap: var(--space-lg); }
+  .usb-verdict-icon { width: 44px; height: 44px; }
+  .usb-verdict-icon svg { width: 22px; height: 22px; }
+  .usb-verdict-headline { font-size: var(--fs-h1); }
+  .usb-format-row { grid-template-columns: 1fr auto; }
+  .usb-format-bar-track { grid-column: 1 / -1; grid-row: 2; }
+}
+
+/* Long issue lists wrap inside the cell instead of widening the table */
+#usb-data-table td.col-issues { white-space: normal; overflow: visible; }
+#usb-data-table td.col-issues .issue-badge { display: inline-block; margin: 2px 4px 2px 0; }
+.usb-matrix .usb-matrix-label,
+.usb-matrix .usb-matrix-corner { text-align: left; }
+
+/* The verdict card carries the record art (.art-hero); the numbers sit below it */
+.usb-verdict-card { margin-bottom: var(--space-md); }
+.usb-stat-row { margin-bottom: var(--gap-stack); }
+.usb-verdict-card .usb-verdict { margin-bottom: 0; }

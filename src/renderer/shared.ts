@@ -282,6 +282,20 @@ declare global {
       upgradeListPlaylists: () => Promise<{ success: boolean; playlists?: import('../types').RekordboxPlaylistSummary[]; error?: string }>;
       upgradeRun: (playlistId: string) => Promise<{ success: boolean; result?: import('../types').LosslessUpgradeResult; error?: string }>;
       onUpgradeProgress: (callback: (p: import('../types').LosslessUpgradeProgress) => void) => (() => void);
+      upgradeFetchFree: (rbIds: string[], opts: { accountActions: boolean }) => Promise<{ success: boolean; outcomes?: Record<string, import('../lib/freeSources').FreeUpgradeOutcome>; error?: string }>;
+      upgradeFetchFreeStop: () => Promise<void>;
+
+      // Find & buy: saved playlists (check again in one click)
+      savedSourcesList: () => Promise<{ success: boolean; sources?: import('../types').SavedSource[]; error?: string }>;
+      savedSourcesSave: (input: import('../types').SavedSourceInput, opts?: { keepExisting?: boolean }) => Promise<{ success: boolean; source?: import('../types').SavedSource; error?: string }>;
+      savedSourcesUpdate: (id: number, patch: { name?: string | null }) => Promise<{ success: boolean; source?: import('../types').SavedSource; error?: string }>;
+      savedSourcesRemove: (id: number) => Promise<{ success: boolean; error?: string }>;
+
+      // Replace in Rekordbox: swap a lossless file in under the same row (cues, plays, date added kept)
+      upgradeSwapPreflight: () => Promise<import('../types').UpgradeSwapPreflight>;
+      upgradeSwapPlan: (inputs: import('../types').UpgradeSwapInput[]) => Promise<{ success: boolean; items?: import('../types').UpgradeSwapPlanItem[]; error?: string }>;
+      upgradeSwapApply: (rbIds: string[]) => Promise<{ success: boolean; result?: import('../types').UpgradeSwapResult; error?: string }>;
+      onUpgradeSwapProgress: (callback: (p: import('../types').UpgradeSwapProgress) => void) => (() => void);
 
       // Qobuz cart integration
       qobuzCartSearch: (tracks: Array<{ key: string; artist: string; title: string; album?: string; duration?: number }>) =>
@@ -308,7 +322,7 @@ declare global {
       storeOpenCart: (store: 'qobuz' | 'beatport') => Promise<{ success: boolean }>;
       storeLoadResults: () => Promise<{ success: boolean; matches?: StoreMatch[]; savedAt?: string; trackCount?: number }>;
       storeClearResults: () => Promise<{ success: boolean }>;
-      storeDownloadPurchases: (matches: StoreMatch[]) => Promise<{ success: boolean; downloaded?: number; failed?: Array<{ artist: string; title: string; error: string }>; destDir?: string; error?: string }>;
+      storeDownloadPurchases: (matches: StoreMatch[]) => Promise<{ success: boolean; downloaded?: number; files?: Array<{ key: string; path: string }>; failed?: Array<{ artist: string; title: string; error: string }>; destDir?: string; error?: string }>;
       onStoreDownloadProgress: (callback: (payload: { current: number; total: number; currentTrack: string; phase: string; message: string }) => void) => void;
 
       // Store panel (embedded browser)
@@ -405,8 +419,9 @@ let _navLinks: NodeListOf<Element> | null = null;
 let _pages: NodeListOf<Element> | null = null;
 let _toastContainer: HTMLDivElement | null = null;
 
-function getStatusText() { return _statusText ??= document.querySelector('.status-text') as HTMLSpanElement; }
-function getNavLinks() { return _navLinks ??= document.querySelectorAll('.nav-link'); }
+function getStatusText() { return _statusText ??= document.querySelector<HTMLSpanElement>('.status-text'); }
+// Only page links: the side nav footer reuses .nav-link for Setup/Tour/Settings.
+function getNavLinks() { return _navLinks ??= document.querySelectorAll('.nav-link[data-page]'); }
 function getPages() { return _pages ??= document.querySelectorAll('.page'); }
 function getToastContainer() { return _toastContainer ??= document.getElementById('toast-container') as HTMLDivElement; }
 
@@ -448,6 +463,63 @@ export interface ToastAction {
  */
 export function requestOpenSettings(sectionKey: string): void {
   document.dispatchEvent(new CustomEvent('candybar:open-settings', { detail: { sectionKey } }));
+}
+
+/** Ask the setup wizard to open, optionally at one step ('library', 'folders',
+ *  'rekordbox', 'spotify', 'stores'). Same CustomEvent decoupling as above. */
+export function requestOpenSetup(step?: string): void {
+  document.dispatchEvent(new CustomEvent('candybar:open-setup', { detail: { step } }));
+}
+
+// ========== "How it works" strips ==========
+// Any <ol class="how-steps" data-how="<page>"> gets a close button that hides
+// it for good (per page, in localStorage) and a small "How does this work?"
+// link that brings it back.
+
+const HOW_DISMISSED_KEY = 'candybar.howSteps.dismissed';
+const HELP_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>';
+
+function readHowDismissed(): string[] {
+  try {
+    const raw = JSON.parse(localStorage.getItem(HOW_DISMISSED_KEY) ?? '[]');
+    return Array.isArray(raw) ? raw.filter((k): k is string => typeof k === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeHowDismissed(keys: string[]): void {
+  try { localStorage.setItem(HOW_DISMISSED_KEY, JSON.stringify(keys)); } catch { /* per-viewer nicety only */ }
+}
+
+/** Wire every how-steps strip in `root` that isn't wired yet. Call again after
+ *  rendering one from code. */
+export function applyHowSteps(root: ParentNode = document): void {
+  const dismissed = readHowDismissed();
+  root.querySelectorAll<HTMLElement>('.how-steps[data-how]').forEach((strip) => {
+    if (strip.dataset.howWired) return;
+    strip.dataset.howWired = '1';
+    const key = strip.dataset.how!;
+    const reopen = document.createElement('button');
+    reopen.type = 'button';
+    reopen.className = 'how-steps-reopen';
+    reopen.innerHTML = `${HELP_ICON}<span>How does this work?</span>`;
+    strip.insertAdjacentElement('afterend', reopen);
+    const show = (visible: boolean) => {
+      strip.classList.toggle('is-dismissed', !visible);
+      reopen.hidden = visible;
+    };
+    show(!dismissed.includes(key));
+    strip.querySelector('.how-steps-close')?.addEventListener('click', () => {
+      writeHowDismissed([...new Set([...readHowDismissed(), key])]);
+      show(false);
+      reopen.focus();
+    });
+    reopen.addEventListener('click', () => {
+      writeHowDismissed(readHowDismissed().filter((k) => k !== key));
+      show(true);
+    });
+  });
 }
 
 export function showToast(
@@ -629,8 +701,12 @@ export const actionHints = {
 
 // ========== Utility Functions ==========
 
+/** Legacy one-line status. The redesigned shell has no status line (pages and
+ *  the activity chip say what's happening), so with nothing to write to this
+ *  is a no-op rather than a crash for the screens that still call it. */
 export function setStatus(text: string) {
-  getStatusText().textContent = text;
+  const el = getStatusText();
+  if (el) el.textContent = text;
 }
 
 export function appendLog(logEl: HTMLPreElement, text: string, stream: ScriptOutput['stream'] = 'stdout') {
@@ -851,12 +927,19 @@ export function setActiveTab(targetPage: string) {
     }
   });
 
+  const wasActive = document.querySelector('.page.active')?.id;
   getPages().forEach((page) => {
     page.classList.remove('active');
     if (page.id === `page-${targetPage}`) {
       page.classList.add('active');
     }
   });
+  // Each page opens at its top; one scroll position shared by every page
+  // would land you halfway down the next one.
+  if (wasActive !== `page-${targetPage}`) {
+    const content = document.querySelector<HTMLElement>('.content');
+    if (content) content.scrollTop = 0;
+  }
 }
 
 // ========== String Similarity (Jaccard token-based) ==========
@@ -986,20 +1069,74 @@ export async function convertTrackWithRepair(
 }
 
 // ========== Service Status Checks ==========
+// The top-bar pills always show the service's name; the state is a dot plus
+// a sentence in the tooltip and the screen-reader text, so nobody has to
+// decode colours. States: checking · ok · off (not set up) · problem.
 
-let spotifyCollapseTimer: ReturnType<typeof setTimeout> | null = null;
-let soundcloudCollapseTimer: ReturnType<typeof setTimeout> | null = null;
-let qobuzCollapseTimer: ReturnType<typeof setTimeout> | null = null;
-let beatportCollapseTimer: ReturnType<typeof setTimeout> | null = null;
+type ServiceState = 'checking' | 'ok' | 'off' | 'problem';
+
 let isCheckingSpotify = false;
 let isCheckingSoundCloud = false;
 let isCheckingStores = false;
 
-function scheduleCollapse(element: HTMLElement, timer: ReturnType<typeof setTimeout> | null): ReturnType<typeof setTimeout> {
-  if (timer) clearTimeout(timer);
-  return setTimeout(() => {
-    element.classList.add('collapsed');
-  }, 2000);
+function setServiceState(el: HTMLElement, textEl: HTMLElement | null, state: ServiceState, word: string, tip: string): void {
+  el.classList.remove('checking', 'connected', 'disconnected', 'collapsed', 'is-off');
+  if (state === 'checking') el.classList.add('checking');
+  else if (state === 'ok') el.classList.add('connected');
+  else el.classList.add('disconnected');
+  if (state === 'off') el.classList.add('is-off');
+  el.dataset.state = state;
+  if (textEl) textEl.textContent = word;
+  el.title = tip;
+  el.removeAttribute('data-tip-title');
+  updateConnectionsSummary();
+}
+
+const SERVICE_PILL_IDS = ['spotify-status', 'soundcloud-status', 'qobuz-status', 'beatport-status'];
+
+/** The top bar's one "Connections" button: the four services' states in a phrase. */
+function updateConnectionsSummary(): void {
+  const toggle = document.getElementById('connections-toggle');
+  const label = document.getElementById('connections-label');
+  if (!toggle || !label) return;
+  const pills = SERVICE_PILL_IDS.map((id) => document.getElementById(id)).filter((p): p is HTMLElement => !!p);
+  const nameOf = (p: HTMLElement) => p.querySelector('.service-name')?.textContent ?? 'A service';
+  const by = (s: ServiceState) => pills.filter((p) => p.dataset.state === s);
+  const [checking, ok, off, problem] = [by('checking'), by('ok'), by('off'), by('problem')];
+  let text: string;
+  let tone: 'ok' | 'warn' | 'off' | 'checking';
+  if (checking.length === pills.length) { text = 'Checking connections…'; tone = 'checking'; }
+  else if (problem.length === 1) { text = `${nameOf(problem[0])} needs attention`; tone = 'warn'; }
+  else if (problem.length > 1) { text = `${problem.length} need attention`; tone = 'warn'; }
+  else if (ok.length === pills.length) { text = 'All connected'; tone = 'ok'; }
+  else if (off.length === 1 && checking.length === 0) { text = `${nameOf(off[0])} not set up`; tone = 'off'; }
+  else { text = `${ok.length} of ${pills.length} connected`; tone = checking.length ? 'checking' : 'off'; }
+  label.textContent = text;
+  toggle.dataset.tone = tone;
+}
+
+/** Open and close the Connections panel; a click on a service runs its own
+ *  action (re-check, or Settings for the stores) and closes the panel. */
+export function initConnections(): void {
+  const wrap = document.getElementById('connections');
+  const toggle = document.getElementById('connections-toggle');
+  const panel = document.getElementById('connections-panel');
+  if (!wrap || !toggle || !panel) return;
+  const setOpen = (open: boolean) => {
+    panel.hidden = !open;
+    toggle.setAttribute('aria-expanded', String(open));
+  };
+  toggle.addEventListener('click', () => setOpen(panel.hidden));
+  panel.addEventListener('click', (e) => {
+    if ((e.target as HTMLElement).closest('.service-status')) setOpen(false);
+  });
+  document.addEventListener('click', (e) => {
+    if (!panel.hidden && !wrap.contains(e.target as Node)) setOpen(false);
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !panel.hidden) { setOpen(false); toggle.focus(); }
+  });
+  updateConnectionsSummary();
 }
 
 export async function checkSpotifyConnection(showToasts = false) {
@@ -1008,48 +1145,34 @@ export async function checkSpotifyConnection(showToasts = false) {
 
   const spotifyStatus = document.getElementById('spotify-status') as HTMLDivElement;
   const spotifyStatusText = spotifyStatus.querySelector('.spotify-status-text') as HTMLSpanElement;
-
-  spotifyStatus.classList.remove('collapsed');
-  if (spotifyCollapseTimer) clearTimeout(spotifyCollapseTimer);
-
-  spotifyStatusText.textContent = 'Connecting';
-  spotifyStatus.classList.remove('connected', 'disconnected');
-  spotifyStatus.classList.add('checking');
+  setServiceState(spotifyStatus, spotifyStatusText, 'checking', 'checking', 'Spotify: checking the connection…');
 
   try {
     const connected = await window.candybar.checkSpotify();
-    spotifyStatus.classList.remove('checking');
-
     if (connected) {
-      spotifyStatus.classList.add('connected');
-      spotifyStatusText.textContent = 'Connected';
-      if (showToasts) {
-        showToast('success', 'Spotify Connected', 'Successfully authenticated with Spotify API');
-      }
+      setServiceState(spotifyStatus, spotifyStatusText, 'ok', 'connected',
+        'Spotify is connected, so Track Lab can read your playlists. Click to check again.');
+      if (showToasts) showToast('success', 'Spotify is connected', 'Track Lab can read your playlists.');
     } else {
-      spotifyStatus.classList.add('disconnected');
-      spotifyStatusText.textContent = 'Not configured';
+      setServiceState(spotifyStatus, spotifyStatusText, 'off', 'not set up',
+        'Spotify isn\'t set up yet. Track Lab needs it to read Spotify playlists. Click to set it up.');
       if (showToasts) {
-        const configPath = await window.candybar.getConfigPath();
         showToast(
           'warning',
-          'Spotify Not Configured',
-          `Add your Client ID and Secret to the config file at ${configPath}`,
-          5000,
-          { label: 'Open Settings', onClick: () => requestOpenSettings('spotify') }
+          'Spotify isn\'t set up yet',
+          'It takes about two minutes, and Track Lab needs it to read your playlists.',
+          6000,
+          { label: 'Set up Spotify', onClick: () => requestOpenSetup('spotify') }
         );
       }
     }
-    spotifyCollapseTimer = scheduleCollapse(spotifyStatus, spotifyCollapseTimer);
   } catch (err) {
-    spotifyStatus.classList.remove('checking');
-    spotifyStatus.classList.add('disconnected');
-    spotifyStatusText.textContent = 'Error';
+    setServiceState(spotifyStatus, spotifyStatusText, 'problem', 'not working',
+      'Spotify isn\'t answering right now. Click to try again.');
     if (showToasts) {
       const message = err instanceof Error ? err.message : 'Unknown error occurred';
-      showToast('error', 'Spotify Connection Failed', message);
+      showToast('error', 'Couldn\'t reach Spotify', message);
     }
-    spotifyCollapseTimer = scheduleCollapse(spotifyStatus, spotifyCollapseTimer);
   } finally {
     isCheckingSpotify = false;
   }
@@ -1064,28 +1187,19 @@ export async function checkStoreConnections(showToasts = false) {
   const beatportStatus = document.getElementById('beatport-status') as HTMLDivElement;
   const beatportStatusText = beatportStatus.querySelector('.beatport-status-text') as HTMLSpanElement;
 
-  for (const el of [qobuzStatus, beatportStatus]) {
-    el.classList.remove('collapsed', 'connected', 'disconnected');
-    el.classList.add('checking');
-  }
-  if (qobuzCollapseTimer) clearTimeout(qobuzCollapseTimer);
-  if (beatportCollapseTimer) clearTimeout(beatportCollapseTimer);
-  qobuzStatusText.textContent = 'Checking';
-  beatportStatusText.textContent = 'Checking';
+  setServiceState(qobuzStatus, qobuzStatusText, 'checking', 'checking', 'Qobuz: checking your sign-in…');
+  setServiceState(beatportStatus, beatportStatusText, 'checking', 'checking', 'Beatport: checking your sign-in…');
 
-  const applyState = (
-    el: HTMLDivElement,
-    text: HTMLSpanElement,
-    connected: boolean,
-    accountCount: number
-  ) => {
-    el.classList.remove('checking');
+  const applyState = (el: HTMLDivElement, text: HTMLSpanElement, store: string, connected: boolean, accountCount: number) => {
     if (connected) {
-      el.classList.add('connected');
-      text.textContent = accountCount > 1 ? `${accountCount} connected` : 'Connected';
+      setServiceState(el, text, 'ok', accountCount > 1 ? `${accountCount} accounts signed in` : 'signed in',
+        `${store}: ${accountCount > 1 ? `${accountCount} accounts are` : 'you\'re'} signed in, so searches, carts and downloads work. Click to manage accounts.`);
+    } else if (accountCount > 0) {
+      setServiceState(el, text, 'problem', 'signed out',
+        `${store}: you've been signed out. Click to sign in again.`);
     } else {
-      el.classList.add('disconnected');
-      text.textContent = accountCount > 0 ? 'Signed out' : 'Not configured';
+      setServiceState(el, text, 'off', 'not set up',
+        `${store} isn't set up yet. Sign in to search, fill carts and re-download what you've bought. Click to sign in.`);
     }
   };
 
@@ -1096,36 +1210,29 @@ export async function checkStoreConnections(showToasts = false) {
     const beatportAccountCount = Object.keys(statuses.beatportAccounts ?? {}).length;
     const beatportConnectedCount = Object.values(statuses.beatportAccounts ?? {}).filter(Boolean).length;
 
-    applyState(qobuzStatus, qobuzStatusText, statuses.qobuz, qobuzConnectedCount || qobuzAccountCount);
-    applyState(beatportStatus, beatportStatusText, statuses.beatport, beatportConnectedCount || beatportAccountCount);
+    applyState(qobuzStatus, qobuzStatusText, 'Qobuz', statuses.qobuz, qobuzConnectedCount || qobuzAccountCount);
+    applyState(beatportStatus, beatportStatusText, 'Beatport', statuses.beatport, beatportConnectedCount || beatportAccountCount);
 
     if (showToasts) {
       if (statuses.qobuz) {
-        showToast('success', 'Qobuz Connected', qobuzConnectedCount > 1 ? `${qobuzConnectedCount} accounts signed in` : 'Signed in');
+        showToast('success', 'Qobuz is connected', qobuzConnectedCount > 1 ? `${qobuzConnectedCount} accounts are signed in.` : 'You\'re signed in.');
       } else {
-        showToast('warning', 'Qobuz Not Connected', qobuzAccountCount > 0 ? 'Sign in from Settings → Qobuz' : 'Add a Qobuz account in Settings');
+        showToast('warning', 'Qobuz isn\'t connected', qobuzAccountCount > 0 ? 'Sign in again from Settings → Qobuz.' : 'Add your Qobuz account in Settings.');
       }
       if (statuses.beatport) {
-        showToast('success', 'Beatport Connected', beatportConnectedCount > 1 ? `${beatportConnectedCount} accounts signed in` : 'Signed in');
+        showToast('success', 'Beatport is connected', beatportConnectedCount > 1 ? `${beatportConnectedCount} accounts are signed in.` : 'You\'re signed in.');
       } else {
-        showToast('warning', 'Beatport Not Connected', beatportAccountCount > 0 ? 'Sign in from Settings → Beatport' : 'Add a Beatport account in Settings');
+        showToast('warning', 'Beatport isn\'t connected', beatportAccountCount > 0 ? 'Sign in again from Settings → Beatport.' : 'Add your Beatport account in Settings.');
       }
     }
-
-    qobuzCollapseTimer = scheduleCollapse(qobuzStatus, qobuzCollapseTimer);
-    beatportCollapseTimer = scheduleCollapse(beatportStatus, beatportCollapseTimer);
   } catch (err) {
-    for (const [el, text] of [[qobuzStatus, qobuzStatusText], [beatportStatus, beatportStatusText]] as const) {
-      el.classList.remove('checking');
-      el.classList.add('disconnected');
-      text.textContent = 'Error';
+    for (const [el, text, store] of [[qobuzStatus, qobuzStatusText, 'Qobuz'], [beatportStatus, beatportStatusText, 'Beatport']] as const) {
+      setServiceState(el, text, 'problem', 'couldn\'t check', `${store}: couldn't check your sign-in. Click to try again.`);
     }
     if (showToasts) {
       const message = err instanceof Error ? err.message : 'Unknown error occurred';
-      showToast('error', 'Store Status Check Failed', message);
+      showToast('error', 'Couldn\'t check your store sign-ins', message);
     }
-    qobuzCollapseTimer = scheduleCollapse(qobuzStatus, qobuzCollapseTimer);
-    beatportCollapseTimer = scheduleCollapse(beatportStatus, beatportCollapseTimer);
   } finally {
     isCheckingStores = false;
   }
@@ -1137,41 +1244,26 @@ export async function checkSoundCloudConnection(showToasts = false) {
 
   const soundcloudStatus = document.getElementById('soundcloud-status') as HTMLDivElement;
   const soundcloudStatusText = soundcloudStatus.querySelector('.soundcloud-status-text') as HTMLSpanElement;
-
-  soundcloudStatus.classList.remove('collapsed');
-  if (soundcloudCollapseTimer) clearTimeout(soundcloudCollapseTimer);
-
-  soundcloudStatusText.textContent = 'Connecting';
-  soundcloudStatus.classList.remove('connected', 'disconnected');
-  soundcloudStatus.classList.add('checking');
+  setServiceState(soundcloudStatus, soundcloudStatusText, 'checking', 'checking', 'SoundCloud: checking the connection…');
 
   try {
     const connected = await window.candybar.checkSoundCloud();
-    soundcloudStatus.classList.remove('checking');
-
     if (connected) {
-      soundcloudStatus.classList.add('connected');
-      soundcloudStatusText.textContent = 'Connected';
-      if (showToasts) {
-        showToast('success', 'SoundCloud Connected', 'Successfully connected to SoundCloud');
-      }
+      setServiceState(soundcloudStatus, soundcloudStatusText, 'ok', 'connected',
+        'SoundCloud is reachable, so Track Lab can read sets and likes. Click to check again.');
+      if (showToasts) showToast('success', 'SoundCloud is connected', 'Track Lab can read your sets and likes.');
     } else {
-      soundcloudStatus.classList.add('disconnected');
-      soundcloudStatusText.textContent = 'Unavailable';
-      if (showToasts) {
-        showToast('warning', 'SoundCloud Unavailable', 'Could not connect to SoundCloud');
-      }
+      setServiceState(soundcloudStatus, soundcloudStatusText, 'problem', 'not reachable',
+        'SoundCloud isn\'t answering right now. Click to try again.');
+      if (showToasts) showToast('warning', 'Couldn\'t reach SoundCloud', 'Check your internet connection, then try again.');
     }
-    soundcloudCollapseTimer = scheduleCollapse(soundcloudStatus, soundcloudCollapseTimer);
   } catch (err) {
-    soundcloudStatus.classList.remove('checking');
-    soundcloudStatus.classList.add('disconnected');
-    soundcloudStatusText.textContent = 'Error';
+    setServiceState(soundcloudStatus, soundcloudStatusText, 'problem', 'not working',
+      'SoundCloud isn\'t answering right now. Click to try again.');
     if (showToasts) {
       const message = err instanceof Error ? err.message : 'Unknown error occurred';
-      showToast('error', 'SoundCloud Connection Failed', message);
+      showToast('error', 'Couldn\'t reach SoundCloud', message);
     }
-    soundcloudCollapseTimer = scheduleCollapse(soundcloudStatus, soundcloudCollapseTimer);
   } finally {
     isCheckingSoundCloud = false;
   }
@@ -1267,13 +1359,82 @@ function restoreTagEditorSnapshot(snapshot: TagEditorSnapshot) {
   for (const id of TAG_EDITOR_FIELDS) {
     setValue(id, snapshot.fields[id]);
   }
-  tagEditorPendingAlbumArt = snapshot.albumArt;
+  setTagEditorPendingArt(snapshot.albumArt);
   _tagEditorAlbumArtPreview.innerHTML = snapshot.albumArtHtml;
+  updateTagEditorMoreHint();
 }
 
-function pushTagEditorUndo() {
+export function pushTagEditorUndo() {
   tagEditorUndoStack.push(captureTagEditorSnapshot());
   tagEditorRedoStack = [];
+}
+
+const TAG_EDITOR_ART_PLACEHOLDER = `<svg class="album-art-placeholder" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
+  <rect x="3" y="3" width="18" height="18" rx="2"/>
+  <circle cx="12" cy="12" r="4"/>
+  <circle cx="12" cy="12" r="1"/>
+</svg>`;
+
+const TAG_EDITOR_ARTIST_HELP = 'Track Lab names the track\'s folder in your library after the artist.';
+
+/** The cover waiting to be saved, and the note that says it isn't saved yet. */
+function setTagEditorPendingArt(dataUrl: string | null) {
+  tagEditorPendingAlbumArt = dataUrl;
+  if (_tagEditorPendingArtNote) _tagEditorPendingArtNote.hidden = !dataUrl;
+}
+
+/** Artist is the one field the editor insists on; say so beside it, not in a toast. */
+function setTagEditorArtistError(missing: boolean) {
+  const input = document.getElementById('edit-artist') as HTMLInputElement | null;
+  const help = document.getElementById('edit-artist-help');
+  input?.toggleAttribute('aria-invalid', missing);
+  if (help) {
+    help.classList.toggle('is-error', missing);
+    help.textContent = missing
+      ? 'Add an artist name to save. Track Lab names the track\'s folder after it.'
+      : TAG_EDITOR_ARTIST_HELP;
+  }
+}
+
+/** "More details" is folded; its hint shows what's already in there
+ *  ("124 BPM · 8A · Tech house") so nothing filled in feels hidden. */
+function updateTagEditorMoreHint() {
+  const hint = document.getElementById('tag-editor-more-hint');
+  if (!hint) return;
+  const bpm = getValue('edit-bpm');
+  const filled = [
+    bpm ? `${bpm} BPM` : '',
+    getValue('edit-key'),
+    getValue('edit-genre'),
+    getValue('edit-year'),
+    getValue('edit-label'),
+  ].filter(Boolean);
+  hint.textContent = filled.length ? filled.join(' · ') : 'BPM, key, genre, label and more';
+}
+
+/** WAV and FLAC files can't hold track info reliably, so saving it turns them
+ *  into an AIFF copy (original to the Trash). Ask first. Resolves true for
+ *  every other file type without asking. Used by the editor and by the
+ *  inline "add artist" fix on Sort new music. */
+export async function confirmTagWriteConversion(filePath: string): Promise<boolean> {
+  const lower = filePath.toLowerCase();
+  const type = lower.endsWith('.wav') ? 'WAV' : lower.endsWith('.flac') ? 'FLAC' : null;
+  if (!type) return true;
+  return confirmAction({
+    title: 'Save this track as an AIFF?',
+    message: `${type} files can't reliably hold track info like the artist and title, so Track Lab saves your changes into an AIFF copy instead.`,
+    details: [{ label: 'File', value: filePath.split('/').pop() || filePath }],
+    safetyNote: `AIFF is full quality and sounds identical to ${type}. The original ${type} goes to the Trash, so you can put it back.`,
+    confirmLabel: 'Save as AIFF',
+    tone: 'caution',
+  });
+}
+
+/** Busy text on a button that also carries an icon: only its label changes. */
+function setTagEditorButtonLabel(btn: HTMLButtonElement, labelSelector: string, text: string) {
+  const label = btn.querySelector<HTMLElement>(labelSelector);
+  if (label) label.textContent = text;
+  else btn.textContent = text;
 }
 
 let _tagEditorModal: HTMLDivElement;
@@ -1284,6 +1445,7 @@ let _tagEditorAlbumArtSuggestionsStatus: HTMLDivElement;
 let _tagEditorAlbumArtSuggestionsGrid: HTMLDivElement;
 let _tagEditorSaveBtn: HTMLButtonElement;
 let _tagEditorScanTagsBtn: HTMLButtonElement;
+let _tagEditorPendingArtNote: HTMLElement | null = null;
 
 export function initTagEditor() {
   _tagEditorModal = document.getElementById('tag-editor-modal') as HTMLDivElement;
@@ -1294,6 +1456,7 @@ export function initTagEditor() {
   _tagEditorAlbumArtSuggestionsGrid = document.getElementById('album-art-suggestions-grid') as HTMLDivElement;
   _tagEditorSaveBtn = document.getElementById('save-tag-editor') as HTMLButtonElement;
   _tagEditorScanTagsBtn = document.getElementById('scan-tags') as HTMLButtonElement;
+  _tagEditorPendingArtNote = document.getElementById('album-art-pending-note');
 
   const closeBtn = document.getElementById('close-tag-editor') as HTMLButtonElement;
   const cancelBtn = document.getElementById('cancel-tag-editor') as HTMLButtonElement;
@@ -1312,7 +1475,7 @@ export function initTagEditor() {
   const drawer = _tagEditorModal.querySelector<HTMLElement>('.drawer');
   drawer?.setAttribute('role', 'dialog');
   drawer?.setAttribute('aria-modal', 'true');
-  drawer?.setAttribute('aria-label', 'Edit track tags');
+  drawer?.setAttribute('aria-labelledby', 'tag-editor-title');
   document.addEventListener('keydown', (e) => {
     if (e.defaultPrevented || _tagEditorModal.style.display === 'none') return;
     if (e.key === 'Escape') {
@@ -1344,14 +1507,19 @@ export function initTagEditor() {
   for (const id of TAG_EDITOR_FIELDS) {
     const el = document.getElementById(id) as HTMLInputElement;
     el.addEventListener('focus', () => pushTagEditorUndo());
+    el.addEventListener('input', updateTagEditorMoreHint);
   }
+  // The "artist needed" note clears as soon as there's a name in the box.
+  document.getElementById('edit-artist')?.addEventListener('input', () => {
+    if (getValue('edit-artist')) setTagEditorArtistError(false);
+  });
 
   changeAlbumArtBtn.addEventListener('click', async () => {
     pushTagEditorUndo();
     const imageData = await window.candybar.selectImage();
     if (imageData) {
-      tagEditorPendingAlbumArt = imageData;
-      _tagEditorAlbumArtPreview.innerHTML = `<img src="${imageData}" alt="Album art" />`;
+      setTagEditorPendingArt(imageData);
+      _tagEditorAlbumArtPreview.innerHTML = `<img src="${imageData}" alt="Cover art" />`;
     }
   });
 
@@ -1365,7 +1533,8 @@ export function initTagEditor() {
     const artist = getValue('edit-artist');
 
     if (!artist) {
-      showToast('error', 'Artist Required', 'Please enter an artist name.');
+      setTagEditorArtistError(true);
+      document.getElementById('edit-artist')?.focus();
       return;
     }
 
@@ -1374,22 +1543,12 @@ export function initTagEditor() {
     if (_tagEditorSaveBtn.disabled) return;
     _tagEditorSaveBtn.disabled = true;
 
-    if (filePath.toLowerCase().endsWith('.wav')) {
-      const ok = await confirmAction({
-        title: 'Convert to AIFF to save tags?',
-        message: 'WAV files can\'t reliably hold tags like artist and title, so this track will be saved as an AIFF copy with your changes.',
-        details: [{ label: 'File', value: filePath.split('/').pop() || filePath }],
-        safetyNote: 'AIFF sounds identical to WAV. The original WAV goes to the Trash, so you can put it back.',
-        confirmLabel: 'Convert and save',
-        tone: 'caution',
-      });
-      if (!ok) {
-        _tagEditorSaveBtn.disabled = false;
-        return;
-      }
+    if (!(await confirmTagWriteConversion(filePath))) {
+      _tagEditorSaveBtn.disabled = false;
+      return;
     }
 
-    _tagEditorSaveBtn.textContent = 'Saving...';
+    _tagEditorSaveBtn.textContent = 'Saving…';
 
     try {
       const params: UpdateTagsParams = {
@@ -1413,12 +1572,12 @@ export function initTagEditor() {
       const updatedTrack = await updateTrackTagsWithRepair(params, title);
       if (tagEditorOnSave) tagEditorOnSave(updatedTrack);
       closeTagEditor();
-      showToast('success', 'Tags Updated', `Updated tags for "${title || updatedTrack.fileName}"`);
+      showToast('success', 'Track info saved', `Saved your changes to "${title || updatedTrack.fileName}".`);
     } catch (err) {
-      showToast('error', 'Update Failed', getErrorMessage(err));
+      showToast('error', 'Couldn\'t save track info', getErrorMessage(err));
     } finally {
       _tagEditorSaveBtn.disabled = false;
-      _tagEditorSaveBtn.textContent = 'Save Changes';
+      _tagEditorSaveBtn.textContent = 'Save changes';
     }
   });
 }
@@ -1437,34 +1596,35 @@ export function openTagEditor(track: TagEditorTrack, onSave?: (updatedTrack: Tra
   setValue('edit-bpm', track.bpm || '');
   setValue('edit-remixer', track.remixer || '');
   setValue('edit-comment', track.comment || '');
+  setTagEditorArtistError(false);
+  updateTagEditorMoreHint();
+  const more = document.getElementById('tag-editor-more') as HTMLDetailsElement | null;
+  if (more) more.open = false;
 
-  tagEditorPendingAlbumArt = null;
+  // Which file this is, so two tracks with the same title can't be mixed up.
+  const fileLabel = document.getElementById('tag-editor-file');
+  if (fileLabel) {
+    fileLabel.textContent = track.filePath.split('/').pop() || track.filePath;
+    fileLabel.title = track.filePath;
+  }
+
+  setTagEditorPendingArt(null);
   // Each open gets a token, so a slow art read for the previous track can't
   // land in this one's preview.
   const artToken = ++tagEditorArtLoadToken;
   const hasArt = track.albumArt || track.hasAlbumArt;
   if (track.albumArt) {
-    _tagEditorAlbumArtPreview.innerHTML = `<img src="${track.albumArt}" alt="Album art" />`;
+    _tagEditorAlbumArtPreview.innerHTML = `<img src="${track.albumArt}" alt="Cover art" />`;
   } else if (track.hasAlbumArt) {
-    _tagEditorAlbumArtPreview.innerHTML = `<div class="inspector-art-loading">Loading...</div>`;
+    _tagEditorAlbumArtPreview.innerHTML = `<div class="inspector-art-loading album-art-loading">Loading cover…</div>`;
     window.candybar.getTrackAlbumArt(track.filePath).then((dataUrl) => {
       if (artToken !== tagEditorArtLoadToken) return;
-      if (dataUrl) {
-        _tagEditorAlbumArtPreview.innerHTML = `<img src="${dataUrl}" alt="Album art" />`;
-      } else {
-        _tagEditorAlbumArtPreview.innerHTML = `<svg class="album-art-placeholder" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-          <rect x="3" y="3" width="18" height="18" rx="2"/>
-          <circle cx="12" cy="12" r="4"/>
-          <circle cx="12" cy="12" r="1"/>
-        </svg>`;
-      }
+      _tagEditorAlbumArtPreview.innerHTML = dataUrl
+        ? `<img src="${dataUrl}" alt="Cover art" />`
+        : TAG_EDITOR_ART_PLACEHOLDER;
     }).catch(() => {});
   } else {
-    _tagEditorAlbumArtPreview.innerHTML = `<svg class="album-art-placeholder" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-      <rect x="3" y="3" width="18" height="18" rx="2"/>
-      <circle cx="12" cy="12" r="4"/>
-      <circle cx="12" cy="12" r="1"/>
-    </svg>`;
+    _tagEditorAlbumArtPreview.innerHTML = TAG_EDITOR_ART_PLACEHOLDER;
   }
 
   tagEditorArtSuggestions = [];
@@ -1476,17 +1636,19 @@ export function openTagEditor(track: TagEditorTrack, onSave?: (updatedTrack: Tra
 
   if (_tagEditorModal.style.display === 'none') tagEditorFocusReturn = captureFocusReturn();
   _tagEditorModal.style.display = 'flex';
-  requestAnimationFrame(() => document.getElementById('edit-title')?.focus());
+  // Opened to add a missing artist? Start there.
+  const firstField = track.artist ? 'edit-title' : 'edit-artist';
+  requestAnimationFrame(() => document.getElementById(firstField)?.focus());
 
   if (!hasArt) {
-    tagEditorSearchAlbumArt();
+    tagEditorSearchAlbumArt(true);
   }
 }
 
 export function closeTagEditor() {
   const wasOpen = _tagEditorModal.style.display !== 'none';
   _tagEditorModal.style.display = 'none';
-  tagEditorPendingAlbumArt = null;
+  setTagEditorPendingArt(null);
   tagEditorOnSave = null;
   tagEditorArtSuggestions = [];
   _tagEditorAlbumArtSuggestions.style.display = 'none';
@@ -1510,13 +1672,12 @@ async function tagEditorScanTags() {
   const title = getValue('edit-title');
   const query = `${artist} ${title}`.trim();
   if (!query) {
-    showToast('warning', 'No Search Query', 'Enter an artist or title first.');
+    showToast('warning', 'Add an artist or title first', 'Track Lab searches online using them.');
     return;
   }
 
   _tagEditorScanTagsBtn.disabled = true;
-  const originalLabel = _tagEditorScanTagsBtn.textContent;
-  _tagEditorScanTagsBtn.textContent = 'Scanning...';
+  setTagEditorButtonLabel(_tagEditorScanTagsBtn, '.tag-editor-fill-label', 'Searching…');
 
   try {
     const result = await window.candybar.searchMusic(query, ['spotify', 'soundcloud']);
@@ -1542,7 +1703,7 @@ async function tagEditorScanTags() {
 
     const top = matches[0];
     if (!top || top.confidence < 40) {
-      showToast('warning', 'No Confident Match', 'Could not find a confident match. Try refining artist/title first.');
+      showToast('warning', 'No close match online', 'Track Lab couldn\'t find a track that clearly matches. Check the artist and title are spelled right, then try again.');
       return;
     }
 
@@ -1560,35 +1721,44 @@ async function tagEditorScanTags() {
     apply('edit-album', top.album, 'album');
     apply('edit-year', top.year, 'year');
     apply('edit-genre', top.genre, 'genre');
+    updateTagEditorMoreHint();
+    // Filled something that lives under "More details"? Show it.
+    if (populated.some((f) => f === 'album' || f === 'year' || f === 'genre')) {
+      const more = document.getElementById('tag-editor-more') as HTMLDetailsElement | null;
+      if (more) more.open = true;
+    }
 
+    const sourceName = top.source === 'spotify' ? 'Spotify' : 'SoundCloud';
     if (populated.length === 0) {
-      showToast('info', 'Nothing to Fill', `Top match (${top.confidence}%) had no new data for empty fields.`);
+      showToast('info', 'Nothing new to add', `The closest match on ${sourceName} (${top.confidence}% match) has nothing for your empty fields.`);
     } else {
-      showToast('success', 'Tags Scanned', `+${populated.join(', ')} (${top.confidence}% match, ${top.source})`);
+      const filled = populated.join(', ').replace(/, ([^,]*)$/, ' and $1');
+      showToast('success', `Filled in from ${sourceName}`, `Added the ${filled} (${top.confidence}% match). Check them, then press Save changes.`);
     }
   } catch (err) {
-    const message = err instanceof Error ? err.message : 'Unknown error';
-    showToast('error', 'Scan Failed', message);
+    showToast('error', 'Couldn\'t search online', getErrorMessage(err));
   } finally {
     _tagEditorScanTagsBtn.disabled = false;
-    _tagEditorScanTagsBtn.textContent = originalLabel;
+    setTagEditorButtonLabel(_tagEditorScanTagsBtn, '.tag-editor-fill-label', 'Fill in from the internet');
   }
 }
 
-async function tagEditorSearchAlbumArt() {
+/** `auto`: the search that runs on open for a track with no cover, which
+ *  stays quiet when there's nothing to search with yet. */
+async function tagEditorSearchAlbumArt(auto = false) {
   const artist = getValue('edit-artist');
   const title = getValue('edit-title');
   const query = `${artist} ${title}`.trim();
   if (!query) {
-    showToast('warning', 'No Search Query', 'Enter an artist or title first.');
+    if (!auto) showToast('warning', 'Add an artist or title first', 'Track Lab searches for the cover using them.');
     return;
   }
 
   const token = ++tagEditorArtSearchToken;
   _tagEditorSearchAlbumArtBtn.disabled = true;
-  _tagEditorSearchAlbumArtBtn.textContent = 'Searching...';
+  setTagEditorButtonLabel(_tagEditorSearchAlbumArtBtn, '.album-art-search-label', 'Searching…');
   _tagEditorAlbumArtSuggestions.style.display = 'block';
-  _tagEditorAlbumArtSuggestionsStatus.textContent = 'Searching...';
+  _tagEditorAlbumArtSuggestionsStatus.textContent = 'Looking for covers on Spotify and SoundCloud…';
   _tagEditorAlbumArtSuggestionsGrid.innerHTML = '';
 
   try {
@@ -1628,17 +1798,18 @@ async function tagEditorSearchAlbumArt() {
       .sort((a, b) => b.confidence - a.confidence);
 
     if (tagEditorArtSuggestions.length === 0) {
-      _tagEditorAlbumArtSuggestionsStatus.textContent = 'No results found';
+      _tagEditorAlbumArtSuggestionsStatus.textContent = 'No covers found online for this track. You can choose an image from your computer instead.';
     } else {
-      _tagEditorAlbumArtSuggestionsStatus.textContent = `${tagEditorArtSuggestions.length} results`;
+      const n = tagEditorArtSuggestions.length;
+      _tagEditorAlbumArtSuggestionsStatus.textContent = `${n === 1 ? '1 cover' : `${n} covers`} found, closest match first. Pick one to use it.`;
       tagEditorRenderArtSuggestions();
     }
   } catch {
     if (token !== tagEditorArtSearchToken) return;
-    _tagEditorAlbumArtSuggestionsStatus.textContent = 'Search failed';
+    _tagEditorAlbumArtSuggestionsStatus.textContent = 'Couldn\'t search for covers. Check your internet connection, then try Find cover online again.';
   } finally {
     _tagEditorSearchAlbumArtBtn.disabled = false;
-    _tagEditorSearchAlbumArtBtn.textContent = 'Search Art';
+    setTagEditorButtonLabel(_tagEditorSearchAlbumArtBtn, '.album-art-search-label', 'Find cover online');
   }
 }
 
@@ -1648,31 +1819,32 @@ function tagEditorRenderArtSuggestions() {
     const btn = document.createElement('button');
     btn.type = 'button';
     btn.className = 'album-art-suggestion-thumb';
-    btn.setAttribute('data-tooltip', `${suggestion.artist} — ${suggestion.title} (${suggestion.source}, ${suggestion.confidence}%)`);
+    const sourceName = suggestion.source === 'spotify' ? 'Spotify' : 'SoundCloud';
+    const label = `${suggestion.artist} — ${suggestion.title}. From ${sourceName}, ${suggestion.confidence}% match.`;
+    btn.setAttribute('data-tooltip', label);
+    btn.setAttribute('aria-label', `Use this cover: ${label}`);
+    btn.setAttribute('aria-pressed', 'false');
 
     const img = document.createElement('img');
     img.src = suggestion.imageUrl;
-    img.alt = `${suggestion.title} album art`;
+    img.alt = '';
     btn.appendChild(img);
-
-    const badge = document.createElement('span');
-    badge.className = 'suggestion-source';
-    badge.textContent = suggestion.source === 'spotify' ? 'S' : 'SC';
-    btn.appendChild(badge);
 
     btn.addEventListener('click', async () => {
       try {
         pushTagEditorUndo();
         const dataUrl = await fetchImageAsDataUrl(suggestion.imageUrl);
-        tagEditorPendingAlbumArt = dataUrl;
-        _tagEditorAlbumArtPreview.innerHTML = `<img src="${dataUrl}" alt="Album art" />`;
+        setTagEditorPendingArt(dataUrl);
+        _tagEditorAlbumArtPreview.innerHTML = `<img src="${dataUrl}" alt="Cover art" />`;
 
-        _tagEditorAlbumArtSuggestionsGrid.querySelectorAll('.album-art-suggestion-thumb').forEach(
-          (el) => el.classList.remove('selected')
-        );
+        _tagEditorAlbumArtSuggestionsGrid.querySelectorAll('.album-art-suggestion-thumb').forEach((el) => {
+          el.classList.remove('selected');
+          el.setAttribute('aria-pressed', 'false');
+        });
         btn.classList.add('selected');
+        btn.setAttribute('aria-pressed', 'true');
       } catch {
-        showToast('error', 'Fetch Failed', 'Could not download album art image.');
+        showToast('error', 'Couldn\'t load that cover', 'Try another one, or choose an image from your computer.');
       }
     });
 

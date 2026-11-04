@@ -33,7 +33,7 @@ function dateStamp(): string {
 export async function exportM3u8(tracks: LibraryMatchedTrack[]): Promise<void> {
   const usable = tracks.filter(t => !!t.filePath);
   if (usable.length === 0) {
-    showToast('warning', 'No Tracks', 'No matched tracks with file paths to export.');
+    showToast('warning', 'Nothing to save', 'None of these tracks were found in your library, so there\u2019s no playlist to make.');
     return;
   }
   const defaultName = `library-playlist-${dateStamp()}.m3u8`;
@@ -43,12 +43,12 @@ export async function exportM3u8(tracks: LibraryMatchedTrack[]): Promise<void> {
   try {
     const result = await window.candybar.exportPlaylistM3u8(usable, filePath);
     if (result.success) {
-      showToast('success', 'Playlist Exported', `Saved ${plural(result.trackCount ?? usable.length, 'track')} organized by artist.`);
+      showToast('success', 'Playlist saved', `Saved ${plural(result.trackCount ?? usable.length, 'track')}, grouped by artist.`);
     } else {
-      showToast('error', 'Export Failed', result.error || 'Unknown error');
+      showToast('error', 'Couldn\u2019t save the playlist', result.error || 'It stopped without saying why.');
     }
   } catch (err) {
-    showToast('error', 'Export Failed', getErrorMessage(err));
+    showToast('error', 'Couldn\u2019t save the playlist', getErrorMessage(err));
   }
 }
 
@@ -59,7 +59,7 @@ export async function exportM3u8(tracks: LibraryMatchedTrack[]): Promise<void> {
 export async function exportRekordbox(tracks: LibraryMatchedTrack[]): Promise<void> {
   const usable = tracks.filter(t => !!t.filePath);
   if (usable.length === 0) {
-    showToast('warning', 'No Tracks', 'No matched tracks with file paths to export.');
+    showToast('warning', 'Nothing to save', 'None of these tracks were found in your library, so there\u2019s no playlist to make.');
     return;
   }
   const defaultName = `playlist-${dateStamp()}.xml`;
@@ -72,14 +72,14 @@ export async function exportRekordbox(tracks: LibraryMatchedTrack[]): Promise<vo
     if (result.success) {
       showToast(
         'success',
-        'Rekordbox Playlist Exported',
-        `Saved ${plural(result.trackCount ?? usable.length, 'track')}. In Rekordbox: Preferences → Advanced → Database → set the rekordbox xml path to this file.`
+        'Rekordbox playlist saved',
+        `Saved ${plural(result.trackCount ?? usable.length, 'track')}. To open it in Rekordbox, go to Preferences \u2192 Advanced \u2192 Database and choose this file as the rekordbox xml.`
       );
     } else {
-      showToast('error', 'Export Failed', result.error || 'Unknown error');
+      showToast('error', 'Couldn\u2019t save the playlist', result.error || 'It stopped without saying why.');
     }
   } catch (err) {
-    showToast('error', 'Export Failed', getErrorMessage(err));
+    showToast('error', 'Couldn\u2019t save the playlist', getErrorMessage(err));
   }
 }
 
@@ -89,7 +89,7 @@ export async function exportRekordbox(tracks: LibraryMatchedTrack[]): Promise<vo
  */
 export async function exportCsv(tracks: CsvTrackRow[], basename = 'library-tracks'): Promise<void> {
   if (tracks.length === 0) {
-    showToast('warning', 'No Tracks', 'No tracks to export.');
+    showToast('warning', 'Nothing to save', 'There are no tracks to put in the spreadsheet.');
     return;
   }
   const defaultName = `${basename}-${dateStamp()}.csv`;
@@ -99,11 +99,11 @@ export async function exportCsv(tracks: CsvTrackRow[], basename = 'library-track
   try {
     const result = await window.candybar.exportTracksCsv(tracks, filePath);
     if (result.success) {
-      showToast('success', 'Export Complete', `Saved ${plural(tracks.length, 'track')} to CSV.`);
+      showToast('success', 'Spreadsheet saved', `Saved ${plural(tracks.length, 'track')} to a spreadsheet (CSV file).`);
     } else {
-      showToast('error', 'Export Failed', result.error || 'Unknown error');
+      showToast('error', 'Couldn\u2019t save the spreadsheet', result.error || 'It stopped without saying why.');
     }
   } catch (err) {
-    showToast('error', 'Export Failed', getErrorMessage(err));
+    showToast('error', 'Couldn\u2019t save the spreadsheet', getErrorMessage(err));
   }
 }

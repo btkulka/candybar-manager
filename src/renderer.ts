@@ -7,21 +7,24 @@ window.addEventListener('unhandledrejection', (event) => {
   console.error('[Renderer] Unhandled rejection:', event.reason);
 });
 
-import { setActiveTab, setValue, initNavigation, initTagEditor, initArtViewer, checkSpotifyConnection, checkSoundCloudConnection, checkStoreConnections } from './renderer/shared';
+import { setActiveTab, setValue, initNavigation, initTagEditor, initArtViewer, checkSpotifyConnection, checkSoundCloudConnection, checkStoreConnections, applyHowSteps, initConnections } from './renderer/shared';
 import { initOrganize, restoreOrganizeState } from './renderer/organize';
 import { initSource, setSourceCsvFile, restoreSourceSpotifyUrl, hasRestoredSourcesSession } from './renderer/source';
 import { initLibrary, restoreLibraryResults, autoRefreshLibrary, showHealthSkeleton, hideHealthSkeleton } from './renderer/library';
-import { initSettings, setCurrentArchivePath, setFloatingConsoleEnabled, setLibraryRootDisplay, setStoreCredentials, setRekordboxEnabled, setShowAdvancedTools } from './renderer/settings';
+import { initSettings, setCurrentArchivePath, setFloatingConsoleEnabled, setLibraryRootDisplay, setStoreCredentials, setRekordboxEnabled, setShowAdvancedTools, setRekordboxBackupDir } from './renderer/settings';
 import { initTooltips } from './renderer/tooltips';
 import { initActivity } from './renderer/activity';
 import { initPlayer } from './renderer/player';
+import { initVisualizer, isVisualizerEnabled, setVisualizerEnabled } from './renderer/visualizer';
 import { initUsbHealth } from './renderer/usbHealth';
 import { initRestore } from './renderer/restore';
 import { initSpliceRecovery } from './renderer/spliceRecovery';
 import { initRightDrawer } from './renderer/rightDrawer';
 import { initStorePanel } from './renderer/storePanel';
-import { initTour, startTour, offerTour } from './renderer/tour';
+import { initTour, offerTour } from './renderer/tour';
+import { initSetupWizard, startFirstRunSetup, refreshSetupBadge } from './renderer/setupWizard';
 import { initUpgrade } from './renderer/upgrade';
+import { initClaude } from './renderer/claude';
 
 // Re-export types that were previously exported from this file
 export type { SuggestedAction, HealthIssue } from './renderer/shared';
@@ -64,6 +67,7 @@ async function loadConfig() {
   setCurrentArchivePath(config.archivePath);
   setValue('setting-archive-path', config.archivePath);
   setValue('setting-rekordbox-xml-path', config.rekordboxXmlPath ?? '');
+  setRekordboxBackupDir((config as typeof config & { rekordboxBackupDir?: string }).rekordboxBackupDir);
   setLibraryRootDisplay(libraryRoot);
   setFloatingConsoleEnabled(config.floatingConsoleEnabled ?? true);
   const rekordboxEnabled = config.rekordboxEnabled ?? true;
@@ -81,10 +85,12 @@ async function loadConfig() {
     setActiveTab(resolvedTab);
   }
 
-  // First launch on this machine. Started after the tab restore above so it
-  // can't yank the page out from under the tour.
-  if (!config.tutorialCompleted) startTour();
+  // First launch on this machine: the setup guide, which hands over to the
+  // tour. Started after the tab restore above so it can't yank the page out
+  // from under either of them.
+  if (!config.tutorialCompleted && !config.setupCompleted) startFirstRunSetup();
   else if (!config.tourOffered) offerTour();
+  void refreshSetupBadge(config);
 
   // Restore persisted input (CSV path or Spotify playlist URL) into the
   // Source tab. The config keys are still `checkCsvPath` / `checkSpotifyPlaylistUrl`
@@ -157,12 +163,24 @@ function initApp() {
   safeInit('initBrowseButtons', initBrowseButtons);
   safeInit('initActivity', initActivity);
   safeInit('initPlayer', initPlayer);
+  safeInit('initVisualizer', () => {
+    initVisualizer();
+    const toggle = document.getElementById('setting-visualizer') as HTMLInputElement | null;
+    if (toggle) {
+      toggle.checked = isVisualizerEnabled();
+      toggle.addEventListener('change', () => setVisualizerEnabled(toggle.checked));
+    }
+  });
   safeInit('initUsbHealth', initUsbHealth);
   safeInit('initRestore', initRestore);
   safeInit('initSpliceRecovery', initSpliceRecovery);
   safeInit('initRightDrawer', initRightDrawer);
   safeInit('initStorePanel', initStorePanel);
   safeInit('initTour', initTour);
+  safeInit('initSetupWizard', initSetupWizard);
+  safeInit('initClaude', initClaude);
+  safeInit('applyHowSteps', () => applyHowSteps());
+  safeInit('initConnections', initConnections);
 
   loadConfig().catch((err) => console.error('[Renderer] loadConfig failed:', err));
   checkSpotifyConnection(false).catch((err) => console.error('[Renderer] checkSpotifyConnection failed:', err));

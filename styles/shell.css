@@ -1,0 +1,583 @@
+/* shell — Candybar v2 screen styles. Loaded after styles.css (the foundation),
+   so rules here win at equal specificity. The app frame: side nav, top bar
+   (mini player, activity, service pills), the "How it works" strip's
+   controls, Settings, the setup wizard and the tour. */
+
+.sr-only {
+  position: absolute !important;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ===== Side nav footer ===== */
+.sidenav-footer .nav-link { min-height: 36px; font-size: var(--fs-small); color: var(--text-secondary); }
+.sidenav-footer .nav-link .nav-icon { width: 16px; height: 16px; }
+.sidenav-footer .nav-link::before { display: none; }
+.sidenav-footer .nav-badge { font-size: 11px; line-height: 18px; min-width: 18px; padding: 0 6px; }
+
+/* ===== Top bar ===== */
+.topbar { gap: 12px; padding: 0 16px; }
+
+/* Mini player: until a track plays it's a one-line hint, not dead controls */
+.sidebar-player-title { font-size: var(--fs-small); color: var(--text-secondary); }
+.sidebar-player-hint {
+  display: block;
+  font-size: var(--fs-micro);
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.sidebar-player.has-track .sidebar-player-hint { display: none; }
+.sidebar-player:not(.has-track) .sidebar-player-controls { display: none; }
+.sidebar-player:not(.has-track) .sidebar-player-info { max-width: none; flex: 1 1 auto; }
+.sidebar-player-time { font-size: var(--fs-micro); }
+.sidebar-player-btn { width: 36px; height: 36px; }
+
+/* Activity: a quiet "Checking your library…" chip while work runs */
+.topbar-right .activity-tray[hidden] { display: none; }
+.topbar-right .activity-tray {
+  gap: 6px;
+  padding: 4px 10px 4px 8px;
+  border-radius: var(--radius-pill);
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+}
+.topbar-right .activity-tray-header { padding: 0; color: var(--accent); }
+.topbar-right .activity-tray-header svg { width: 16px; height: 16px; }
+.topbar-right .activity-tray-jobs { display: flex; gap: 6px; }
+.topbar-right .activity-job {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  font-size: var(--fs-small);
+  white-space: nowrap;
+}
+.topbar-right .activity-job--running::after { content: '…'; }
+.topbar-right .activity-job--failed,
+.topbar-right .activity-job--cancelled { color: var(--warning); }
+
+/* Service pills: brand icon + name + a state dot. Calm — no glow, no
+   heartbeat; the tooltip says the state in a sentence. */
+.service-status,
+.service-status.collapsed,
+.service-status.collapsed:hover {
+  gap: 7px;
+  min-height: 34px;
+  padding: 6px 11px 6px 9px;
+  font-size: var(--fs-small);
+  font-weight: 500;
+  color: var(--text-secondary);
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-pill);
+  box-shadow: none;
+  opacity: 1;
+  backdrop-filter: none;
+}
+.service-status::before { display: none; }
+.service-status:hover { transform: none; border-color: var(--border-default); color: var(--text-primary); background: var(--bg-surface-hover); }
+.service-status .service-icon { width: 15px; height: 15px; order: 0; animation: none !important; filter: none !important; opacity: 1 !important; }
+.service-status .service-name { order: 1; }
+.service-status .service-loading-dot {
+  order: 2;
+  width: 8px;
+  height: 8px;
+  margin-left: 1px;
+  box-shadow: none !important;
+  animation: none !important;
+  background: var(--text-muted);
+}
+.service-status.connected,
+.service-status.connected.spotify-status,
+.service-status.connected.soundcloud-status,
+.service-status.connected.qobuz-status,
+.service-status.connected.beatport-status {
+  color: var(--text-primary);
+  background: var(--bg-surface);
+  border-color: var(--border-subtle);
+  box-shadow: none;
+}
+.service-status.connected .service-loading-dot,
+.service-status.connected.spotify-status .service-loading-dot,
+.service-status.connected.soundcloud-status .service-loading-dot,
+.service-status.connected.qobuz-status .service-loading-dot,
+.service-status.connected.beatport-status .service-loading-dot { background: var(--success); }
+.service-status.checking { color: var(--text-secondary); background: var(--bg-surface); border-color: var(--border-subtle); }
+.service-status.checking .service-loading-dot { background: var(--warning); animation: servicePulse 1.2s ease-in-out infinite !important; }
+/* Not set up yet: hollow dot, muted — an invitation, not an alarm */
+.service-status.disconnected.is-off { color: var(--text-muted); background: transparent; border-color: var(--border-subtle); border-style: dashed; }
+.service-status.disconnected.is-off .service-loading-dot { background: transparent; border: 1.5px solid var(--text-muted); }
+/* Set up but not working (signed out, unreachable): amber dot */
+.service-status.disconnected:not(.is-off) { color: var(--text-secondary); background: var(--bg-surface); border-color: rgba(245, 207, 61, 0.35); }
+.service-status.disconnected:not(.is-off) .service-loading-dot { background: var(--warning); }
+
+@media (max-width: 1240px) {
+  .service-status .service-name { display: none; }
+  .service-status, .service-status.collapsed, .service-status.collapsed:hover { padding: 6px 9px; }
+}
+
+/* ===== How it works: reopen link after dismissing ===== */
+.how-steps-reopen {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: -12px 0 var(--space-xl);
+  padding: 4px 8px 4px 6px;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-muted);
+  font-size: var(--fs-small);
+  font-weight: 500;
+}
+.how-steps-reopen:hover { color: var(--text-primary); background: var(--bg-surface); }
+.how-steps-reopen svg { width: 15px; height: 15px; }
+.how-steps-reopen[hidden] { display: none; }
+
+/* ===== Setup guide (src/renderer/setupWizard.ts) =====
+   A full-window guide: step rail on the left, one question per step on the
+   right, Back / Skip / Continue at the bottom. */
+.setup-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 10001; /* over tooltips' host layer and the tour */
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: var(--overlay-dim);
+  backdrop-filter: blur(6px);
+  animation: fx-fade-in var(--fx-base) var(--fx-ease);
+}
+.setup-panel {
+  display: grid;
+  grid-template-columns: 220px minmax(0, 1fr);
+  width: min(940px, 100%);
+  height: min(680px, calc(100vh - 48px));
+  background: var(--bg-surface);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-lg);
+  overflow: hidden;
+  animation: fx-pop-in var(--fx-slow) var(--fx-spring);
+}
+.setup-rail {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 24px 14px 18px;
+  background: var(--bg-elevated);
+  border-right: 1px solid var(--border-subtle);
+}
+.setup-rail-title { padding: 0 10px; font-size: var(--fs-small); font-weight: 600; color: var(--accent); }
+.setup-rail-steps { list-style: none; display: flex; flex-direction: column; gap: 2px; }
+.setup-rail-step button {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 40px;
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: var(--fs-body);
+  font-weight: 500;
+  text-align: left;
+}
+.setup-rail-step button:hover { background: var(--bg-surface); color: var(--text-primary); }
+.setup-rail-num {
+  display: inline-grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  border: 1px solid var(--border-default);
+  font-size: var(--fs-micro);
+  font-weight: 700;
+  color: var(--text-muted);
+}
+.setup-rail-num svg { width: 13px; height: 13px; }
+.setup-rail-step.is-current button { background: var(--accent-muted); color: var(--text-primary); }
+.setup-rail-step.is-current .setup-rail-num { color: var(--accent); border-color: var(--border-accent); }
+.setup-rail-step.is-done .setup-rail-num { color: var(--on-accent); background: var(--accent); border-color: var(--accent); }
+.setup-rail-step.is-skipped .setup-rail-num { border-style: dashed; }
+.setup-wizard-skip { margin-top: auto; align-self: flex-start; }
+
+.setup-main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.setup-body { flex: 1; overflow-y: auto; padding: 36px 40px 24px; }
+.setup-body h2 {
+  font-size: var(--fs-display);
+  font-weight: 700;
+  letter-spacing: var(--tracking-tight);
+  line-height: var(--lh-tight);
+  margin-bottom: 10px;
+  outline: none;
+}
+.setup-lead { font-size: 1rem; color: var(--text-secondary); line-height: var(--lh-normal); max-width: 60ch; margin-bottom: 24px; }
+.setup-footer {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  padding: 16px 40px;
+  border-top: 1px solid var(--border-subtle);
+  background: var(--bg-elevated);
+}
+.setup-footer-spacer { flex: 1; }
+.setup-field { margin-bottom: 20px; }
+.setup-field .input-row input { font-family: var(--font-mono); font-size: var(--fs-small); }
+.setup-two-up { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin: 20px 0 16px; }
+.setup-two-up input { font-family: var(--font-mono); font-size: var(--fs-small); }
+.setup-choice { margin-bottom: 20px; }
+.setup-choice .choice-card { min-height: 112px; }
+
+.setup-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 16px;
+  font-size: var(--fs-small);
+  color: var(--text-muted);
+}
+.setup-note svg { width: 16px; height: 16px; flex-shrink: 0; margin-top: 2px; color: var(--accent); }
+
+.setup-checklist,
+.setup-howto { list-style: none; display: flex; flex-direction: column; gap: 12px; }
+.setup-checklist li,
+.setup-howto li {
+  display: flex;
+  gap: 14px;
+  align-items: flex-start;
+  padding: 14px 16px;
+  border-radius: var(--radius-md);
+  background: var(--bg-raised);
+  border: 1px solid var(--border-subtle);
+}
+.setup-checklist li > svg { width: 22px; height: 22px; flex-shrink: 0; color: var(--accent); margin-top: 1px; }
+.setup-checklist li div,
+.setup-howto li div { display: flex; flex-direction: column; gap: 3px; min-width: 0; align-items: flex-start; }
+.setup-checklist strong,
+.setup-howto strong { font-size: var(--fs-body); color: var(--text-primary); }
+.setup-checklist span,
+.setup-howto span:not(.step-num) { font-size: var(--fs-small); color: var(--text-secondary); line-height: var(--lh-normal); }
+.setup-howto .btn-sm { margin-top: 6px; }
+.setup-howto code { font-family: var(--font-mono); font-size: 0.92em; padding: 1px 5px; border-radius: 4px; background: var(--bg-elevated); color: var(--text-primary); }
+
+.setup-stores { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.setup-store {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 18px;
+  border-radius: var(--radius-md);
+  background: var(--bg-raised);
+  border: 1px solid var(--border-subtle);
+}
+.setup-store-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; width: 100%; }
+.setup-store-head strong { font-size: var(--fs-h3); }
+.setup-store--qobuz .setup-store-head strong { color: var(--brand-qobuz); }
+.setup-store--beatport .setup-store-head strong { color: var(--brand-beatport); }
+.setup-store p { font-size: var(--fs-small); color: var(--text-secondary); flex: 1; }
+
+.setup-summary { list-style: none; display: flex; flex-direction: column; gap: 8px; }
+.setup-summary li {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 12px 14px;
+  border-radius: var(--radius-md);
+  background: var(--bg-raised);
+  border: 1px solid var(--border-subtle);
+}
+.setup-summary li div { flex: 1; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.setup-summary strong { font-size: var(--fs-body); }
+.setup-summary span:not(.setup-summary-mark) { font-size: var(--fs-small); color: var(--text-muted); }
+.setup-summary-mark {
+  display: inline-grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  border: 1.5px dashed var(--border-control);
+}
+.setup-summary li.is-done .setup-summary-mark { border: 0; background: var(--accent); color: var(--on-accent); }
+.setup-summary-mark svg { width: 14px; height: 14px; }
+
+@media (max-width: 820px) {
+  .setup-panel { grid-template-columns: 1fr; }
+  .setup-rail { display: none; }
+  .setup-body { padding: 28px 24px 20px; }
+  .setup-footer { padding: 14px 24px; }
+  .setup-two-up, .setup-stores { grid-template-columns: 1fr; }
+}
+.setup-body h2:focus,
+.setup-body h2:focus-visible { outline: none; }
+.setup-rail-step.is-bracket .setup-rail-num { border-color: transparent; background: var(--bg-raised); }
+.setup-rail-step.is-bracket.is-current .setup-rail-num { background: var(--accent-muted); border-color: var(--border-accent); }
+.setup-howto-wrap { background: transparent; }
+.setup-howto-wrap .setup-two-up { margin-bottom: 0; }
+.setup-body .callout { margin-bottom: 16px; }
+
+/* ===== Connections (top bar) =====
+   One button that says the state in words; the four services are rows in
+   its panel. Replaces the row of coloured pills. */
+.connections { position: relative; }
+.connections-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 36px;
+  padding: 6px 10px 6px 12px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  font-size: var(--fs-small);
+  font-weight: 500;
+  white-space: nowrap;
+}
+.connections-toggle:hover,
+.connections-toggle[aria-expanded="true"] { color: var(--text-primary); border-color: var(--border-default); background: var(--bg-surface-hover); }
+.connections-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-muted); flex-shrink: 0; }
+.connections-toggle[data-tone="ok"] .connections-dot { background: var(--success); }
+.connections-toggle[data-tone="warn"] { border-color: rgba(245, 207, 61, 0.35); }
+.connections-toggle[data-tone="warn"] .connections-dot { background: var(--warning); }
+.connections-toggle[data-tone="off"] .connections-dot { background: transparent; border: 1.5px solid var(--text-muted); }
+.connections-toggle[data-tone="checking"] .connections-dot { background: var(--warning); animation: servicePulse 1.2s ease-in-out infinite; }
+.connections-chevron { width: 14px; height: 14px; color: var(--text-muted); transition: transform 0.15s var(--ease-out); }
+.connections-toggle[aria-expanded="true"] .connections-chevron { transform: rotate(180deg); }
+
+.connections-panel {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 300;
+  width: 300px;
+  padding: 10px;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border-default);
+  background: var(--bg-surface);
+  box-shadow: var(--shadow-lg);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  animation: fx-fade-slide-down var(--fx-base) var(--fx-ease);
+}
+.connections-panel[hidden] { display: none; }
+.connections-panel-title { padding: 4px 8px 6px; font-size: var(--fs-small); font-weight: 600; color: var(--text-primary); }
+.connections-panel-foot { padding: 6px 8px 2px; font-size: var(--fs-micro); color: var(--text-muted); }
+
+/* Each service is a full-width row: icon, name, state in words, dot */
+.connections-panel .service-status,
+.connections-panel .service-status.collapsed,
+.connections-panel .service-status.collapsed:hover,
+.connections-panel .service-status.connected,
+.connections-panel .service-status.disconnected,
+.connections-panel .service-status.disconnected.is-off,
+.connections-panel .service-status.checking {
+  display: flex;
+  width: 100%;
+  min-height: 44px;
+  padding: 8px 10px;
+  gap: 10px;
+  border-radius: var(--radius-sm);
+  border: 0;
+  border-style: solid;
+  background: transparent;
+  color: var(--text-primary);
+}
+.connections-panel .service-status:hover { background: var(--bg-raised); }
+.connections-panel .service-status .service-icon { width: 18px; height: 18px; }
+.connections-panel .service-status .service-name { display: inline; flex: 1; text-align: left; font-size: var(--fs-body); font-weight: 500; }
+.connections-panel .service-status [class*="-status-text"].sr-only {
+  position: static !important;
+  width: auto;
+  height: auto;
+  margin: 0;
+  overflow: visible;
+  clip: auto;
+  order: 2;
+  font-size: var(--fs-small);
+  color: var(--text-secondary);
+}
+.connections-panel .service-status .service-loading-dot { order: 3; }
+.connections-panel .service-status.is-off [class*="-status-text"] { color: var(--text-muted); }
+.connections-panel .service-status.disconnected:not(.is-off) [class*="-status-text"] { color: var(--warning); }
+/* The old narrow-window rule hides pill status text; inside the panel it's the point. */
+.connections-panel .service-status > [class*="-status-text"] { display: inline; }
+@media (max-width: 1100px) { .connections-label { max-width: 160px; overflow: hidden; text-overflow: ellipsis; } }
+
+/* ===== Settings ===== */
+.settings-section h4 {
+  font-size: var(--fs-h2);
+  font-weight: 600;
+  letter-spacing: var(--tracking-tight);
+  text-transform: none;
+  color: var(--text-primary);
+}
+.settings-spotify-help { margin: 4px 0 8px; }
+
+/* ===== Grooves — the app's signature motif =====
+   Track Lab's mark is a ring around a dot: a record. Its grooves and a
+   waveform are the one decorative element, used as backgrounds and hero art
+   (styles/art/*.svg), always faint enough that text stays fully legible. */
+
+/* Grooves sweep in from the top-right corner behind every page header and
+   scroll away with the page. */
+.content {
+  background-image:
+    url('./art/grooves.svg'),
+    radial-gradient(ellipse 80% 50% at 70% -10%, rgba(127, 255, 212, 0.06), transparent),
+    radial-gradient(ellipse 60% 40% at 0% 80%, rgba(127, 255, 212, 0.03), transparent);
+  background-repeat: no-repeat, no-repeat, no-repeat;
+  background-position: right -160px top -230px, 0 0, 0 0;
+  background-size: 780px 780px, auto, auto;
+  background-attachment: local, scroll, scroll;
+}
+/* Library scrolls itself, not .content, so its grooves ride on the page:
+   a smaller sweep behind the summary that scrolls away with it. */
+.content:has(#page-library.active) {
+  background-image:
+    radial-gradient(ellipse 80% 50% at 70% -10%, rgba(127, 255, 212, 0.06), transparent),
+    radial-gradient(ellipse 60% 40% at 0% 80%, rgba(127, 255, 212, 0.03), transparent);
+  background-position: 0 0, 0 0;
+  background-size: auto, auto;
+  background-attachment: scroll, scroll;
+}
+#page-library.active {
+  background: url('./art/grooves.svg') right -260px top -330px / 640px 640px no-repeat;
+  background-attachment: local;
+}
+
+/* The side nav's footer sits on the same grooves, mirrored */
+.sidenav {
+  background-image: url('./art/grooves-bottom-left.svg');
+  background-repeat: no-repeat;
+  background-position: left -300px bottom -330px;
+  background-size: 560px 560px;
+}
+
+/* A tiny waveform before each page's group name */
+.page-eyebrow { display: inline-flex; align-items: center; gap: 7px; }
+.page-eyebrow::before {
+  content: '';
+  width: 18px;
+  height: 14px;
+  flex-shrink: 0;
+  background: currentColor;
+  -webkit-mask: url('./art/bars.svg') center / contain no-repeat;
+  mask: url('./art/bars.svg') center / contain no-repeat;
+}
+
+/* Empty states sit on a small grooved record: the icon is its label */
+.empty-state-icon {
+  width: 84px;
+  height: 84px;
+  margin-bottom: 10px;
+  border: 0;
+  background:
+    radial-gradient(circle at center, var(--accent-muted) 0 25px, transparent 26px),
+    repeating-radial-gradient(circle at center, transparent 0 4px, rgba(127, 255, 212, 0.09) 4px 5px),
+    var(--bg-elevated);
+  box-shadow: inset 0 0 0 1px var(--border-accent);
+}
+
+/* "Working" is a spinning record */
+.activity-tray-icon--record { animation: fx-spin 2.4s linear infinite; }
+
+/* Setup guide hero: a record half off the edge with a waveform running into it */
+.setup-hero {
+  height: 150px;
+  margin: -36px -40px 28px;
+  background:
+    url('./art/record.svg') right -70px center / 300px 300px no-repeat,
+    url('./art/waveform.svg') left 32px center / 560px 96px no-repeat,
+    linear-gradient(180deg, var(--bg-raised), var(--bg-surface));
+  border-bottom: 1px solid var(--border-subtle);
+}
+.setup-hero--small {
+  height: 96px;
+  background:
+    url('./art/record.svg') right -40px center / 190px 190px no-repeat,
+    url('./art/waveform.svg') left 32px center / 420px 64px no-repeat,
+    linear-gradient(180deg, var(--bg-raised), var(--bg-surface));
+}
+@media (max-width: 820px) { .setup-hero { margin: -28px -24px 24px; } }
+.activity-tray:not(.is-busy) .activity-tray-icon--record { animation: none; }
+.topbar-right .activity-job--completed { color: var(--text-secondary); }
+
+/* Hero art for a big moment — a verdict ("Ready for your gig"), a finished
+   job, a welcome. Add .art-hero to a card; keep its text in the left part. */
+.art-hero {
+  position: relative;
+  overflow: hidden;
+  background:
+    url('./art/record.svg') right -96px center / 280px 280px no-repeat,
+    url('./art/waveform.svg') right 168px center / 200px 56px no-repeat,
+    linear-gradient(135deg, var(--bg-raised), var(--bg-surface) 65%);
+}
+.art-hero > * { position: relative; }
+/* The record shows ~184px and the waveform runs 168–368px from the right
+   edge, so text stops short of both. */
+.art-hero-content { max-width: min(520px, calc(100% - 390px)); min-width: 260px; }
+@media (max-width: 1100px) {
+  .art-hero { background: url('./art/record.svg') right -150px center / 260px 260px no-repeat, linear-gradient(135deg, var(--bg-raised), var(--bg-surface) 65%); }
+  .art-hero-content { max-width: calc(100% - 110px); }
+}
+
+/* Quiet grooves on any card or panel that wants a little character */
+.art-grooves {
+  background:
+    url('./art/grooves.svg') right -320px top -360px / 640px 640px no-repeat,
+    var(--bg-surface);
+}
+
+/* ===== Sound wave (src/renderer/visualizer.ts) =====
+   Full width of the main view, up to half its height, over the page but
+   never in the way: it takes no clicks and is screen-blended so text stays
+   readable through it. */
+.app-main { position: relative; }
+.player-visualizer {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  width: 100%;
+  height: calc((100% - var(--topbar-height)) / 2);
+  pointer-events: none;
+  z-index: 50; /* above page content, below the top bar (100), dialogs and toasts */
+  mix-blend-mode: screen;
+  opacity: 0;
+  transition: opacity 0.6s var(--ease-out);
+}
+.player-visualizer.is-live { opacity: 0.7; }
+
+/* Only .content (and panels inside it) scroll. `clip` instead of `hidden`
+   means scrollIntoView can't scroll the window or the frame and push the
+   side nav and top bar off screen. */
+html, body { height: 100%; overflow: clip; }
+.app { overflow: clip; }
+
+/* Short windows: the whole side nav, footer included, still fits without scrolling */
+@media (max-height: 860px) {
+  .sidenav { gap: 10px; padding-top: 12px; }
+  .nav-link { min-height: 34px; padding: 6px 12px; }
+  .nav-section-label { padding: 10px 12px 4px; }
+  .sidenav-footer { padding-top: 8px; }
+  .sidenav-footer .nav-link { min-height: 30px; }
+}
+@media (max-height: 700px) {
+  .nav-link { min-height: 30px; padding: 4px 12px; }
+  .nav-section-label { padding: 8px 12px 2px; }
+}
+.topbar-right .activity-job--failed::before,
+.topbar-right .activity-job--cancelled::before { background: var(--warning); }

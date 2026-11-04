@@ -3,6 +3,7 @@ import path from 'path';
 import { app } from 'electron';
 import { createScopedLogger } from './logger';
 import { makeTagKey } from './stringUtils';
+import type { SavedSource, SavedSourceInput, SavedSourceKind } from '../types';
 
 const log = createScopedLogger('DB');
 
@@ -191,6 +192,29 @@ export function initDatabase(dbPath: string = path.join(app.getPath('userData'),
     `);
     db.exec(`CREATE INDEX IF NOT EXISTS idx_deleted_tracks_store ON deleted_tracks(source, track_id)`);
     db.exec(`CREATE INDEX IF NOT EXISTS idx_deleted_tracks_tag ON deleted_tracks(tag_key)`);
+    // Playlists, sets and spreadsheets checked on Find and buy, so they can be
+    // checked again in one click. One row per source (ref_key), with the counts
+    // from its last check. Columns added later go through ensureColumn in
+    // runMigrations, like library_tracks.
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS saved_sources (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        kind TEXT NOT NULL,
+        ref_key TEXT NOT NULL UNIQUE,
+        ref TEXT NOT NULL,
+        name TEXT NOT NULL,
+        custom_name TEXT,
+        image_url TEXT,
+        owner TEXT NOT NULL DEFAULT '',
+        track_count INTEGER NOT NULL DEFAULT 0,
+        to_buy INTEGER NOT NULL DEFAULT 0,
+        maybe_owned INTEGER NOT NULL DEFAULT 0,
+        owned INTEGER NOT NULL DEFAULT 0,
+        not_for_sale INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL,
+        last_checked_at INTEGER NOT NULL
+      )
+    `);
     runMigrations(db);
     log.info('Database initialized successfully');
   } catch (error) {
@@ -597,4 +621,135 @@ export function getAutopopulatedPaths(paths: string[]): Set<string> {
     log.error('Failed to query autopopulated paths:', error);
     return new Set();
   }
+}
+
+// ========== Saved sources (Find and buy → "Your playlists") ==========
+
+type SavedSourceDbRow = {
+  id: number;
+  kind: SavedSourceKind;
+  ref: string;
+  name: string;
+  custom_name: string | null;
+  image_url: string | null;
+  owner: string;
+  track_count: number;
+  to_buy: number;
+  maybe_owned: number;
+  owned: number;
+  not_for_sale: number;
+  created_at: number;
+  last_checked_at: number;
+};
+
+const SAVED_SOURCE_KINDS: readonly SavedSourceKind[] = ['spotify', 'soundcloud', 'csv'];
+
+/**
+ * The de-dupe key for a saved source: the same playlist pasted twice (with a
+ * different `?si=` share token, `www.`, a trailing slash) is one entry.
+ *   - Spotify: the playlist id, from a link, a spotify:playlist: URI or a bare id.
+ *   - SoundCloud: host + path, without protocol, www./m., query or trailing slash.
+ *     Short on.soundcloud.com links can't be expanded here, so they key as given.
+ *   - CSV: the file path (NFC, so an exFAT-decomposed path matches).
+ */
+export function savedSourceKey(kind: SavedSourceKind, ref: string): string {
+  const r = ref.trim();
+  if (kind === 'spotify') {
+    const id = r.match(/playlist[/:]([A-Za-z0-9]+)/)?.[1] ?? (/^[A-Za-z0-9]{22}$/.test(r) ? r : null);
+    return id ? `spotify:playlist:${id}` : `spotify:${r}`;
+  }
+  if (kind === 'soundcloud') {
+    const bare = r
+      .replace(/^https?:\/\//i, '')
+      .replace(/^(www\.|m\.)/i, '')
+      .replace(/[?#].*$/, '')
+      .replace(/\/+$/, '');
+    const slash = bare.indexOf('/');
+    const host = (slash === -1 ? bare : bare.slice(0, slash)).toLowerCase();
+    return `soundcloud:${host}${slash === -1 ? '' : bare.slice(slash)}`;
+  }
+  return `csv:${r.normalize('NFC')}`;
+}
+
+function toSavedSource(row: SavedSourceDbRow): SavedSource {
+  const custom = row.custom_name?.trim() || null;
+  return {
+    id: row.id,
+    kind: row.kind,
+    ref: row.ref,
+    name: custom ?? row.name,
+    originalName: row.name,
+    renamed: custom !== null,
+    imageUrl: row.image_url,
+    owner: row.owner,
+    trackCount: row.track_count,
+    counts: { toBuy: row.to_buy, maybeOwned: row.maybe_owned, owned: row.owned, notForSale: row.not_for_sale },
+    createdAt: row.created_at,
+    lastCheckedAt: row.last_checked_at,
+  };
+}
+
+/** A whole, non-negative number from IPC input (anything else is 0). */
+const savedCount = (n: unknown) => (typeof n === 'number' && Number.isFinite(n) && n > 0 ? Math.round(n) : 0);
+
+/** Every saved source, most recently checked first. */
+export function listSavedSources(): SavedSource[] {
+  const rows = getDb()
+    .prepare('SELECT * FROM saved_sources ORDER BY last_checked_at DESC, id DESC')
+    .all() as SavedSourceDbRow[];
+  return rows.map(toSavedSource);
+}
+
+export function getSavedSource(id: number): SavedSource | null {
+  const row = getDb().prepare('SELECT * FROM saved_sources WHERE id = ?').get(id) as SavedSourceDbRow | undefined;
+  return row ? toSavedSource(row) : null;
+}
+
+/**
+ * Save a source after a successful check: a new row, or the existing row for
+ * the same source (see savedSourceKey) refreshed with this check's name, cover,
+ * counts and time. A rename the user gave it is kept. With `keepExisting`, an
+ * existing row is returned untouched (used to seed the list from an older
+ * session without overwriting a newer check).
+ */
+export function saveSavedSource(input: SavedSourceInput, opts: { keepExisting?: boolean } = {}): SavedSource {
+  if (!SAVED_SOURCE_KINDS.includes(input.kind)) throw new Error(`Unknown source kind: ${String(input.kind)}`);
+  const ref = String(input.ref ?? '').trim();
+  if (!ref) throw new Error('A saved source needs a link or file path.');
+  const key = savedSourceKey(input.kind, ref);
+  const database = getDb();
+  const existing = database.prepare('SELECT * FROM saved_sources WHERE ref_key = ?').get(key) as SavedSourceDbRow | undefined;
+  if (existing && opts.keepExisting) return toSavedSource(existing);
+
+  const checkedAt = savedCount(input.checkedAt) || Date.now();
+  const name = String(input.name ?? '').trim() || ref;
+  const c = input.counts ?? { toBuy: 0, maybeOwned: 0, owned: 0, notForSale: 0 };
+  if (existing) {
+    database.prepare(`
+      UPDATE saved_sources SET ref = ?, name = ?, image_url = COALESCE(?, image_url), owner = ?,
+        track_count = ?, to_buy = ?, maybe_owned = ?, owned = ?, not_for_sale = ?, last_checked_at = ?
+      WHERE id = ?
+    `).run(ref, name, input.imageUrl ?? null, input.owner ?? existing.owner, savedCount(input.trackCount),
+      savedCount(c.toBuy), savedCount(c.maybeOwned), savedCount(c.owned), savedCount(c.notForSale), checkedAt, existing.id);
+    return getSavedSource(existing.id)!;
+  }
+  const res = database.prepare(`
+    INSERT INTO saved_sources (kind, ref_key, ref, name, image_url, owner, track_count,
+      to_buy, maybe_owned, owned, not_for_sale, created_at, last_checked_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(input.kind, key, ref, name, input.imageUrl ?? null, input.owner ?? '', savedCount(input.trackCount),
+    savedCount(c.toBuy), savedCount(c.maybeOwned), savedCount(c.owned), savedCount(c.notForSale), checkedAt, checkedAt);
+  return getSavedSource(Number(res.lastInsertRowid))!;
+}
+
+/** Rename a saved source. An empty name goes back to the playlist's own name. */
+export function renameSavedSource(id: number, name: string | null): SavedSource | null {
+  const custom = name?.trim() ? name.trim().slice(0, 200) : null;
+  getDb().prepare('UPDATE saved_sources SET custom_name = ? WHERE id = ?').run(custom, id);
+  return getSavedSource(id);
+}
+
+/** Forget a saved source. The playlist itself (or the CSV file) isn't touched. */
+export function removeSavedSource(id: number): boolean {
+  return getDb().prepare('DELETE FROM saved_sources WHERE id = ?').run(id).changes > 0;
 }

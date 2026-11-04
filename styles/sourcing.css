@@ -1,0 +1,821 @@
+/* sourcing — Candybar v2 screen styles for Find and buy (#page-source), Upgrade
+   track quality (#page-upgrade), the cart drawer and the store panel. Loaded
+   after styles.css (the foundation), so rules here win at equal specificity.
+   Uses foundation tokens and components; adds only what these screens need.
+   Every inline SVG these screens add is sized here (16px in rows and buttons,
+   20–24px as feature icons). */
+
+/* ===================================================================
+   Shared bits: spinner, meter, kind chip, artwork
+   =================================================================== */
+
+.buy-spinner {
+  width: 22px;
+  height: 22px;
+  flex-shrink: 0;
+  color: var(--accent);
+  animation: buy-spin 0.9s linear infinite;
+}
+@keyframes buy-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  .buy-spinner { animation-duration: 2.4s; }
+}
+
+/* A plain progress meter: flat accent fill on a raised track. */
+.buy-meter {
+  height: 8px;
+  background: var(--bg-raised);
+  border-radius: var(--radius-pill);
+  overflow: hidden;
+}
+.buy-meter-fill {
+  height: 100%;
+  width: 0;
+  background: var(--accent);
+  border-radius: inherit;
+  transition: width 0.3s var(--ease-out);
+}
+.buy-meter--sm { height: 6px; margin-top: var(--space-sm); }
+
+/* Where a list came from: "Spotify", "SoundCloud", "Spreadsheet". A label,
+   not a status, so no dot. */
+.buy-kind {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 10px 2px 8px;
+  border-radius: var(--radius-pill);
+  background: var(--bg-raised);
+  border: 1px solid var(--border-subtle);
+  font-size: var(--fs-micro);
+  font-weight: 600;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.buy-kind svg { width: 14px; height: 14px; flex-shrink: 0; }
+.buy-kind-icon { width: 20px; height: 20px; flex-shrink: 0; }
+.buy-kind-icon--spotify { color: var(--brand-spotify); }
+.buy-kind-icon--soundcloud { color: var(--brand-soundcloud); }
+.buy-kind-icon--csv { color: var(--text-secondary); }
+
+.buy-art {
+  width: 44px;
+  height: 44px;
+  border-radius: var(--radius-xs);
+  object-fit: cover;
+  background: var(--bg-raised);
+  flex-shrink: 0;
+}
+.buy-art--placeholder { display: grid; place-items: center; color: var(--text-muted); }
+.buy-art--placeholder svg { width: 18px; height: 18px; }
+
+/* ===================================================================
+   Find and buy — "Add a playlist"
+   =================================================================== */
+
+.buy-picker-head { margin-bottom: var(--space-lg); }
+.buy-append-head { margin-bottom: var(--space-lg); }
+.buy-run-error { margin-bottom: var(--space-lg); }
+.buy-error-details { margin-top: 6px; }
+.buy-error-details summary { cursor: pointer; font-size: var(--fs-small); font-weight: 600; color: var(--text-secondary); }
+.buy-error-details p { margin-top: 4px; font-size: var(--fs-small); overflow-wrap: anywhere; }
+
+.buy-add-row { display: flex; gap: var(--space-md); align-items: stretch; }
+.buy-link {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: var(--control-h-lg);
+  padding: 0 14px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-control);
+  border-radius: var(--radius-md);
+  transition: border-color 0.15s var(--ease-out), box-shadow 0.15s var(--ease-out);
+}
+.buy-link:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-muted); }
+.buy-link-icon { display: grid; place-items: center; width: 20px; height: 20px; flex-shrink: 0; color: var(--text-muted); }
+.buy-link-icon svg { width: 20px; height: 20px; }
+.buy-link-input {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-primary);
+  font: inherit;
+  font-size: var(--fs-body);
+  outline: none;
+}
+.buy-link-input::placeholder { color: var(--text-muted); }
+/* The field's frame is .buy-link; the input inside it is bare (beats the
+   generic input[type="text"] / :hover / :focus rules). */
+.buy-link input.buy-link-input,
+.buy-link input.buy-link-input:hover,
+.buy-link input.buy-link-input:focus,
+.buy-filter input[type="search"],
+.buy-filter input[type="search"]:hover,
+.buy-filter input[type="search"]:focus {
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  outline: none;
+}
+.buy-filter input[type="search"]::-webkit-search-cancel-button { filter: grayscale(1) brightness(1.4); cursor: pointer; }
+.buy-add-field .field-help { margin-top: var(--space-sm); }
+.buy-add-field .field-help:empty { display: none; }
+
+/* Spreadsheet: a quiet dashed strip under the link field; the whole card
+   takes a dropped file (source.ts), the strip lights up while dragging. */
+.buy-drop {
+  margin-top: var(--space-lg);
+  padding: 12px 16px;
+  border: 1px dashed var(--border-default);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: border-color 0.15s var(--ease-out), background 0.15s var(--ease-out);
+}
+.buy-drop:hover { border-color: var(--border-accent); background: var(--bg-surface-hover); }
+.buy-drop.is-dragging { border-color: var(--accent); background: var(--accent-muted); }
+.buy-drop-empty,
+.buy-drop-file {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-sm) var(--space-md);
+  font-size: var(--fs-small);
+  color: var(--text-secondary);
+}
+.buy-drop-empty > span { flex: 1; min-width: 200px; }
+.buy-drop-empty svg,
+.buy-drop-file svg { width: 20px; height: 20px; flex-shrink: 0; }
+.buy-drop:not(.has-file) .buy-drop-file { display: none; }
+.buy-drop.has-file .buy-drop-empty { display: none; }
+.buy-drop.has-file { border-style: solid; border-color: var(--border-accent); background: var(--bg-raised); cursor: default; }
+.buy-drop-file .file-name {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--fs-body);
+  font-weight: 600;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* With a spreadsheet chosen, the link field steps back. */
+.buy-picker.has-csv .buy-link { opacity: 0.6; }
+
+.buy-csv-warning,
+.buy-csv-preview { margin: var(--space-md) 0 0; }
+.buy-csv-table {
+  max-height: 240px;
+  overflow: auto;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+}
+.buy-csv-table table { width: 100%; border-collapse: collapse; font-size: var(--fs-small); }
+.buy-csv-table th,
+.buy-csv-table td {
+  padding: 7px 10px;
+  text-align: left;
+  border-bottom: 1px solid var(--border-subtle);
+  white-space: nowrap;
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text-secondary);
+}
+.buy-csv-table th { position: sticky; top: 0; background: var(--bg-surface); color: var(--text-muted); font-weight: 600; }
+.buy-csv-table th.required { color: var(--accent); }
+.buy-add-note { margin-top: var(--space-lg); }
+
+/* ===================================================================
+   Find and buy — "Your playlists"
+   =================================================================== */
+
+.buy-saved .card-header { align-items: flex-start; margin-bottom: var(--space-md); }
+.buy-saved-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.buy-saved-row {
+  display: grid;
+  grid-template-columns: 28px 52px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-md);
+  padding: 10px 10px 10px 4px;
+  border-radius: var(--radius-md);
+}
+.buy-saved-row:hover { background: var(--bg-surface-hover); }
+.buy-saved-pick { display: grid; place-items: center; width: 28px; height: 28px; cursor: pointer; }
+.buy-saved-pick input { width: 18px; height: 18px; accent-color: var(--accent); cursor: pointer; }
+.buy-saved-pick input:disabled { cursor: not-allowed; opacity: 0.4; }
+.buy-saved-art { width: 52px; height: 52px; border-radius: var(--radius-sm); object-fit: cover; background: var(--bg-raised); }
+.buy-saved-art--placeholder { display: grid; place-items: center; }
+.buy-saved-art--placeholder svg { width: 24px; height: 24px; }
+.buy-saved-main { min-width: 0; }
+.buy-saved-name {
+  font-size: var(--fs-h3);
+  font-weight: 600;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.buy-saved-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  margin-top: 4px;
+  font-size: var(--fs-small);
+  color: var(--text-secondary);
+}
+.buy-saved-missing { margin-top: 6px; }
+.buy-saved-row.is-missing .buy-saved-art { opacity: 0.5; }
+.buy-saved-actions { display: flex; align-items: center; gap: 2px; }
+.buy-saved-actions .btn-secondary { margin-right: var(--space-xs); }
+.buy-saved-actions .btn-secondary svg { width: 14px; height: 14px; }
+.buy-saved-actions .btn-icon svg { width: 16px; height: 16px; }
+.buy-saved-rename { display: flex; align-items: center; gap: var(--space-sm); }
+.buy-saved-rename input {
+  flex: 1;
+  min-width: 0;
+  height: var(--control-h-sm);
+  padding: 0 10px;
+  font: inherit;
+  font-size: var(--fs-body);
+  color: var(--text-primary);
+  background: var(--bg-elevated);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+}
+.buy-saved-rename + .field-help { margin-top: 4px; }
+.buy-saved-empty {
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+  padding: var(--space-lg);
+  border: 1px dashed var(--border-default);
+  border-radius: var(--radius-md);
+  font-size: var(--fs-body);
+  color: var(--text-secondary);
+}
+.buy-saved-empty .empty-state-icon { width: 40px; height: 40px; margin: 0; flex-shrink: 0; color: var(--accent); }
+.buy-saved-empty .empty-state-icon svg { width: 20px; height: 20px; }
+
+/* ===================================================================
+   Find and buy — playlist card, progress
+   =================================================================== */
+
+.buy-list-card {
+  display: flex;
+  align-items: center;
+  gap: var(--space-lg);
+  padding: var(--space-lg);
+  margin-bottom: var(--gap-stack);
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+}
+.buy-list-art { width: 64px; height: 64px; border-radius: var(--radius-sm); object-fit: cover; flex-shrink: 0; background: var(--bg-raised); }
+.buy-list-art--placeholder { display: grid; place-items: center; color: var(--text-muted); }
+.buy-list-art--placeholder svg { width: 26px; height: 26px; }
+.buy-list-meta { flex: 1; min-width: 0; }
+.buy-list-name {
+  font-size: var(--fs-h2);
+  font-weight: 700;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.buy-list-sub { margin-top: 2px; font-size: var(--fs-small); color: var(--text-secondary); }
+/* Inside the progress card and a step card the playlist sits flat. */
+.buy-progress .buy-list-card,
+.upg-step .buy-list-card {
+  padding: 0 0 var(--space-lg);
+  margin-bottom: var(--space-lg);
+  background: none;
+  border: 0;
+  border-bottom: 1px solid var(--border-subtle);
+  border-radius: 0;
+}
+
+.buy-progress-head { display: flex; align-items: flex-start; gap: var(--space-md); margin-bottom: var(--space-lg); }
+.buy-progress-head .buy-spinner { margin-top: 3px; }
+.buy-progress-text { min-width: 0; }
+.buy-progress-text h3 { font-size: var(--fs-h3); font-weight: 600; line-height: 1.4; color: var(--text-primary); }
+.buy-progress-text .card-desc { overflow-wrap: anywhere; }
+.buy-progress-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-md);
+  margin-top: var(--space-sm);
+  font-size: var(--fs-small);
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+.buy-progress-tally { margin-top: var(--space-lg); font-size: var(--fs-body); color: var(--text-secondary); }
+.buy-progress-tally b { color: var(--text-primary); font-variant-numeric: tabular-nums; }
+.buy-progress-recent { margin-top: var(--space-lg); }
+.buy-progress-recent-head { margin-bottom: 4px; font-size: var(--fs-small); font-weight: 600; color: var(--text-muted); }
+.buy-recent {
+  display: grid;
+  grid-template-columns: 36px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-md);
+  padding: 6px 0;
+}
+.buy-recent + .buy-recent { border-top: 1px solid var(--border-subtle); }
+.buy-recent .buy-art { width: 36px; height: 36px; }
+.buy-recent-text { display: flex; flex-direction: column; min-width: 0; }
+.buy-progress-note { margin-top: var(--space-xl); }
+
+/* ===================================================================
+   Find and buy — results
+   =================================================================== */
+
+.buy-add-strip { display: flex; align-items: center; justify-content: space-between; gap: var(--space-md); margin-bottom: var(--space-md); }
+.buy-add-strip .buy-new-list { order: -1; margin-left: -10px; }
+.buy-add-strip svg { width: 16px; height: 16px; }
+
+.buy-summary { margin-bottom: var(--space-lg); }
+.buy-summary-title { font-size: var(--fs-h2); font-weight: 700; color: var(--text-primary); margin-bottom: 4px; }
+.buy-summary p { font-size: var(--fs-body); color: var(--text-secondary); line-height: var(--lh-normal); max-width: 72ch; }
+.buy-summary .buy-summary-sources { margin-top: 4px; font-size: var(--fs-small); color: var(--text-muted); }
+
+.buy-toolbar { display: flex; align-items: center; gap: var(--space-md); margin-bottom: var(--space-lg); }
+.buy-toolbar > .btn-ghost { margin-left: auto; }
+.buy-toolbar svg { width: 16px; height: 16px; }
+.buy-filter {
+  flex: 1;
+  min-width: 0;
+  max-width: 420px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: var(--control-h);
+  padding: 0 12px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-control);
+  border-radius: var(--radius-md);
+  color: var(--text-muted);
+  cursor: text;
+}
+.buy-filter:focus-within { border-color: var(--accent); }
+.buy-filter svg { width: 16px; height: 16px; flex-shrink: 0; }
+.buy-filter input {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-primary);
+  font: inherit;
+  font-size: var(--fs-body);
+  outline: none;
+}
+.buy-filter input::placeholder { color: var(--text-muted); }
+.buy-cart-progress .callout-icon { width: 20px; height: 20px; }
+
+/* A group: To buy is a full card; the quieter ones are disclosures under it. */
+.buy-group {
+  padding: var(--space-xl) var(--space-xl) var(--space-sm);
+  margin-bottom: var(--gap-stack);
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+}
+.buy-group-head { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-lg); margin-bottom: var(--space-md); }
+.buy-group-text { min-width: 0; }
+.buy-group-title { display: flex; align-items: center; gap: var(--space-sm); font-size: var(--fs-h3); font-weight: 600; color: var(--text-primary); }
+.buy-group-count {
+  padding: 0 8px;
+  min-width: 24px;
+  line-height: 22px;
+  text-align: center;
+  border-radius: var(--radius-pill);
+  background: var(--accent-muted);
+  border: 1px solid var(--border-accent);
+  color: var(--accent);
+  font-size: var(--fs-small);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+.buy-group-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 4px; flex-shrink: 0; }
+.buy-rule { margin-bottom: var(--space-md); }
+.buy-rule .callout-icon { width: 20px; height: 20px; }
+.buy-rule .btn-link { font-size: inherit; }
+
+.buy-quiet-list { display: flex; flex-direction: column; gap: var(--space-sm); }
+.buy-quiet { margin-bottom: 0; }
+.buy-quiet-title { font-weight: 500; color: var(--text-secondary); }
+.buy-quiet-title b { color: var(--text-primary); font-weight: 700; font-variant-numeric: tabular-nums; }
+.buy-quiet-intro { font-size: var(--fs-small); color: var(--text-secondary); line-height: var(--lh-normal); margin-bottom: var(--space-sm); max-width: 72ch; }
+.buy-quiet-actions { display: flex; align-items: flex-start; justify-content: space-between; flex-wrap: wrap; gap: var(--space-sm) var(--space-md); }
+.buy-quiet-actions .buy-quiet-intro { flex: 1; min-width: 240px; }
+
+/* ---- Rows ---- */
+.buy-list { display: flex; flex-direction: column; }
+.buy-list > .buy-row + .buy-row { border-top: 1px solid var(--border-subtle); }
+
+.buy-trk { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.buy-t {
+  font-size: var(--fs-body);
+  font-weight: 600;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.buy-a {
+  font-size: var(--fs-small);
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.buy-sub { margin-top: 2px; font-size: var(--fs-small); line-height: 1.45; color: var(--text-secondary); }
+.buy-sub b { color: var(--text-primary); font-weight: 600; }
+.buy-price {
+  min-width: 56px;
+  text-align: right;
+  font-size: var(--fs-body);
+  font-weight: 600;
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+}
+.buy-where { display: flex; flex-direction: column; align-items: flex-end; gap: 1px; flex-shrink: 0; }
+.buy-store { font-size: var(--fs-small); color: var(--text-muted); white-space: nowrap; }
+.buy-file {
+  max-width: 40%;
+  font-size: var(--fs-small);
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.buy-more { padding: var(--space-sm); font-size: var(--fs-small); color: var(--text-muted); }
+.buy-empty { padding: var(--space-2xl) var(--space-lg); }
+.buy-empty .empty-state-icon svg { width: 22px; height: 22px; }
+
+/* A tickable row: tick, cover, title/artist, a flag when it needs a look,
+   price; "Details" (the chevron) opens the store / quality / match line. */
+.buy-row--pick { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; }
+.buy-row-main {
+  display: grid;
+  grid-template-columns: 22px 44px minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: var(--space-md);
+  min-width: 0;
+  padding: 10px 8px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.buy-row-main:hover { background: var(--bg-surface-hover); }
+.buy-row-main:focus-visible { outline-offset: -2px; }
+.buy-row-main:not(:has(.buy-pill)) { grid-template-columns: 22px 44px minmax(0, 1fr) auto; }
+.buy-cbx {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  border: 2px solid var(--border-control);
+  color: transparent;
+  transition: background 0.12s var(--ease-out), border-color 0.12s var(--ease-out);
+}
+.buy-cbx svg { width: 14px; height: 14px; }
+.buy-row.sel .buy-cbx { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+.buy-row--pick:not(.sel) .buy-price { color: var(--text-muted); }
+.buy-row-expand { width: 32px; height: 32px; margin: 0 2px 0 4px; }
+.buy-row-expand svg { width: 16px; height: 16px; transition: transform 0.15s var(--ease-out); }
+.buy-row.is-open .buy-row-expand svg { transform: rotate(180deg); }
+.buy-row-more {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 0 8px 14px calc(8px + 22px + 44px + 2 * var(--space-md));
+  font-size: var(--fs-small);
+  color: var(--text-secondary);
+}
+.buy-row-more p b { color: var(--text-primary); font-weight: 600; }
+.buy-row-facts { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; }
+.buy-row-open { margin-left: -12px; }
+
+/* Upgrades → Free downloads. A row's source line ("SoundCloud · Free download
+   via hypeddit.com") wraps under the title; a downloaded or email-only row
+   keeps its layout but can't be ticked. */
+.upg-free-via { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; white-space: normal; }
+.upg-free-via .btn-link { font-size: inherit; }
+.buy-price--free { color: var(--success); }
+/* A Bandcamp-only track among tickable rows: no tick or cover, so line its
+   text and price up with theirs. */
+.buy-row--info.upg-bandcamp-row { padding-left: calc(8px + 22px + 44px + 2 * var(--space-md)); }
+.upg-bandcamp-row .buy-price { margin-right: 38px; }
+.buy-row--static .buy-row-main { cursor: default; }
+.buy-row--static .buy-row-main:hover { background: none; }
+.buy-row--static .buy-cbx { visibility: hidden; }
+.upg-free-actions {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+  margin-top: var(--space-md);
+  padding-top: var(--space-md);
+  border-top: 1px solid var(--border-subtle);
+}
+.upg-free-actions .card-actions { margin-top: 0; }
+.upg-free-progress .buy-meter { margin-top: var(--space-sm); }
+.upg-free-count { margin-top: 4px; font-size: var(--fs-small); color: var(--text-muted); font-variant-numeric: tabular-nums; }
+/* A yes/no with a sentence of detail under it (same shape as the Claude page's). */
+.upg-check { display: flex; align-items: flex-start; gap: var(--space-sm); cursor: pointer; }
+.upg-check input { margin-top: 3px; flex-shrink: 0; }
+.upg-check > span { display: flex; flex-direction: column; gap: 2px; }
+.upg-check strong { color: var(--text-primary); font-weight: 600; }
+.upg-check > span > span { color: var(--text-muted); font-size: var(--fs-small); line-height: var(--lh-normal); }
+
+/* An informational row (maybe / owned / not for sale). */
+.buy-row--info { display: flex; align-items: center; gap: var(--space-md); padding: 10px 8px; }
+.buy-row--info .buy-trk { flex: 1; }
+.buy-row--info .buy-a,
+.buy-row--info .buy-t { white-space: normal; }
+
+/* ---- Sticky buy bar ---- */
+.buy-bar {
+  position: sticky;
+  /* .content has a bottom padding the sticky edge would otherwise stop above,
+     leaving rows showing underneath; sit on the window's edge instead. */
+  bottom: calc(-1 * var(--space-4xl));
+  z-index: 20;
+  margin-top: var(--space-lg);
+  padding: var(--space-sm) 0 var(--space-lg);
+  background: var(--bg-base);
+  box-shadow: 0 -12px 16px -8px var(--bg-base);
+}
+.buy-bar-inner {
+  display: flex;
+  align-items: center;
+  gap: var(--space-lg);
+  padding: 14px 16px 14px 20px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-accent);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+}
+.buy-bar-text { flex: 1; min-width: 0; display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px var(--space-md); }
+.buy-bar-count { font-size: var(--fs-h3); font-weight: 700; color: var(--text-primary); }
+.buy-bar-split { font-size: var(--fs-body); color: var(--text-secondary); font-variant-numeric: tabular-nums; }
+.buy-bar-split > span:not(:empty) + span:not(:empty)::before { content: ', '; }
+.buy-bar-inner { flex-wrap: wrap; row-gap: 6px; }
+.buy-bar-note { flex-basis: 100%; order: 3; font-size: var(--fs-small); color: var(--text-muted); }
+.buy-bar-actions .btn-secondary,
+.buy-bar-actions .btn-sm { min-height: var(--control-h); }
+.buy-bar-actions { display: flex; align-items: center; gap: var(--space-sm); flex-shrink: 0; }
+.buy-bar-actions svg { width: 16px; height: 16px; }
+
+/* ===================================================================
+   Cart drawer
+   =================================================================== */
+
+.buy-drawer-scrim { position: fixed; inset: var(--topbar-height) 0 0 0; z-index: 90; background: var(--overlay-dim); animation: fadeIn 0.18s var(--ease-out); }
+.buy-drawer {
+  position: fixed;
+  top: var(--topbar-height);
+  right: 0;
+  bottom: 0;
+  z-index: 91;
+  width: min(480px, 92vw);
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-elevated);
+  border-left: 1px solid var(--border-default);
+  box-shadow: var(--shadow-lg);
+  animation: buy-drawer-in 0.24s var(--ease-out);
+}
+html.store-panel-open .buy-drawer { right: var(--store-panel-width, 0px); }
+@keyframes buy-drawer-in { from { transform: translateX(100%); } to { transform: translateX(0); } }
+@media (prefers-reduced-motion: reduce) {
+  .buy-drawer, .buy-drawer-scrim { animation: none; }
+}
+.buy-drawer-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-md);
+  padding: var(--space-xl);
+  border-bottom: 1px solid var(--border-subtle);
+}
+.buy-drawer-head h3 { font-size: var(--fs-h2); font-weight: 700; }
+.buy-drawer-head .btn-icon svg { width: 18px; height: 18px; }
+.buy-drawer-body { flex: 1; min-height: 0; overflow-y: auto; padding: var(--space-xl); }
+.buy-cart { flex-direction: column; gap: var(--space-lg); }
+.buy-cart-store { padding: var(--space-lg); background: var(--bg-surface); border: 1px solid var(--border-subtle); border-radius: var(--radius-lg); }
+.buy-cart-store-head { display: flex; align-items: baseline; justify-content: space-between; gap: var(--space-md); margin-bottom: var(--space-md); }
+.buy-cart-store-head h4 { display: flex; align-items: center; gap: var(--space-sm); font-size: var(--fs-h3); font-weight: 600; }
+.buy-cart-store-meta { font-size: var(--fs-small); color: var(--text-secondary); font-variant-numeric: tabular-nums; }
+.buy-cart-store-meta strong { color: var(--text-primary); font-size: var(--fs-body); }
+.buy-store-dot { width: 10px; height: 10px; border-radius: 3px; flex-shrink: 0; }
+.buy-store-dot--qobuz { background: var(--brand-qobuz); }
+.buy-store-dot--beatport { background: var(--brand-beatport); }
+.buy-cart-lines { display: flex; flex-direction: column; max-height: 260px; overflow-y: auto; margin: 0 calc(-1 * var(--space-sm)); }
+.buy-cart-line { display: grid; grid-template-columns: 36px minmax(0, 1fr) auto; align-items: center; gap: var(--space-md); padding: 6px var(--space-sm); }
+.buy-cart-line + .buy-cart-line { border-top: 1px solid var(--border-subtle); }
+.buy-cart-line-art { width: 36px; height: 36px; border-radius: var(--radius-xs); object-fit: cover; background: var(--bg-raised); }
+.buy-cart-line-art.buy-art--placeholder svg { width: 16px; height: 16px; }
+.buy-cart-line-text { display: flex; flex-direction: column; min-width: 0; }
+.buy-cart-line-title { font-size: var(--fs-body); font-weight: 600; color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.buy-cart-line-artist { font-size: var(--fs-small); color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.buy-cart-line-price { font-size: var(--fs-small); font-weight: 600; color: var(--text-primary); font-variant-numeric: tabular-nums; }
+.buy-cart-actions { display: flex; flex-wrap: wrap; gap: var(--space-sm); margin-top: var(--space-lg); }
+.buy-cart-note { margin-top: var(--space-sm); font-size: var(--fs-small); color: var(--text-muted); }
+.buy-cart-download {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: var(--space-md);
+  padding: var(--space-lg);
+  border: 1px dashed var(--border-default);
+  border-radius: var(--radius-lg);
+}
+.buy-cart-download strong { display: block; font-size: var(--fs-body); color: var(--text-primary); }
+.buy-cart-download p { font-size: var(--fs-small); color: var(--text-secondary); }
+
+/* ===================================================================
+   Store panel (#store-panel) — the docked store cart
+   =================================================================== */
+
+.store-panel-header { height: 48px; }
+.store-panel-btn { width: 32px; height: 32px; }
+.store-panel-btn svg { width: 18px; height: 18px; }
+.store-panel-title { font-size: var(--fs-body); }
+.store-panel-zoom-level { font-size: var(--fs-micro); }
+
+/* ===================================================================
+   Upgrade track quality (#page-upgrade) — four step cards
+   =================================================================== */
+
+.upg-step .step-card-head { margin-bottom: 0; }
+.upg-step.is-current .step-card-head,
+.upg-step .upg-step-body:not([style*="none"]) { margin-bottom: 0; }
+.upg-step-body { margin-top: var(--space-xl); }
+.upg-step.is-done .step-card-head .card-desc { color: var(--text-primary); }
+.upg-step.is-locked .upg-step-open { display: none; }
+.upg-step.is-current { border-color: var(--border-default); }
+.upg-step svg:not(.buy-spinner):not(.callout-icon):not(.buy-kind-icon) { width: 16px; height: 16px; }
+
+.upg-picker select { flex: 1; min-width: 0; }
+.upg-picker .btn-secondary { flex-shrink: 0; }
+.upg-progress { margin-top: var(--space-xl); }
+
+/* Step 2's own action row (selection + Add to carts) */
+.upg-buy-row { align-items: center; }
+.upg-buy-text { margin-right: auto; display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px var(--space-md); min-width: 0; }
+.upg-buy-text strong { font-size: var(--fs-h3); font-weight: 700; color: var(--text-primary); }
+.upg-step .buy-group { padding: 0; border: 0; background: none; margin-bottom: var(--space-md); }
+.upg-step .buy-quiet-list { margin-bottom: var(--space-sm); }
+.upg-step .buy-list.upg-scroll { max-height: min(56vh, 560px); overflow-y: auto; }
+.upg-from {
+  display: inline-block;
+  padding: 0 6px;
+  border-radius: var(--radius-xs);
+  background: var(--bg-raised);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-secondary);
+  font-family: var(--font-sans);
+  font-size: var(--fs-micro);
+  font-weight: 600;
+  line-height: 1.6;
+  letter-spacing: 0;
+  text-transform: none;
+}
+.upg-arrow { color: var(--text-muted); padding: 0 4px; }
+.upg-to { color: var(--success); font-weight: 600; }
+
+/* Step 3 */
+.upg-lead { font-size: var(--fs-body); color: var(--text-primary); margin-bottom: var(--space-lg); }
+.upg-substeps { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--space-lg); counter-reset: upg; }
+.upg-substeps > li {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-left: 36px;
+  counter-increment: upg;
+}
+.upg-substeps > li::before {
+  content: counter(upg, lower-alpha);
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--bg-raised);
+  border: 1px solid var(--border-default);
+  color: var(--text-secondary);
+  font-size: var(--fs-micro);
+  font-weight: 700;
+}
+.upg-substeps strong { font-size: var(--fs-body); color: var(--text-primary); }
+.upg-substeps span { font-size: var(--fs-small); color: var(--text-secondary); }
+.upg-substep-actions { display: flex; flex-wrap: wrap; gap: var(--space-sm); margin-top: var(--space-sm); }
+#upgrade-download-result { margin-top: var(--space-lg); }
+
+/* Step 4: preflight, files, plan, result */
+.upg-swap-section + .upg-swap-section { margin-top: var(--space-xl); }
+.upg-swap-head { display: flex; align-items: baseline; justify-content: space-between; gap: var(--space-md); margin-bottom: var(--space-sm); }
+.upg-swap-head h4 { font-size: var(--fs-body); font-weight: 600; color: var(--text-primary); }
+.upg-swap-head span { font-size: var(--fs-small); color: var(--text-muted); }
+.upg-path { font-size: var(--fs-small); color: var(--text-secondary); overflow-wrap: anywhere; }
+.upg-path b { color: var(--text-primary); font-weight: 600; }
+
+.upg-file-row,
+.upg-plan-row,
+.upg-result-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-xs) var(--space-md);
+  padding: 12px 4px;
+}
+.upg-file-row + .upg-file-row,
+.upg-plan-row + .upg-plan-row,
+.upg-result-row + .upg-result-row { border-top: 1px solid var(--border-subtle); }
+.upg-file-actions { display: flex; align-items: center; gap: 4px; }
+.upg-row-lines { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.upg-row-line { font-size: var(--fs-small); color: var(--text-secondary); line-height: 1.45; overflow-wrap: anywhere; }
+.upg-row-line b { color: var(--text-primary); font-weight: 600; }
+.upg-row-line--warn { color: var(--warning); }
+.upg-row-line--muted { color: var(--text-muted); }
+.upg-plan-row.is-skip .buy-t { color: var(--text-secondary); }
+.upg-plan-pill { align-self: start; }
+.upg-swap-progress { padding: var(--space-lg) 0; }
+.upg-actions-split { justify-content: space-between; }
+
+/* ===================================================================
+   Narrow windows (~1100 × 720 and below)
+   =================================================================== */
+
+@media (max-width: 1240px) {
+  .buy-row-main,
+  .buy-row-main:not(:has(.buy-pill)) { grid-template-columns: 22px 40px minmax(0, 1fr) auto; grid-template-areas: "cbx art trk price" "cbx art pill price"; row-gap: 4px; }
+  .buy-row-main > .buy-cbx { grid-area: cbx; }
+  .buy-row-main > .buy-art { grid-area: art; width: 40px; height: 40px; }
+  .buy-row-main > .buy-trk { grid-area: trk; }
+  .buy-row-main > .buy-pill { grid-area: pill; justify-self: start; }
+  .buy-row-main > .buy-price { grid-area: price; }
+  .buy-row-main:not(:has(.buy-pill)) { grid-template-areas: "cbx art trk price"; }
+  .buy-row-more { padding-left: calc(8px + 22px + 40px + 2 * var(--space-md)); }
+  .buy-bar-note { display: none; }
+  .buy-saved-row { grid-template-columns: 28px 44px minmax(0, 1fr); }
+  .buy-saved-art { width: 44px; height: 44px; }
+  .buy-saved-actions { grid-column: 3; justify-self: start; margin-left: -6px; }
+}
+@media (max-width: 900px) {
+  .buy-add-row { flex-direction: column; }
+  .buy-add-row .btn-primary { width: 100%; }
+  .buy-bar-inner { flex-wrap: wrap; }
+  .buy-bar-actions { width: 100%; justify-content: flex-end; }
+}
+
+/* ===================================================================
+   Character: the grooves motif (foundation .art-hero / .art-grooves)
+   =================================================================== */
+
+.buy-cart-hero { padding: var(--space-xl) var(--space-2xl); }
+/* Keep the hero text clear of the art: a shorter waveform, further right. */
+.buy-cart-hero.art-hero,
+.upg-result-hero.art-hero {
+  background:
+    url('./art/record.svg') right -96px center / 260px 260px no-repeat,
+    url('./art/waveform.svg') right 150px center / 220px 56px no-repeat,
+    linear-gradient(135deg, var(--bg-raised), var(--bg-surface) 65%);
+}
+.buy-cart-hero .art-hero-content,
+.upg-result-hero .art-hero-content { max-width: calc(100% - 390px); min-width: 280px; }
+@media (max-width: 1240px) {
+  .buy-cart-hero.art-hero,
+  .upg-result-hero.art-hero { background: url('./art/record.svg') right -150px center / 240px 240px no-repeat, linear-gradient(135deg, var(--bg-raised), var(--bg-surface) 65%); }
+  .buy-cart-hero .art-hero-content,
+  .upg-result-hero .art-hero-content { max-width: calc(100% - 110px); }
+}
+.buy-cart-hero h3 { font-size: var(--fs-h2); font-weight: 700; color: var(--text-primary); margin-bottom: 4px; }
+.buy-cart-hero p { font-size: var(--fs-body); color: var(--text-secondary); line-height: var(--lh-normal); margin-bottom: var(--space-lg); }
+.upg-result-hero {
+  padding: var(--space-xl) var(--space-2xl);
+  margin-bottom: var(--space-lg);
+  border: 1px solid var(--border-accent);
+  border-radius: var(--radius-lg);
+}
+.upg-result-hero h3 { font-size: var(--fs-h2); font-weight: 700; color: var(--text-primary); margin-bottom: 4px; }
+.upg-result-hero p { font-size: var(--fs-body); color: var(--text-secondary); line-height: var(--lh-normal); }

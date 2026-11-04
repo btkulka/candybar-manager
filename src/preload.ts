@@ -20,6 +20,7 @@ import type {
   ArchiveResult,
   JobInfo,
   JobProgress,
+  ClaudeStatus,
   StoreMatch,
   StoreCartProgress,
   StoreCartResult,
@@ -202,6 +203,18 @@ contextBridge.exposeInMainWorld('candybar', {
   // filter on progress.jobId / jobType.
   onJobProgress: (callback: (progress: JobProgress) => void): (() => void) =>
     subscribe('job-progress', callback),
+  // Wait for a job started with jobEnqueue (enqueue first to hold its id).
+  jobWait: (jobId: string): Promise<{ success: boolean; result?: unknown; error?: string; cancelled?: boolean }> =>
+    ipcRenderer.invoke('job-wait', { jobId }),
+  // Log lines from every job; filter on entry.jobId.
+  onJobLog: (callback: (entry: { jobId: string; text: string; stream: 'stdout' | 'stderr' | 'status' }) => void): (() => void) =>
+    subscribe('job-log', callback),
+
+  // Claude Code: jobs run on the signed-in Claude subscription
+  claudeStatus: (): Promise<ClaudeStatus> =>
+    ipcRenderer.invoke('claude-status'),
+  claudeOpenLogin: (): Promise<{ opened: boolean; command: string }> =>
+    ipcRenderer.invoke('claude-open-login'),
 
   // Ignored tracks
   ignoreTrack: (key: string, artist: string, title: string): Promise<{ success: boolean }> =>
@@ -243,6 +256,16 @@ contextBridge.exposeInMainWorld('candybar', {
   onLibrarySourcingPlaylistInfo: (callback: (info: import('./types').SourcePlaylistInfo) => void): (() => void) =>
     subscribe('library-sourcing:playlist-info', callback),
 
+  // Saved playlists ("Your playlists" on Find and buy), kept in candybar.db
+  savedSourcesList: (): Promise<{ success: boolean; sources?: import('./types').SavedSource[]; error?: string }> =>
+    ipcRenderer.invoke('saved-sources:list'),
+  savedSourcesSave: (input: import('./types').SavedSourceInput, opts?: { keepExisting?: boolean }): Promise<{ success: boolean; source?: import('./types').SavedSource; error?: string }> =>
+    ipcRenderer.invoke('saved-sources:save', input, opts),
+  savedSourcesUpdate: (id: number, patch: { name?: string | null }): Promise<{ success: boolean; source?: import('./types').SavedSource; error?: string }> =>
+    ipcRenderer.invoke('saved-sources:update', { id, ...patch }),
+  savedSourcesRemove: (id: number): Promise<{ success: boolean; error?: string }> =>
+    ipcRenderer.invoke('saved-sources:remove', { id }),
+
   // Lossless upgrades (Rekordbox playlist → lossless copies of its lossy tracks)
   upgradeListPlaylists: (): Promise<{ success: boolean; playlists?: import('./types').RekordboxPlaylistSummary[]; error?: string }> =>
     ipcRenderer.invoke('lossless-upgrade:list-playlists'),
@@ -250,6 +273,25 @@ contextBridge.exposeInMainWorld('candybar', {
     ipcRenderer.invoke('lossless-upgrade:run', { playlistId }),
   onUpgradeProgress: (callback: (p: import('./types').LosslessUpgradeProgress) => void): (() => void) =>
     subscribe('lossless-upgrade:progress', callback),
+  // Free downloads for the last check's rows (SoundCloud, then Bandcamp). Main
+  // keeps the download links; this only names the rows. Progress comes on
+  // onUpgradeProgress with phase 'fetching'.
+  upgradeFetchFree: (rbIds: string[], opts: { accountActions: boolean }): Promise<{ success: boolean; outcomes?: Record<string, import('./lib/freeSources').FreeUpgradeOutcome>; error?: string }> =>
+    ipcRenderer.invoke('lossless-upgrade:fetch-free', { rbIds, accountActions: opts.accountActions }),
+  upgradeFetchFreeStop: (): Promise<void> => ipcRenderer.invoke('lossless-upgrade:fetch-free-stop'),
+
+  // Lossless swap: put a downloaded lossless file in place of a Rekordbox
+  // entry's file, keeping the entry (cues, Date Added, play count, playlists).
+  // Plan is read-only; apply runs main's own cached plan for those ids (it
+  // never takes paths from here) and needs Rekordbox closed.
+  upgradeSwapPreflight: (): Promise<import('./types').UpgradeSwapPreflight> =>
+    ipcRenderer.invoke('upgrade-swap:preflight'),
+  upgradeSwapPlan: (inputs: import('./types').UpgradeSwapInput[]): Promise<{ success: boolean; items?: import('./types').UpgradeSwapPlanItem[]; error?: string }> =>
+    ipcRenderer.invoke('upgrade-swap:plan', { inputs }),
+  upgradeSwapApply: (rbIds: string[]): Promise<{ success: boolean; result?: import('./types').UpgradeSwapResult; error?: string }> =>
+    ipcRenderer.invoke('upgrade-swap:apply', { rbIds }),
+  onUpgradeSwapProgress: (callback: (p: import('./types').UpgradeSwapProgress) => void): (() => void) =>
+    subscribe('upgrade-swap:progress', callback),
 
   // Qobuz + Beatport search (no cart add here — see storeCartAdd)
   qobuzCartSearch: (tracks: Array<{ key: string; artist: string; title: string; album?: string; duration?: number }>) =>
@@ -297,7 +339,9 @@ contextBridge.exposeInMainWorld('candybar', {
   storeOpenCart: (store: 'qobuz' | 'beatport'): Promise<{ success: boolean }> =>
     ipcRenderer.invoke('store-open-cart', { store }),
   // `skipped` are tracks you deleted earlier, left out on purpose (deleted stays deleted).
-  storeDownloadPurchases: (matches: StoreMatch[]): Promise<{ success: boolean; downloaded?: number; failed?: Array<{ artist: string; title: string; error: string }>; skipped?: Array<{ trackId: string; artist: string; title: string; reason: string }>; destDir?: string; error?: string }> =>
+  // `files` maps each downloaded match's input key (`rb:<id>` on Lossless
+  // Upgrades) to the file it became — what upgradeSwapPlan takes.
+  storeDownloadPurchases: (matches: StoreMatch[]): Promise<{ success: boolean; downloaded?: number; files?: Array<{ key: string; path: string }>; failed?: Array<{ artist: string; title: string; error: string }>; skipped?: Array<{ trackId: string; artist: string; title: string; reason: string }>; destDir?: string; error?: string }> =>
     ipcRenderer.invoke('store-download-purchases', { matches }),
   onStoreDownloadProgress: (callback: (payload: { current: number; total: number; currentTrack: string; phase: string; message: string }) => void): (() => void) =>
     subscribe('store-download-progress', callback),

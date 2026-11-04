@@ -1,5 +1,5 @@
 // ============================================================
-// Album Art Fix Flow — full-screen overlay launched from Browse.
+// Add missing cover art — full-screen overlay launched from the Library.
 // Runs through a queue of tracks missing album art, fetching
 // Spotify/SoundCloud suggestions for each and applying on confirm.
 // ============================================================
@@ -33,6 +33,11 @@ interface Session {
 }
 
 let session: Session | null = null;
+
+/** How sure the match is, in words (the % is in the tooltip). */
+function matchWords(confidence: number): string {
+  return confidence >= 80 ? 'Close match' : confidence >= 50 ? 'Possible match' : 'Unlikely match';
+}
 
 // DOM refs, resolved on first open.
 let overlay: HTMLElement | null = null;
@@ -129,13 +134,13 @@ function trapFocus(e: KeyboardEvent): void {
 
 export function openAlbumArtFix(opts: OpenAlbumArtFixOptions): void {
   if (!resolveDom() || !overlay) {
-    showToast('error', 'Album Art Fix', 'Overlay markup missing.');
+    showToast('error', 'Couldn\u2019t open cover art', 'Part of the window is missing. Restart Track Lab and try again.');
     return;
   }
   wireEvents();
 
   if (opts.tracks.length === 0) {
-    showToast('info', 'Album Art Fix', 'No tracks are missing album art.');
+    showToast('info', 'Every track has cover art', 'None of the tracks shown are missing a cover.');
     return;
   }
 
@@ -181,12 +186,14 @@ function renderTrack(): void {
 
   if (bodyEl) bodyEl.hidden = false;
   if (completeEl) completeEl.hidden = true;
+  const footer = overlay?.querySelector<HTMLElement>('.aaf-footer');
+  if (footer) footer.hidden = false;
 
   const track = session.tracks[session.index];
-  if (counterEl) counterEl.textContent = `${pos} of ${total}`;
+  if (counterEl) counterEl.textContent = `Track ${pos.toLocaleString()} of ${total.toLocaleString()}`;
   if (progressFill) progressFill.style.width = `${Math.round((session.index / total) * 100)}%`;
   if (titleEl) titleEl.textContent = track.title || track.fileName;
-  if (artistEl) artistEl.textContent = track.artist || 'Unknown Artist';
+  if (artistEl) artistEl.textContent = track.artist || 'Unknown artist';
   if (metaEl) {
     const parts: string[] = [];
     if (track.album) parts.push(track.album);
@@ -196,13 +203,13 @@ function renderTrack(): void {
   }
 
   if (backBtn) backBtn.disabled = session.index === 0;
-  if (applyBtn) { applyBtn.disabled = true; applyBtn.textContent = 'Apply Album Art'; }
+  if (applyBtn) { applyBtn.disabled = true; applyBtn.textContent = 'Use this cover'; }
   if (skipBtn) skipBtn.disabled = false;
 
   session.suggestions = [];
   session.suggestionIndex = 0;
-  if (statusEl) statusEl.textContent = 'Searching…';
-  if (previewEl) previewEl.innerHTML = `<div class="aaf-loading">Searching…</div>`;
+  if (statusEl) statusEl.textContent = 'Looking online\u2026';
+  if (previewEl) previewEl.innerHTML = `<div class="aaf-loading"><span class="aaf-spinner" aria-hidden="true"></span>Looking for covers on Spotify and SoundCloud\u2026</div>`;
   if (gridEl) gridEl.innerHTML = '';
   if (suggestionMetaEl) suggestionMetaEl.innerHTML = '';
   if (prevBtn) prevBtn.disabled = true;
@@ -215,11 +222,18 @@ function renderComplete(): void {
   if (!session) return;
   if (bodyEl) bodyEl.hidden = true;
   if (completeEl) completeEl.hidden = false;
+  // Nothing left to skip or save: the finished panel's Done is the only way on.
+  const footer = overlay?.querySelector<HTMLElement>('.aaf-footer');
+  if (footer) footer.hidden = true;
+  doneBtn?.focus();
   if (progressFill) progressFill.style.width = '100%';
-  if (counterEl) counterEl.textContent = `${session.tracks.length} of ${session.tracks.length}`;
+  const n = session.tracks.length;
+  if (counterEl) counterEl.textContent = `${n.toLocaleString()} of ${n.toLocaleString()} done`;
   if (completeText) {
-    completeText.textContent =
-      `Fixed ${session.fixedCount} of ${session.tracks.length} track${session.tracks.length === 1 ? '' : 's'}.`;
+    const fixed = session.fixedCount;
+    completeText.textContent = fixed === 0
+      ? `You went through ${n.toLocaleString()} track${n === 1 ? '' : 's'} without adding a cover. They\u2019re still listed under No cover art.`
+      : `All done! Added cover art to ${fixed.toLocaleString()} of ${n.toLocaleString()} track${n === 1 ? '' : 's'}.`;
   }
 }
 
@@ -260,30 +274,25 @@ async function loadSuggestions(track: LibraryHealthTrack): Promise<void> {
 
     session.suggestions = [...spotify, ...soundcloud].sort((a, b) => b.confidence - a.confidence);
 
-    const errorSources = result.errors.map((e) => e.source).join(', ');
+    const sourceName = (src: string) => src === 'spotify' ? 'Spotify' : src === 'soundcloud' ? 'SoundCloud' : src;
+    const errorSources = result.errors.map((e) => sourceName(e.source)).join(' and ');
+    const n = session.suggestions.length;
     if (statusEl) {
-      if (session.suggestions.length === 0 && errorSources) {
-        statusEl.textContent = `No results (${errorSources} unavailable)`;
-      } else if (session.suggestions.length === 0) {
-        statusEl.textContent = 'No results found';
-      } else if (errorSources) {
-        statusEl.textContent = `${session.suggestions.length} results (${errorSources} unavailable)`;
-      } else {
-        statusEl.textContent = `${session.suggestions.length} results`;
-      }
+      const found = n === 0 ? 'No covers found' : `${n} cover${n === 1 ? '' : 's'} found`;
+      statusEl.textContent = errorSources ? `${found}. ${errorSources} couldn\u2019t be reached.` : found;
     }
     renderSuggestion();
   } catch {
     if (!session || token !== session.searchToken) return;
-    if (statusEl) statusEl.textContent = 'Search failed';
-    if (previewEl) previewEl.innerHTML = `<div class="aaf-loading">Search failed</div>`;
+    if (statusEl) statusEl.textContent = 'Couldn\u2019t search online';
+    if (previewEl) previewEl.innerHTML = `<div class="aaf-placeholder"><strong>Couldn\u2019t search online</strong><span>Check your internet connection, then go back to this track. Or skip it for now.</span></div>`;
   }
 }
 
 function renderSuggestion(): void {
   if (!session) return;
   if (session.suggestions.length === 0) {
-    if (previewEl) previewEl.innerHTML = `<div class="aaf-placeholder">${icons.albumPlaceholder}</div>`;
+    if (previewEl) previewEl.innerHTML = `<div class="aaf-placeholder">${icons.albumPlaceholder}<strong>No cover found for this one</strong><span>Skip it for now. You can add a cover yourself later with Edit track info.</span></div>`;
     if (suggestionMetaEl) suggestionMetaEl.innerHTML = '';
     if (applyBtn) applyBtn.disabled = true;
     if (prevBtn) prevBtn.disabled = true;
@@ -298,7 +307,7 @@ function renderSuggestion(): void {
     previewEl.innerHTML = '';
     const img = document.createElement('img');
     img.src = suggestion.imageUrl;
-    img.alt = `${suggestion.title} album art`;
+    img.alt = `Cover of ${suggestion.title}`;
     previewEl.appendChild(img);
   }
 
@@ -306,7 +315,7 @@ function renderSuggestion(): void {
     suggestionMetaEl.innerHTML = `
       <div class="aaf-suggestion-title">${esc(suggestion.title)}</div>
       <div class="aaf-suggestion-artist">${esc(suggestion.artist)}</div>
-      <div class="aaf-suggestion-source">${suggestion.source === 'spotify' ? 'Spotify' : 'SoundCloud'} · ${suggestion.confidence}% match</div>
+      <div class="aaf-suggestion-source" data-tooltip="${esc(`How closely its title and artist match this track: ${suggestion.confidence}%.`)}">From ${suggestion.source === 'spotify' ? 'Spotify' : 'SoundCloud'} \u00b7 ${matchWords(suggestion.confidence)}</div>
     `;
   }
 
@@ -321,10 +330,12 @@ function renderSuggestion(): void {
       btn.type = 'button';
       btn.className = 'aaf-thumb';
       if (i === session!.suggestionIndex) btn.classList.add('selected');
-      btn.setAttribute('data-tooltip', `${s.source.toUpperCase()} ${s.confidence}%`);
+      btn.setAttribute('data-tooltip', `${s.title} \u2014 from ${s.source === 'spotify' ? 'Spotify' : 'SoundCloud'}, ${matchWords(s.confidence).toLowerCase()}`);
+      btn.setAttribute('aria-label', `Use the cover of ${s.title} by ${s.artist}`);
+      btn.setAttribute('aria-pressed', String(i === session!.suggestionIndex));
       const thumb = document.createElement('img');
       thumb.src = s.imageUrl;
-      thumb.alt = `${s.title} album art`;
+      thumb.alt = '';
       btn.appendChild(thumb);
       btn.addEventListener('click', () => {
         if (!session) return;
@@ -368,7 +379,7 @@ async function apply(): Promise<void> {
 
   const current = session;
   current.applying = true;
-  if (applyBtn) { applyBtn.disabled = true; applyBtn.textContent = 'Applying…'; }
+  if (applyBtn) { applyBtn.disabled = true; applyBtn.textContent = 'Saving\u2026'; }
   if (skipBtn) skipBtn.disabled = true;
   if (backBtn) backBtn.disabled = true;
 
@@ -382,7 +393,7 @@ async function apply(): Promise<void> {
     await updateTrackTagsWithRepair(params, track.title || track.fileName);
     current.fixedCount++;
     current.onTrackUpdated(track, params);
-    showToast('success', 'Art Applied', `Album art saved for ${track.title || track.fileName}`);
+    showToast('success', 'Cover saved', `${track.title || track.fileName} has cover art now.`);
     current.applying = false;
     // Closed mid-apply: the art is saved, but there's no queue to advance.
     if (session !== current) return;
@@ -390,9 +401,9 @@ async function apply(): Promise<void> {
     renderTrack();
   } catch (err) {
     current.applying = false;
-    showToast('error', 'Apply Failed', getErrorMessage(err));
+    showToast('error', 'Couldn\u2019t save the cover', getErrorMessage(err));
     if (session === current) {
-      if (applyBtn) { applyBtn.disabled = false; applyBtn.textContent = 'Apply Album Art'; }
+      if (applyBtn) { applyBtn.disabled = false; applyBtn.textContent = 'Use this cover'; }
       if (skipBtn) skipBtn.disabled = false;
       if (backBtn) backBtn.disabled = current.index === 0;
     }

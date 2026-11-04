@@ -1,5 +1,7 @@
 // Global music player (topbar)
 
+import { connectAudio, setVisualizerPlaying } from './visualizer';
+
 let audio: HTMLAudioElement | null = null;
 let animFrameId: number | null = null;
 
@@ -57,6 +59,7 @@ function updateProgress() {
 
 function setPlaying(playing: boolean) {
   playerEl.classList.toggle('playing', playing);
+  setVisualizerPlaying(playing);
 }
 
 function applyVolumeToAudio() {
@@ -127,11 +130,17 @@ export function playFile(filePath: string, displayName?: string) {
   const name = displayName || filePath.split('/').pop()?.replace(/\.[^.]+$/, '') || 'Unknown';
   titleEl.textContent = name;
   titleEl.title = name;
+  // Until something plays, the bar shows a one-line hint instead of dead controls.
+  playerEl.classList.add('has-track');
   playBtn.disabled = false;
 
   loadAlbumArt(filePath);
 
-  audio = new Audio(buildMediaUrl(filePath));
+  // Routed through the sound wave's analyser before the source is set, so
+  // the request goes out as CORS and the analyser can read it.
+  audio = new Audio();
+  connectAudio(audio);
+  audio.src = buildMediaUrl(filePath);
   applyVolumeToAudio();
 
   audio.addEventListener('loadedmetadata', () => {

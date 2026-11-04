@@ -79,6 +79,49 @@ describe('JobManager', () => {
     expect(sawSignal).toBe(true);
     expect(jm.getJob(jobId)?.status).toBe('completed');
   });
+
+  it('runs a job in another lane while the default slot is busy', async () => {
+    const jm = new JobManager(1);
+    jm.register(def('library-health', stuck()));
+    jm.register({ ...def('claude-track-tags', async () => 'tags'), lane: 'claude-track-tags' });
+    const scan = jm.enqueue('library-health', {}, 'root');
+    const tags = jm.enqueue('claude-track-tags', {}, 'root');
+    await expect(tags.promise).resolves.toBe('tags');
+    expect(jm.getJob(scan.jobId)?.status).toBe('running');
+    jm.cancel(scan.jobId);
+    await scan.promise.catch(() => {});
+  });
+
+  it('keeps one job at a time within a lane, in queue order', async () => {
+    const jm = new JobManager(1);
+    const order: string[] = [];
+    let release!: () => void;
+    jm.register({ ...def('claude-ask', (ctx) => new Promise((res) => {
+      order.push(String(ctx.params));
+      if (ctx.params === 'first') release = () => res('first');
+      else res(ctx.params);
+    })), lane: 'claude-ask' });
+    const first = jm.enqueue('claude-ask', 'first', 'root');
+    const second = jm.enqueue('claude-ask', 'second', 'root');
+    await vi.waitFor(() => expect(order).toEqual(['first'])); // run() starts on a microtask
+    expect(jm.getJob(second.jobId)?.status).toBe('queued');
+    release();
+    await expect(second.promise).resolves.toBe('second');
+    await first.promise;
+    expect(order).toEqual(['first', 'second']);
+  });
+
+  it('wait() hands back the outcome of a job enqueued earlier', async () => {
+    const jm = new JobManager(1);
+    jm.register(def('album-art-scan', async () => 'art'));
+    jm.register(def('catalog-export', async () => { throw new Error('disk full'); }));
+    const ok = jm.enqueue('album-art-scan', {}, 'root');
+    const bad = jm.enqueue('catalog-export', {}, 'root');
+    bad.promise.catch(() => {});
+    await expect(jm.wait(ok.jobId)).resolves.toBe('art');
+    await expect(jm.wait(bad.jobId)).rejects.toThrow('disk full');
+    expect(jm.wait('no-such-job')).toBeNull();
+  });
 });
 
 describe('SharedResultStore invalidation', () => {

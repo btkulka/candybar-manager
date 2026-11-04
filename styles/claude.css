@@ -1,0 +1,212 @@
+/* ===== Ask Claude page, Claude settings, and the Claude controls on other
+   screens (src/renderer/claude.ts, claudeReview.ts). Built from the
+   foundation components; only the conversation, progress log and verdict
+   lines are new here. ===== */
+
+/* Spinner used in Claude buttons and status lines */
+.claude-spinner {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  animation: claude-spin 0.9s linear infinite;
+}
+@keyframes claude-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  .claude-spinner { animation-duration: 2.4s; }
+}
+
+/* ---- Conversation ----
+     <div class="claude-thread">
+       <div class="claude-msg claude-msg--you"><span class="claude-msg-who">You</span><div class="claude-msg-body">…</div></div>
+       <div class="claude-msg claude-msg--claude"><span class="claude-msg-who">Claude</span><div class="claude-msg-body">…</div><span class="claude-msg-steps">Checked: …</span></div>
+     </div> */
+.claude-thread {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+  margin-bottom: var(--space-xl);
+  max-height: 60vh;
+  overflow-y: auto;
+  padding-right: var(--space-2xs);
+}
+.claude-msg {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  padding: var(--space-md) var(--space-lg);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-raised);
+  max-width: 88%;
+}
+.claude-msg--you {
+  align-self: flex-end;
+  background: var(--accent-muted);
+  border-color: var(--border-accent);
+}
+.claude-msg--claude { align-self: flex-start; }
+.claude-msg-who {
+  font-size: var(--fs-small);
+  font-weight: 600;
+  color: var(--text-muted);
+}
+.claude-msg-body {
+  color: var(--text-primary);
+  font-size: var(--fs-body);
+  line-height: var(--lh-normal);
+  overflow-wrap: anywhere;
+}
+.claude-msg-body p + p,
+.claude-msg-body p + ul,
+.claude-msg-body p + ol,
+.claude-msg-body ul + p,
+.claude-msg-body ol + p { margin-top: var(--space-sm); }
+.claude-msg-body ul,
+.claude-msg-body ol { padding-left: 1.4em; display: flex; flex-direction: column; gap: var(--space-2xs); }
+.claude-msg-body code,
+.claude-settings-intro code,
+.claude-sc-list code,
+#claude-sc-result code,
+.settings-section[data-section="claude"] code {
+  font-family: var(--font-mono);
+  font-size: 0.92em;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-xs);
+  padding: 1px 5px;
+}
+.claude-msg-body a { color: var(--accent); }
+.claude-msg-steps,
+.claude-msg-status {
+  font-size: var(--fs-small);
+  color: var(--text-muted);
+}
+.claude-msg-status {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-sm);
+  color: var(--text-secondary);
+}
+.claude-msg-error { align-self: stretch; margin-bottom: 0; }
+
+.claude-ask textarea {
+  width: 100%;
+  min-height: 88px;
+  resize: vertical;
+  font: inherit;
+  line-height: var(--lh-normal);
+}
+
+/* ---- SoundCloud options and progress ---- */
+.claude-sc-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: var(--space-lg);
+}
+
+/* A checkbox with a bold line and a plain explanation under it */
+.claude-check {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-md);
+  cursor: pointer;
+}
+.claude-check input { margin-top: 3px; flex-shrink: 0; }
+.claude-check > span { display: flex; flex-direction: column; gap: 2px; }
+.claude-check strong { color: var(--text-primary); font-weight: 600; }
+.claude-check > span > span { color: var(--text-muted); font-size: var(--fs-small); line-height: var(--lh-normal); }
+
+.claude-progress {
+  margin-top: var(--space-xl);
+  padding: var(--space-md) var(--space-lg);
+  border-radius: var(--radius-md);
+  background: var(--bg-raised);
+  border: 1px solid var(--border-subtle);
+}
+.claude-progress .disclosure { margin: var(--space-md) 0 0; }
+.claude-progress-line {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  color: var(--text-secondary);
+  min-width: 0;
+}
+.claude-progress-line span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.claude-log {
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 240px;
+  overflow-y: auto;
+  margin: 0;
+}
+
+#claude-sc-result:not(:empty) { margin-top: var(--space-xl); }
+#claude-sc-result .callout { margin-bottom: var(--space-lg); }
+.claude-sc-list { margin-bottom: var(--space-lg); }
+.claude-sc-list h4 {
+  font-size: var(--fs-body);
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: var(--space-sm);
+}
+.claude-sc-list ul,
+.claude-sc-list ol {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  padding-left: 1.4em;
+  color: var(--text-secondary);
+}
+.claude-sc-list li > strong { display: block; color: var(--text-primary); font-weight: 600; }
+.claude-sc-list li > span { display: block; font-size: var(--fs-small); line-height: var(--lh-normal); }
+.claude-sc-action { color: var(--accent); }
+
+/* ---- Find & buy: "Check with Claude" and the verdict line on a row ---- */
+.claude-review-btn,
+.claude-tag-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+}
+.claude-review-btn svg,
+.claude-tag-btn svg { width: 16px; height: 16px; }
+.claude-verdict { display: block; font-size: var(--fs-small); }
+.claude-verdict--buy { color: var(--success); }
+.claude-verdict--skip { color: var(--info); }
+.claude-verdict--wrong { color: var(--danger); }
+.claude-verdict--flag { color: var(--warning); }
+
+/* ---- Track info editor: what Claude found ---- */
+/* Spans the drawer body whether it's a stack or a grid of art + fields */
+.claude-tag-note { margin-bottom: var(--space-lg); grid-column: 1 / -1; }
+.claude-tag-note p + p { margin-top: var(--space-xs); }
+.claude-tag-diffs {
+  list-style: none;
+  margin-top: var(--space-sm);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+}
+.claude-tag-diffs li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-md);
+}
+.claude-tag-was { color: var(--text-muted); }
+
+/* ---- Settings → Claude ---- */
+.claude-settings-intro { margin: 0 0 var(--space-lg); max-width: 64ch; }
+.claude-settings-meta {
+  display: block;
+  margin-top: var(--space-xs);
+  font-size: var(--fs-micro);
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+.settings-section[data-section="claude"] .fields { margin-top: var(--space-lg); }
+.settings-section[data-section="claude"] .input-row { display: flex; gap: var(--space-sm); }
+.settings-section[data-section="claude"] .input-row input { flex: 1; min-width: 0; }

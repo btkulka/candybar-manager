@@ -26,13 +26,15 @@ import {
   isStorePartition, isAllowedWebviewSrc, isAllowedGuestNavigation, isAllowedExternalUrl,
   isStoreCheckoutUrl, PLACE_ORDER_RE, ADVANCE_RE, scrapeItemCount, resyncRefusal,
 } from './lib/mainGuards';
-import { readConfig, writeConfig, AppConfig, DEFAULT_LIBRARY_ROOT, getDefaultArchivePath, getDefaultRestoreStageDir, setSecretsPath, getConfigWarnings } from './lib/config';
+import { readConfig, writeConfig, AppConfig, DEFAULT_LIBRARY_ROOT, getDefaultArchivePath, getDefaultRestoreStageDir, setSecretsPath, getConfigWarnings, resolveRekordboxBackupDir } from './lib/config';
 import { searchSpotify, testSpotifyConnection, SpotifySearchResult, getPlaylistTracks, getSpotifyTracksByIds } from './lib/spotify';
 import { fetchSoundCloudSet } from './lib/soundcloudSets';
 import { listRekordboxPlaylists, readRekordboxPlaylist } from './lib/rekordboxPlaylists';
 import {
   toUpgradeRow, spotifyIdToResolve, applySpotifyTrack, buildLosslessIndex, findLosslessCopy, needsStoreSearch
 } from './lib/losslessUpgrade';
+import { searchFreeSources, writeFetchList, readUpgradeOutcomes, runFreeFetch, type FreeFetchRow } from './lib/freeSources';
+import { preflightUpgradeSwap, planUpgradeSwap, applyUpgradeSwap } from './lib/rekordboxUpgradeSwap';
 import {
   searchSoundCloud,
   searchSoundCloudPublicTracks,
@@ -51,6 +53,7 @@ import {
   addToQobuzCart, addToBeatportCart,
   probeQobuzLoginForPartition, invalidateQobuzAuthCache,
   qobuzPartition, beatportPartition,
+  keepStoreSessionCookies, flushStoreCookies,
   LEGACY_ACCOUNT_ID,
 } from './lib/storePurchase';
 import { closeStoreBrowsers } from './lib/storeBrowser';
@@ -85,8 +88,10 @@ import { safeDelete, setTrashHandler } from './lib/safeDelete';
 import { listUsbVolumes } from './lib/usbHealthScan';
 import { normalizeForComparison, stringSimilarity } from './lib/stringUtils';
 import { initJobQueue, getJobManager } from './lib/jobQueue';
+import { getClaudeStatus, openClaudeLogin } from './lib/claude/claudeCode';
 import { AUTOPOPULATE_CONCURRENCY, AUDIO_EXTENSIONS } from './lib/constants';
 import { initDatabase, closeDatabase, ignoreTrack, unignoreTrack, getIgnoredTracks, getIgnoredTrackKeys, dismissDuplicate, getDismissedDuplicateKeys, makeDuplicatePairKey, dismissHealthIssue, undismissHealthIssue, getDismissedIssues, markTrackAutopopulated, getAutopopulatedPaths, recordDeletedTrack, updateDownloadedTrackPath, getDatabase } from './lib/db';
+import { listSavedSources, saveSavedSource, renameSavedSource, removeSavedSource } from './lib/db';
 import { parseRekordboxXml, findMissingFiles, importRekordboxToLibrary, type MissingFile, type RekordboxImportSummary } from './lib/rekordbox';
 import { checkForUpdate, oneClickBlocker, UPDATE_BRANCH } from './lib/updateCheck';
 
@@ -95,9 +100,18 @@ type ScriptStream = 'stdout' | 'stderr' | 'status';
 type LogFn = (text: string, stream?: ScriptStream) => void;
 
 // Register media:// scheme for audio preview (must be before app.whenReady)
+// corsEnabled + the Access-Control-Allow-Origin header added in the handler let
+// the player's sound wave read the audio through Web Audio; without them the
+// stream counts as cross-origin and the analyser only ever sees silence.
 protocol.registerSchemesAsPrivileged([
-  { scheme: 'media', privileges: { standard: true, stream: true, supportFetchAPI: true } }
+  { scheme: 'media', privileges: { standard: true, stream: true, supportFetchAPI: true, corsEnabled: true } }
 ]);
+
+function withCors(res: Response): Response {
+  const headers = new Headers(res.headers);
+  headers.set('Access-Control-Allow-Origin', '*');
+  return new Response(res.body, { status: res.status, statusText: res.statusText, headers });
+}
 
 const CONFIG_PATH = path.join(app.getPath('userData'), 'config.json');
 // `app.getAppPath()` returns the repo root in dev and the unpacked app dir
@@ -403,7 +417,17 @@ function applyPermissionPolicy(ses: Electron.Session): void {
   });
   ses.setPermissionCheckHandler((_wc, permission) => ALLOWED_PERMISSIONS.has(permission));
 }
-app.on('session-created', (ses) => applyPermissionPolicy(ses));
+/** A store partition's session, told apart by where it keeps its data
+ *  (`<userData>/Partitions/<name>`). The <webview>, the login windows and the
+ *  hidden store pages all reach these jars, so they're caught here as created. */
+function isStoreSession(ses: Electron.Session): boolean {
+  const dir = ses.storagePath;
+  return !!dir && path.basename(path.dirname(dir)) === 'Partitions' && isStorePartition(`persist:${path.basename(dir)}`);
+}
+app.on('session-created', (ses) => {
+  applyPermissionPolicy(ses);
+  if (isStoreSession(ses)) keepStoreSessionCookies(ses);
+});
 
 app.whenReady().then(async () => {
   const iconPath = resolveIconPath();
@@ -470,11 +494,11 @@ app.whenReady().then(async () => {
       }
       if (/\.aif[fc]?$/i.test(filePath)) {
         mainLog.info(`Media protocol: transcoding "${filePath}" to MP3`);
-        return await createMp3PreviewResponse(filePath, request.headers.get('range'));
+        return withCors(await createMp3PreviewResponse(filePath, request.headers.get('range')));
       }
       mainLog.info(`Media protocol: serving "${filePath}"`);
       const fileUrl = pathToFileURL(filePath).href;
-      return await net.fetch(fileUrl);
+      return withCors(await net.fetch(fileUrl));
     } catch (err) {
       mainLog.error(`Media protocol error for ${request.url}:`, err);
       return new Response('File not found', { status: 404 });
@@ -504,8 +528,20 @@ app.whenReady().then(async () => {
     await loadCache();
     mainLog.info('Cache loaded');
 
-    // Initialize job queue
-    initJobQueue();
+    // Initialize job queue. Claude jobs read the token, model and folders at
+    // run time, so a change saved in Settings applies to the next job.
+    initJobQueue({
+      appRoot: app.getAppPath(),
+      getSettings: async () => {
+        const config = await readConfig(CONFIG_PATH, CONFIG_DEFAULTS_PATH);
+        return {
+          oauthToken: config.claudeOauthToken ?? '',
+          model: config.claudeModel ?? '',
+          libraryRoot: config.libraryRoot || DEFAULT_LIBRARY_ROOT,
+          organizeSourceDir: config.organizeSourceDir ?? '',
+        };
+      },
+    });
     mainLog.info('Job queue initialized');
   } catch (error) {
     mainLog.error('Startup failed:', error);
@@ -582,6 +618,7 @@ app.on('will-quit', (event) => {
       mainLog.warn('Draining running work failed:', err);
     }
     closeDatabase();
+    await flushStoreCookies(); // store sign-ins: app.exit doesn't wait for Chromium's cookie batch
     try {
       await flushWriteJournal();
     } finally {
@@ -2600,6 +2637,56 @@ ipcMain.handle(
   }
 );
 
+// ---------- Saved playlists ("Your playlists" on Find and buy) ----------
+//
+// Each playlist, SoundCloud set or CSV that's checked is kept in candybar.db
+// with its last counts, so it can be checked again in one click. The renderer
+// saves after a successful library-sourcing:run (it owns the to-buy / maybe /
+// owned / not-for-sale split); list marks a CSV whose file has gone.
+ipcMain.handle('saved-sources:list', async () => {
+  try {
+    const sources = listSavedSources().map(s =>
+      s.kind === 'csv' ? { ...s, missing: !fs.existsSync(s.ref) } : s);
+    return { success: true, sources };
+  } catch (error) {
+    mainLog.error('IPC saved-sources:list failed:', error);
+    return { success: false, error: error instanceof Error ? error.message : 'Could not read your saved playlists' };
+  }
+});
+
+ipcMain.handle('saved-sources:save', async (_event, input: import('./types').SavedSourceInput, opts?: { keepExisting?: boolean }) => {
+  try {
+    if (!input || typeof input !== 'object') throw new Error('Nothing to save.');
+    const source = saveSavedSource(input, { keepExisting: opts?.keepExisting === true });
+    return { success: true, source: source.kind === 'csv' ? { ...source, missing: !fs.existsSync(source.ref) } : source };
+  } catch (error) {
+    mainLog.error('IPC saved-sources:save failed:', error);
+    return { success: false, error: error instanceof Error ? error.message : 'Could not save this playlist' };
+  }
+});
+
+ipcMain.handle('saved-sources:update', async (_event, { id, name }: { id: number; name?: string | null }) => {
+  try {
+    if (typeof id !== 'number') throw new Error('Which saved playlist?');
+    const source = renameSavedSource(id, typeof name === 'string' ? name : null);
+    if (!source) return { success: false, error: 'That playlist is no longer saved.' };
+    return { success: true, source: source.kind === 'csv' ? { ...source, missing: !fs.existsSync(source.ref) } : source };
+  } catch (error) {
+    mainLog.error('IPC saved-sources:update failed:', error);
+    return { success: false, error: error instanceof Error ? error.message : 'Could not rename this playlist' };
+  }
+});
+
+ipcMain.handle('saved-sources:remove', async (_event, { id }: { id: number }) => {
+  try {
+    if (typeof id !== 'number') throw new Error('Which saved playlist?');
+    return { success: removeSavedSource(id) };
+  } catch (error) {
+    mainLog.error('IPC saved-sources:remove failed:', error);
+    return { success: false, error: error instanceof Error ? error.message : 'Could not remove this playlist' };
+  }
+});
+
 // ---------- Lossless upgrades: Rekordbox playlist → lossless store copies ----------
 //
 // Reads a playlist from the live Rekordbox collection, finds the entries held
@@ -2667,7 +2754,28 @@ ipcMain.handle('lossless-upgrade:run', async (event, { playlistId }: { playlistI
       if (r.format === 'lossy' || r.format === 'streaming') r.losslessCopy = findLosslessCopy(r, index);
     }
 
-    const toSearch = rows.filter(needsStoreSearch);
+    // Ben's order: a SoundCloud free download first, then Bandcamp, and only
+    // then the stores. A free Bandcamp copy (no email) is full quality at the
+    // source, so its row skips the store search; a SoundCloud file may turn
+    // out compressed, so those rows keep a store match to fall back on.
+    let toSearch = rows.filter(needsStoreSearch);
+    if (toSearch.length > 0) {
+      send({ phase: 'free', current: 0, total: toSearch.length, message: '' });
+      try {
+        const free = await searchFreeSources(
+          toSearch.map(r => ({ key: `rb:${r.rbId}`, artist: r.artist, title: r.title, duration: r.duration })),
+          (current, total, label) => send({ phase: 'free', current, total, message: label })
+        );
+        for (const r of toSearch) r.free = free.found.get(`rb:${r.rbId}`);
+        toSearch = toSearch.filter(r => free.needStores.has(`rb:${r.rbId}`));
+        await saveFreeFetchRows(playlistId, free.fetchRows);
+      } catch (err) {
+        // The stores are still worth searching; the rows say why there's no free copy.
+        mainLog.warn('lossless-upgrade: free search failed:', err);
+        const message = `Couldn't search SoundCloud and Bandcamp (${err instanceof Error ? err.message : String(err)})`;
+        for (const r of toSearch) r.free = { soundcloud: null, bandcamp: null, errors: [message] };
+      }
+    }
     const byKey = new Map(toSearch.map(r => [`rb:${r.rbId}`, r]));
     if (toSearch.length > 0) {
       send({ phase: 'searching', current: 0, total: toSearch.length, message: 'Preparing store search…' });
@@ -2688,6 +2796,122 @@ ipcMain.handle('lossless-upgrade:run', async (event, { playlistId }: { playlistI
     return { success: false, error: error instanceof Error ? error.message : 'Lossless upgrade search failed' };
   }
 });
+
+// ---------- Free downloads for an upgrade check (SoundCloud, then Bandcamp) ----------
+//
+// The last check's download rows stay in main (and on disk, so a restart
+// keeps them): the renderer only names the Rekordbox entries, never a link.
+// bin/source-soundcloud-likes.mjs --tracks walks each entry's sources in
+// order until one lands a full-quality file; compressed files are deleted on
+// arrival. Each result comes back under its Rekordbox id for the swap step.
+const freeFetchRowsPath = () => path.join(app.getPath('userData'), 'upgrade-free-rows.json');
+let freeFetchRows: { playlistId: string; rows: FreeFetchRow[] } | null = null;
+let freeFetchAbort: AbortController | null = null;
+
+async function saveFreeFetchRows(playlistId: string, rows: FreeFetchRow[]): Promise<void> {
+  freeFetchRows = { playlistId, rows };
+  await fs.promises.writeFile(freeFetchRowsPath(), JSON.stringify(freeFetchRows)).catch(err =>
+    mainLog.warn('lossless-upgrade: could not save the free download list:', err));
+}
+
+async function loadFreeFetchRows(): Promise<FreeFetchRow[]> {
+  if (!freeFetchRows) {
+    try {
+      freeFetchRows = JSON.parse(await fs.promises.readFile(freeFetchRowsPath(), 'utf8'));
+    } catch {
+      return [];
+    }
+  }
+  return freeFetchRows?.rows ?? [];
+}
+
+ipcMain.handle('lossless-upgrade:fetch-free', async (event, { rbIds, accountActions }: { rbIds: string[]; accountActions?: boolean }) => trackOp('Getting free downloads', async () => {
+  const send = (message: string) => safeSend(event.sender, 'lossless-upgrade:progress', { phase: 'fetching', current: 0, total: 0, message });
+  try {
+    if (!Array.isArray(rbIds) || rbIds.length === 0) return { success: false, error: 'Tick at least one free download first.' };
+    if (freeFetchAbort) return { success: false, error: 'Free downloads are already running.' };
+    const keys = new Set(rbIds.map(id => `rb:${String(id)}`));
+    const rows = (await loadFreeFetchRows()).filter(r => keys.has(r.upgradeKey));
+    if (rows.length === 0) return { success: false, error: 'Check the playlist again, then get the free downloads.' };
+
+    const listPath = path.join(app.getPath('userData'), 'upgrade-free', `tracks-${Date.now()}.json`);
+    writeFetchList(listPath, `Upgrade: ${rbIds.length} track${rbIds.length === 1 ? '' : 's'}`, rows);
+    freeFetchAbort = new AbortController();
+    send('Starting the downloads…');
+    const sessionPath = await runFreeFetch({
+      appRoot: app.getAppPath(),
+      listPath,
+      accountActions: accountActions === true,
+      signal: freeFetchAbort.signal,
+      onLine: send,
+    });
+    const byKey = await readUpgradeOutcomes(sessionPath);
+    const outcomes: Record<string, import('./lib/freeSources').FreeUpgradeOutcome> = {};
+    for (const [key, o] of Object.entries(byKey)) {
+      if (keys.has(key)) outcomes[key.slice(3)] = o;
+    }
+    return { success: true, outcomes };
+  } catch (error) {
+    mainLog.error('IPC lossless-upgrade:fetch-free failed:', error);
+    return { success: false, error: error instanceof Error ? error.message : 'The free downloads stopped' };
+  } finally {
+    freeFetchAbort = null;
+  }
+}));
+
+ipcMain.handle('lossless-upgrade:fetch-free-stop', () => {
+  freeFetchAbort?.abort();
+});
+
+// Gate walks run in their own process group; don't leave one behind.
+app.on('will-quit', () => freeFetchAbort?.abort());
+
+// ---------- Lossless swap: a downloaded lossless file replaces the entry's file ----------
+//
+// The step after "Download purchases": the same Rekordbox entry (same row, so
+// cues, Date Added, play count and playlists stay) is pointed at the lossless
+// file. Plan is read-only; apply runs main's cached plan for the given ids,
+// never paths from the renderer. The work is in lib/rekordboxUpgradeSwap.ts.
+async function upgradeSwapDeps(sender: Electron.WebContents): Promise<import('./lib/rekordboxUpgradeSwap').SwapDeps> {
+  const config = await readConfig(CONFIG_PATH, CONFIG_DEFAULTS_PATH);
+  const libraryRoot = config.libraryRoot || DEFAULT_LIBRARY_ROOT;
+  return {
+    appRoot: app.getAppPath(),
+    libraryRoot,
+    archiveRoot: config.archivePath || getDefaultArchivePath(libraryRoot),
+    backupDir: resolveRekordboxBackupDir(config),
+    onProgress: (p) => safeSend(sender, 'upgrade-swap:progress', p),
+  };
+}
+
+ipcMain.handle('upgrade-swap:preflight', async (event): Promise<import('./types').UpgradeSwapPreflight> => {
+  const deps = await upgradeSwapDeps(event.sender);
+  return preflightUpgradeSwap(deps);
+});
+
+ipcMain.handle('upgrade-swap:plan', async (event, { inputs }: { inputs: import('./types').UpgradeSwapInput[] }) => trackOp('Checking lossless swaps', async () => {
+  try {
+    if (!Array.isArray(inputs)) return { success: false, error: 'Nothing to plan' };
+    return { success: true, items: await planUpgradeSwap(inputs, await upgradeSwapDeps(event.sender)) };
+  } catch (error) {
+    mainLog.error('IPC upgrade-swap:plan failed:', error);
+    return { success: false, error: error instanceof Error ? error.message : 'Could not plan the swap' };
+  }
+}));
+
+ipcMain.handle('upgrade-swap:apply', async (event, { rbIds }: { rbIds: string[] }) => trackOp('Swapping in lossless files', async () => {
+  try {
+    if (!Array.isArray(rbIds) || rbIds.length === 0) return { success: false, error: 'Nothing to swap' };
+    const result = await applyUpgradeSwap(rbIds.map(String), await upgradeSwapDeps(event.sender));
+    // Rekordbox's file paths changed: the "never trash what Rekordbox points
+    // at" guard must re-read them.
+    rekordboxPathCache = null;
+    return { success: true, result };
+  } catch (error) {
+    mainLog.error('IPC upgrade-swap:apply failed:', error);
+    return { success: false, error: error instanceof Error ? error.message : 'The swap failed' };
+  }
+}));
 
 // Qobuz cart integration
 ipcMain.handle(
@@ -2938,6 +3162,9 @@ ipcMain.handle('store-download-purchases', async (event, { matches }: { matches:
     const beatportTracks = matches.filter(m => m.source === 'beatport');
 
     const allDownloaded: string[] = [];
+    // Which file each match became, by its input key (`rb:<id>` on Lossless
+    // Upgrades), so the swap step knows which file replaces which entry.
+    const allFiles: Array<{ key: string; path: string }> = [];
     const allFailed: Array<{ artist: string; title: string; error: string }> = [];
     // Tracks you deleted earlier: left out on purpose, so they're reported apart from failures.
     const allSkipped: Array<{ trackId: string; artist: string; title: string; reason: string }> = [];
@@ -2947,6 +3174,7 @@ ipcMain.handle('store-download-purchases', async (event, { matches }: { matches:
       const defaultQobuzId = config.qobuzAccounts[0]?.id ?? LEGACY_ACCOUNT_ID;
       const result = await downloadQobuzPurchases(defaultQobuzId, qobuzTracks, destDir, onProgress);
       allDownloaded.push(...result.downloaded);
+      allFiles.push(...result.files);
       allFailed.push(...result.failed);
       allSkipped.push(...(result.skipped ?? []));
     }
@@ -2956,11 +3184,12 @@ ipcMain.handle('store-download-purchases', async (event, { matches }: { matches:
       const defaultBeatportId = config.beatportAccounts[0]?.id ?? LEGACY_ACCOUNT_ID;
       const result = await downloadBeatportPurchases(defaultBeatportId, beatportTracks, destDir, onProgress);
       allDownloaded.push(...result.downloaded);
+      allFiles.push(...result.files);
       allFailed.push(...result.failed);
       allSkipped.push(...(result.skipped ?? []));
     }
 
-    return { success: true, downloaded: allDownloaded.length, failed: allFailed, skipped: allSkipped, destDir };
+    return { success: true, downloaded: allDownloaded.length, files: allFiles, failed: allFailed, skipped: allSkipped, destDir };
   } catch (error) {
     mainLog.error('IPC store-download-purchases failed:', error);
     return { success: false, error: error instanceof Error ? error.message : 'Download failed' };
@@ -3450,7 +3679,10 @@ function assertEnqueueable(type: string): void {
 ipcMain.handle('job-enqueue', async (_event, { type, params, contextKey }: { type: string; params: unknown; contextKey: string }) => {
   try {
     assertEnqueueable(type);
-    const { jobId } = getJobManager().enqueue(type as any, params as any, contextKey);
+    const { jobId, promise } = getJobManager().enqueue(type as any, params as any, contextKey);
+    // The outcome reaches the renderer through job-update / job-wait; an
+    // unwatched failure isn't an unhandled rejection.
+    promise.catch(() => {});
     return { jobId };
   } catch (error) {
     mainLog.error('IPC job-enqueue failed:', error);
@@ -3489,6 +3721,40 @@ ipcMain.handle('job-list', async () => {
   } catch (error) {
     mainLog.error('IPC job-list failed:', error);
     return [];
+  }
+});
+
+// Wait for a job enqueued with job-enqueue. The renderer enqueues first so it
+// holds the id (to cancel, and to match job-log lines), then waits here.
+ipcMain.handle('job-wait', async (_event, { jobId }: { jobId: string }) => {
+  const promise = getJobManager().wait(jobId);
+  if (!promise) return { success: false, error: 'That job is no longer known.' };
+  try {
+    return { success: true, result: await promise };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Job failed';
+    return { success: false, error: message, cancelled: getJobManager().getJob(jobId)?.status === 'cancelled' };
+  }
+});
+
+// ---------- Claude Code (jobs bill the signed-in Claude subscription) ----------
+
+ipcMain.handle('claude-status', async () => {
+  try {
+    const config = await readConfig(CONFIG_PATH, CONFIG_DEFAULTS_PATH);
+    return await getClaudeStatus(config.claudeOauthToken || undefined);
+  } catch (error) {
+    mainLog.error('IPC claude-status failed:', error);
+    throw error;
+  }
+});
+
+ipcMain.handle('claude-open-login', async () => {
+  try {
+    return await openClaudeLogin();
+  } catch (error) {
+    mainLog.error('IPC claude-open-login failed:', error);
+    throw error;
   }
 });
 

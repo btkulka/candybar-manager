@@ -11,7 +11,11 @@ export type JobType =
   | 'album-art-scan'
   | 'catalog-export'
   | 'organize-tracks'
-  | 'usb-health-scan';
+  | 'usb-health-scan'
+  | 'claude-ask'
+  | 'claude-sourcing-review'
+  | 'claude-track-tags'
+  | 'claude-soundcloud';
 
 // Shared result keys and their data shapes
 export type SharedResultKey = 'library-file-list';
@@ -65,6 +69,9 @@ export type JobDefinition<TParams = unknown, TResult = unknown> = {
   producesSharedResult?: SharedResultKey;
   /** Max execution time in ms. Job is auto-cancelled on expiry. Default: no timeout. */
   timeoutMs?: number;
+  /** Jobs share a slot only with jobs in the same lane (default 'default'), so a
+   *  long Claude run doesn't hold up a library scan. */
+  lane?: string;
   run: (ctx: JobContext<TParams>) => Promise<TResult>;
 };
 

@@ -34,6 +34,19 @@ export function getDefaultRestoreStageDir(libraryRoot = DEFAULT_LIBRARY_ROOT): s
   return path.join(getDefaultOrganizeSourceDir(libraryRoot), 'restore_recovered');
 }
 
+// Default home for master.db snapshots taken before the app writes to
+// Rekordbox: backups/rekordbox next to the library root.
+export function getDefaultRekordboxBackupDir(libraryRoot = DEFAULT_LIBRARY_ROOT): string {
+  return path.join(path.dirname(libraryRoot), 'backups', 'rekordbox');
+}
+
+/** The configured snapshot folder, or the default beside the CONFIGURED library
+ *  root. The stored default is '' rather than a path: a path baked from the
+ *  default library root would point every existing config at ~/backups. */
+export function resolveRekordboxBackupDir(config: Pick<AppConfig, 'libraryRoot' | 'rekordboxBackupDir'>): string {
+  return config.rekordboxBackupDir || getDefaultRekordboxBackupDir(config.libraryRoot || DEFAULT_LIBRARY_ROOT);
+}
+
 // macOS system volumes that should never appear in the Devices panel
 export const DEFAULT_EXCLUDED_VOLUMES = [
   'Macintosh HD',
@@ -52,6 +65,8 @@ const DEFAULTS: AppConfig = {
   archivePath: getDefaultArchivePath(),
   spotifyClientId: '',
   spotifyClientSecret: '',
+  claudeOauthToken: '',
+  claudeModel: '',
   floatingConsoleEnabled: true,
   activeTab: 'organize',
   checkCsvPath: '',
@@ -63,7 +78,8 @@ const DEFAULTS: AppConfig = {
   excludedVolumes: DEFAULT_EXCLUDED_VOLUMES,
   rekordboxXmlPath: '',
   rekordboxEnabled: true,
-  showAdvancedTools: false
+  showAdvancedTools: false,
+  rekordboxBackupDir: ''
 };
 
 /** Migrate legacy config values (tab renames + legacy single-account credentials).
@@ -164,7 +180,7 @@ async function backUpCorruptConfig(configPath: string, error: string): Promise<v
 
 // Secret fields live in a separate, untracked file. Anything user-identifying
 // or auth-related goes here so the repo-level `config.json` stays shareable.
-const SECRET_STRING_KEYS = ['spotifyClientId', 'spotifyClientSecret'] as const;
+const SECRET_STRING_KEYS = ['spotifyClientId', 'spotifyClientSecret', 'claudeOauthToken'] as const;
 const SECRET_ARRAY_KEYS = ['qobuzAccounts', 'beatportAccounts'] as const;
 
 // Module-level secrets path. Set once at app startup so all existing

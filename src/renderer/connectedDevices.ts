@@ -79,8 +79,8 @@ function handleJobProgress(progress: JobProgress) {
   const current = progress.current ?? 0;
   const detail = typeof progress.detail === 'string' ? progress.detail.split('/').pop() : '';
   summaryEl.textContent = detail
-    ? `Scanning ${current}/${total}: ${detail}`
-    : `Scanning ${current}/${total}…`;
+    ? `Checking ${current.toLocaleString()} of ${total.toLocaleString()}: ${detail}`
+    : `Checking ${current.toLocaleString()} of ${total.toLocaleString()}\u2026`;
 }
 
 // ========== Helpers ==========
@@ -92,10 +92,19 @@ function formatBytes(bytes: number): string {
   return `${(bytes / Math.pow(1024, i)).toFixed(i > 1 ? 1 : 0)} ${units[i]}`;
 }
 
-function severityIcon(severity: 'error' | 'warning' | 'ok'): string {
-  if (severity === 'error') return '<span class="cd-dot cd-dot-error"></span>';
-  if (severity === 'warning') return '<span class="cd-dot cd-dot-warning"></span>';
-  return '<span class="cd-dot cd-dot-ok"></span>';
+/** The drive's state as a word: status pill class + label. */
+function drivePill(state: 'unchecked' | 'checking' | 'ok' | 'warning' | 'error' | 'failed' | 'library'): string {
+  const map = {
+    unchecked: ['status-pill--info', 'Not checked yet'],
+    checking: ['status-pill--info', 'Checking\u2026'],
+    ok: ['status-pill--ok', 'Ready to play'],
+    warning: ['status-pill--warn', 'Needs a fix'],
+    error: ['status-pill--danger', 'Won\u2019t play everywhere'],
+    failed: ['status-pill--danger', 'Couldn\u2019t check'],
+    library: ['status-pill--accent', 'Your library'],
+  } as const;
+  const [cls, label] = map[state];
+  return `<span class="status-pill ${cls} cd-pill">${label}</span>`;
 }
 
 function overallSeverity(entry: VolumeEntry): 'ok' | 'warning' | 'error' {
@@ -112,18 +121,6 @@ function overallSeverity(entry: VolumeEntry): 'ok' | 'warning' | 'error' {
 function containerColorClass(container: string): string {
   if (container === 'FLAC' || container === 'OGG') return 'cd-fmt-warn';
   return 'cd-fmt-ok';
-}
-
-/** Compute average bitrate across tracks */
-function avgBitrate(tracks: LibraryHealthTrack[]): number {
-  let sum = 0, count = 0;
-  for (const t of tracks) {
-    if (t.format.bitRate && t.format.bitRate > 0) {
-      sum += t.format.bitRate;
-      count++;
-    }
-  }
-  return count > 0 ? Math.round(sum / count) : 0;
 }
 
 /** Compute total duration */
@@ -151,12 +148,12 @@ function computeChecklist(result: UsbHealthResult): ChecklistItem[] {
 
   // 1. File system
   items.push({
-    label: 'File System',
+    label: 'Drive format',
     passed: volume.isCompatible,
     severity: volume.isCompatible ? 'ok' : 'error',
     detail: volume.isCompatible
-      ? `FAT32 — compatible with all Pioneer DJ gear`
-      : `${volume.fileSystem || 'Unknown'} — not supported by most Pioneer gear`,
+      ? 'FAT32, which every Pioneer player reads'
+      : `${volume.fileSystem || 'Unknown'}, which most Pioneer players can\u2019t read. Reformat it as FAT32 (this erases it).`,
   });
 
   // 2. Audio formats
@@ -164,56 +161,56 @@ function computeChecklist(result: UsbHealthResult): ChecklistItem[] {
   const incompatibleFormats = Object.keys(formatCounts).filter(f => f === 'FLAC' || f === 'OGG');
   const incompatibleCount = incompatibleFormats.reduce((s, f) => s + (formatCounts[f] || 0), 0);
   items.push({
-    label: 'Audio Formats',
+    label: 'File types',
     passed: incompatibleCount === 0,
     severity: incompatibleCount === 0 ? 'ok' : 'warning',
     detail: incompatibleCount === 0
-      ? 'All tracks in compatible formats (WAV/AIFF/MP3/AAC)'
-      : `${incompatibleCount} track${incompatibleCount > 1 ? 's' : ''} in unsupported format (${incompatibleFormats.map(containerLabel).join(', ')})`,
+      ? 'Every track is a file type CDJs play (WAV, AIFF, MP3 or AAC)'
+      : `${incompatibleCount.toLocaleString()} track${incompatibleCount > 1 ? 's are' : ' is'} a file type most CDJs can\u2019t play (${incompatibleFormats.map(containerLabel).join(', ')})`,
   });
 
   // 3. Sample rates
   const validRates = new Set([32000, 44100, 48000]);
   const badRateTracks = tracks.filter(t => t.format.sampleRate != null && !validRates.has(t.format.sampleRate));
   items.push({
-    label: 'Sample Rates',
+    label: 'Sample rates',
     passed: badRateTracks.length === 0,
     severity: badRateTracks.length === 0 ? 'ok' : 'warning',
     detail: badRateTracks.length === 0
-      ? 'All tracks at 44.1 or 48 kHz'
-      : `${badRateTracks.length} track${badRateTracks.length > 1 ? 's' : ''} with non-standard sample rate`,
+      ? 'Every track is saved at a rate CDJs play (32, 44.1 or 48 kHz)'
+      : `${badRateTracks.length.toLocaleString()} track${badRateTracks.length > 1 ? 's are' : ' is'} saved at an unusual sample rate CDJs won\u2019t play`,
   });
 
   // 4. No errors (corrupt/unreadable)
   items.push({
-    label: 'File Integrity',
+    label: 'Will it play',
     passed: summary.errors === 0,
     severity: summary.errors === 0 ? 'ok' : 'error',
     detail: summary.errors === 0
-      ? 'No corrupt or unreadable files'
-      : `${summary.errors} file${summary.errors > 1 ? 's' : ''} with errors`,
+      ? 'Nothing that would stop a track loading'
+      : `${summary.errors.toLocaleString()} track${summary.errors > 1 ? 's' : ''} may not play on CDJs`,
   });
 
   // 5. Free space
   const lowSpace = volume.totalBytes > 0 && (volume.freeBytes / volume.totalBytes) < 0.05;
   items.push({
-    label: 'Free Space',
+    label: 'Free space',
     passed: !lowSpace,
     severity: lowSpace ? 'warning' : 'ok',
     detail: lowSpace
       ? `Only ${formatBytes(volume.freeBytes)} free (${Math.round((volume.freeBytes / volume.totalBytes) * 100)}%)`
-      : `${formatBytes(volume.freeBytes)} available`,
+      : `${formatBytes(volume.freeBytes)} free`,
   });
 
   // 6. Metadata completeness
   const missingMeta = tracks.filter(t => !t.artist || !t.title || t.artist === 'Unknown Artist');
   items.push({
-    label: 'Metadata',
+    label: 'Track info',
     passed: missingMeta.length === 0,
     severity: missingMeta.length === 0 ? 'ok' : 'warning',
     detail: missingMeta.length === 0
-      ? 'All tracks have artist and title tags'
-      : `${missingMeta.length} track${missingMeta.length > 1 ? 's' : ''} missing metadata`,
+      ? 'Every track has an artist and title'
+      : `${missingMeta.length.toLocaleString()} track${missingMeta.length > 1 ? 's are' : ' is'} missing an artist or title`,
   });
 
   return items;
@@ -257,6 +254,8 @@ const CHECK_ICON = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" 
 
 const X_ICON = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>`;
 
+const CHEVRON_ICON = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="9 18 15 12 9 6"/></svg>`;
+
 const WARN_ICON = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>`;
 
 // ========== Rendering ==========
@@ -270,30 +269,30 @@ function renderVolumeCard(path: string): HTMLDivElement {
   card.dataset.volumePath = path;
 
   const vol = entry.volume;
-  const fsBadgeClass = vol.isCompatible ? 'ok' : 'error';
-  const fsLabel = vol.isCompatible ? 'FAT32' : escapeHtml(vol.fileSystem || 'Unknown FS');
-  const libraryBadge = vol.isLibrary
-    ? `<span class="cd-fs-badge ok" title="Your music library lives on this drive">Library</span>`
-    : '';
+  // The drive's format only shows when it's a problem; the details list it either way.
+  const fsBadge = vol.isCompatible
+    ? ''
+    : `<span class="status-pill status-pill--warn cd-fs-pill" data-tooltip="${escapeHtml(`This drive is formatted as ${vol.fileSystem || 'an unknown format'}. Some Pioneer players only read FAT32.`)}">Some CDJs can\u2019t read it</span>`;
   const hideBtn = vol.isLibrary
     ? ''
     : `<button class="btn-ghost btn-sm cd-hide" data-tooltip="Stop showing this drive here. Nothing on it is changed.">Hide</button>`;
   const rescanBtn = vol.isLibrary
     ? ''
-    : `<button class="btn-ghost btn-sm cd-rescan" data-tooltip="Check this drive again">Re-scan</button>`;
+    : `<button class="btn-secondary btn-sm cd-rescan" data-tooltip="Read every track on this drive to see if it plays on CDJs. Nothing on it is changed.">Check this drive</button>`;
   const collapseIcon = vol.isLibrary
     ? ''
-    : `<button type="button" class="cd-collapse-icon" aria-expanded="false" aria-label="Show details for ${escapeHtml(vol.name)}">&#x25B8;</button>`;
+    : `<button type="button" class="btn-icon cd-collapse-icon" aria-expanded="false" aria-label="Show details for ${escapeHtml(vol.name)}" data-tooltip="Show details">${CHEVRON_ICON}</button>`;
 
   card.innerHTML = `
     <div class="cd-volume-header">
       <div class="cd-volume-info">
-        <span class="cd-dot cd-dot-ok"></span>
         <span class="cd-usb-icon">${USB_ICON}</span>
-        <span class="cd-volume-name">${escapeHtml(vol.name)}</span>
-        <span class="cd-fs-badge ${fsBadgeClass}" title="${vol.isCompatible ? 'The drive\'s format. FAT32 is read by every Pioneer player.' : 'The drive\'s format. Some Pioneer players only read FAT32.'}">${fsLabel}</span>
-        ${libraryBadge}
-        <span class="cd-volume-summary"></span>
+        <div class="cd-volume-text">
+          <span class="cd-volume-name">${escapeHtml(vol.name)}</span>
+          <span class="cd-volume-summary"></span>
+        </div>
+        <span class="cd-pill-slot">${drivePill(vol.isLibrary ? 'library' : 'unchecked')}</span>
+        ${fsBadge}
       </div>
       <div class="cd-volume-actions">
         ${hideBtn}
@@ -305,15 +304,15 @@ function renderVolumeCard(path: string): HTMLDivElement {
       <div class="cd-volume-issues"></div>
       <div class="cd-scan-placeholder">
         <div class="cd-scan-shimmer"></div>
-        <span class="cd-scan-placeholder-text">Waiting for scan…</span>
+        <span class="cd-scan-placeholder-text">Not checked yet. Click Check this drive to read its tracks. Nothing on it is changed.</span>
       </div>
       <div class="cd-results-wrap" style="display:none;">
         <div class="cd-storage-bar-wrap"></div>
         <div class="cd-kpi-grid"></div>
-        <div class="cd-section-label">Health Checklist</div>
+        <div class="cd-section-label">What Track Lab checked</div>
         <div class="cd-checklist"></div>
         <div class="cd-format-breakdown"></div>
-        <div class="cd-section-label">Controller Compatibility</div>
+        <div class="cd-section-label">Which players can read it</div>
         <div class="cd-controller-grid"></div>
         <div class="cd-track-issues-header" style="display:none;"></div>
         <div class="cd-track-table-wrap">
@@ -324,9 +323,9 @@ function renderVolumeCard(path: string): HTMLDivElement {
                 <th class="col-status">Status</th>
                 <th class="col-artist">Artist</th>
                 <th class="col-title">Title</th>
-                <th class="col-format">Format</th>
-                <th class="col-bitrate">Bit Rate</th>
-                <th class="col-issues">Issues</th>
+                <th class="col-format">File type</th>
+                <th class="col-bitrate">Quality</th>
+                <th class="col-issues">Problems</th>
                 <th class="col-row-actions"><span class="visually-hidden">Actions</span></th>
               </tr>
             </thead>
@@ -348,7 +347,6 @@ function renderVolumeCard(path: string): HTMLDivElement {
       if ((e.target as HTMLElement).closest('.cd-hide')) return;
       const collapsed = body.style.display === 'none';
       body.style.display = collapsed ? 'block' : 'none';
-      collapseIconEl.innerHTML = collapsed ? '&#x25BE;' : '&#x25B8;';
       collapseIconEl.setAttribute('aria-expanded', String(collapsed));
       collapseIconEl.setAttribute('aria-label', `${collapsed ? 'Hide' : 'Show'} details for ${vol.name}`);
       card.classList.toggle('cd-volume-expanded', collapsed);
@@ -358,7 +356,7 @@ function renderVolumeCard(path: string): HTMLDivElement {
     const body = card.querySelector('.cd-volume-body') as HTMLElement;
     if (body) body.style.display = 'none';
     const summaryEl = card.querySelector('.cd-volume-summary') as HTMLElement;
-    if (summaryEl) summaryEl.textContent = 'Library volume — scan from the Library tab';
+    if (summaryEl) summaryEl.textContent = 'Your library is on this drive. It\u2019s checked above.';
   }
 
   // Re-scan button
@@ -380,7 +378,7 @@ function renderVolumeCard(path: string): HTMLDivElement {
       card.remove();
       if (knownVolumes.size === 0) section.style.display = 'none';
     } else {
-      showToast('error', 'Couldn\'t hide drive', 'Try again, or check Settings.');
+      showToast('error', 'Couldn\u2019t hide that drive', 'Try again in a moment.');
     }
   });
 
@@ -393,7 +391,8 @@ function updateVolumeCardState(path: string) {
   if (!entry || !card) return;
 
   const summaryEl = card.querySelector('.cd-volume-summary') as HTMLElement;
-  const dotEl = card.querySelector('.cd-dot') as HTMLElement;
+  const pillSlot = card.querySelector('.cd-pill-slot') as HTMLElement;
+  const rescanEl = card.querySelector('.cd-rescan') as HTMLButtonElement | null;
   const issuesEl = card.querySelector('.cd-volume-issues') as HTMLElement;
   const kpiEl = card.querySelector('.cd-kpi-grid') as HTMLElement;
   const storageEl = card.querySelector('.cd-storage-bar-wrap') as HTMLElement;
@@ -406,26 +405,32 @@ function updateVolumeCardState(path: string) {
   const resultsWrap = card.querySelector('.cd-results-wrap') as HTMLElement;
   const placeholder = card.querySelector('.cd-scan-placeholder') as HTMLElement;
 
+  if (rescanEl) {
+    rescanEl.disabled = entry.scanning;
+    rescanEl.textContent = entry.scanning ? 'Checking\u2026' : entry.result ? 'Check again' : 'Check this drive';
+  }
+
   if (entry.scanning) {
-    summaryEl.textContent = 'Scanning\u2026';
+    summaryEl.textContent = 'Reading its tracks\u2026';
     summaryEl.className = 'cd-volume-summary cd-scanning';
-    dotEl.className = 'cd-dot cd-dot-scanning';
+    if (pillSlot) pillSlot.innerHTML = drivePill('checking');
     placeholder.style.display = 'flex';
     resultsWrap.style.display = 'none';
     return;
   }
 
   if (entry.error) {
-    summaryEl.textContent = `Error: ${entry.error}`;
+    summaryEl.textContent = `Couldn\u2019t check this drive: ${entry.error}`;
     summaryEl.className = 'cd-volume-summary cd-error';
-    dotEl.className = 'cd-dot cd-dot-error';
+    if (pillSlot) pillSlot.innerHTML = drivePill('failed');
     placeholder.style.display = 'none';
     resultsWrap.style.display = 'none';
     return;
   }
 
   if (!entry.result) {
-    summaryEl.textContent = 'Pending\u2026';
+    const v = entry.volume;
+    summaryEl.textContent = v.totalBytes > 0 ? `${formatBytes(v.freeBytes)} free of ${formatBytes(v.totalBytes)}` : '';
     summaryEl.className = 'cd-volume-summary';
     placeholder.style.display = 'flex';
     resultsWrap.style.display = 'none';
@@ -438,24 +443,25 @@ function updateVolumeCardState(path: string) {
   const { summary, volumeIssues, volume, tracks } = entry.result;
   const sev = overallSeverity(entry);
 
-  // Update dot
-  dotEl.className = `cd-dot cd-dot-${sev}`;
+  if (pillSlot) pillSlot.innerHTML = drivePill(sev);
 
-  // Summary text
-  const parts: string[] = [`${summary.total} tracks`];
-  if (summary.errors > 0) parts.push(`${summary.errors} errors`);
-  if (summary.warnings > 0) parts.push(`${summary.warnings} warnings`);
-  if (!volume.isCompatible) parts.push('incompatible FS');
-  if (summary.errors === 0 && summary.warnings === 0 && volume.isCompatible)
-    parts.push('all healthy');
-  summaryEl.textContent = parts.join(' · ');
+  // Summary sentence
+  const t = (n: number) => `${n.toLocaleString()} track${n === 1 ? '' : 's'}`;
+  const parts: string[] = [];
+  if (summary.errors > 0) parts.push(`${summary.errors.toLocaleString()} may not play`);
+  if (summary.warnings > 0) parts.push(`${summary.warnings.toLocaleString()} could use a fix`);
+  summaryEl.textContent = summary.total === 0
+    ? 'No music on this drive'
+    : parts.length === 0
+      ? `${t(summary.total)}, all ready to play`
+      : `${t(summary.total)}: ${parts.join(', ')}`;
   summaryEl.className = `cd-volume-summary cd-${sev}`;
 
   // Volume-level issues
   if (volumeIssues.length > 0) {
     issuesEl.innerHTML = volumeIssues.map(issue => `
       <div class="cd-issue ${issue.severity}">
-        <strong>${escapeHtml(issue.code)}:</strong> ${escapeHtml(issue.message)}
+        ${escapeHtml(issue.message)}
       </div>
     `).join('');
   } else {
@@ -479,34 +485,29 @@ function updateVolumeCardState(path: string) {
   // KPI grid
   const total = summary.total;
   const healthyPct = total > 0 ? Math.round((summary.healthy / total) * 100) : 0;
-  const avg = avgBitrate(tracks);
   const dur = totalDuration(tracks);
 
   kpiEl.innerHTML = `
     <div class="cd-kpi-card">
-      <div class="cd-kpi-value">${summary.total}</div>
-      <div class="cd-kpi-label">Total Tracks</div>
+      <div class="cd-kpi-value">${summary.total.toLocaleString()}</div>
+      <div class="cd-kpi-label">Tracks</div>
     </div>
     <div class="cd-kpi-card cd-kpi-accent">
       <div class="cd-kpi-value">${healthyPct}<span class="cd-kpi-unit">%</span></div>
-      <div class="cd-kpi-label">Healthy</div>
+      <div class="cd-kpi-label">Ready to play</div>
       <div class="cd-kpi-bar"><div class="cd-kpi-bar-fill" style="width:${healthyPct}%"></div></div>
     </div>
     <div class="cd-kpi-card ${summary.errors > 0 ? 'cd-kpi-danger' : ''}">
-      <div class="cd-kpi-value">${summary.errors}</div>
-      <div class="cd-kpi-label">Errors</div>
+      <div class="cd-kpi-value">${summary.errors.toLocaleString()}</div>
+      <div class="cd-kpi-label">Won\u2019t play on CDJs</div>
     </div>
     <div class="cd-kpi-card ${summary.warnings > 0 ? 'cd-kpi-warning' : ''}">
-      <div class="cd-kpi-value">${summary.warnings}</div>
-      <div class="cd-kpi-label">Warnings</div>
+      <div class="cd-kpi-value">${summary.warnings.toLocaleString()}</div>
+      <div class="cd-kpi-label">Need a fix</div>
     </div>
     <div class="cd-kpi-card">
-      <div class="cd-kpi-value">${avg > 0 ? Math.round(avg / 1000) : '—'}<span class="cd-kpi-unit">${avg > 0 ? 'kbps' : ''}</span></div>
-      <div class="cd-kpi-label">Avg Bitrate</div>
-    </div>
-    <div class="cd-kpi-card">
-      <div class="cd-kpi-value">${dur > 0 ? formatDuration(dur) : '—'}</div>
-      <div class="cd-kpi-label">Total Duration</div>
+      <div class="cd-kpi-value">${dur > 0 ? formatDuration(dur) : '\u2014'}</div>
+      <div class="cd-kpi-label">Total length</div>
     </div>
   `;
 
@@ -516,7 +517,7 @@ function updateVolumeCardState(path: string) {
   if (sortedFormats.length > 0) {
     const maxCount = sortedFormats[0][1];
     formatEl.innerHTML = `
-      <div class="cd-section-label">Format Breakdown</div>
+      <div class="cd-section-label">File types on this drive</div>
       <div class="cd-format-bars">
         ${sortedFormats.map(([fmt, count]) => {
           const pct = total > 0 ? Math.round((count / total) * 100) : 0;
@@ -555,14 +556,14 @@ function updateVolumeCardState(path: string) {
   const compatCount = compats.filter(c => c.compatible).length;
   controllerEl.innerHTML = `
     <div class="cd-compat-summary">
-      Compatible with <strong>${compatCount}</strong> of <strong>${compats.length}</strong> Pioneer DJ devices
+      Plays on <strong>${compatCount}</strong> of <strong>${compats.length}</strong> Pioneer players
     </div>
     <div class="cd-compat-cards">
       ${compats.map(c => {
         const cls = c.compatible ? 'cd-compat-yes' : 'cd-compat-no';
         const badge = c.compatible
-          ? `<span class="cd-compat-badge cd-compat-badge-yes">${CHECK_ICON} Ready</span>`
-          : `<span class="cd-compat-badge cd-compat-badge-no">${X_ICON} ${!c.fsCompatible ? 'Wrong FS' : c.formatIssues.join(', ')}</span>`;
+          ? `<span class="cd-compat-badge cd-compat-badge-yes">${CHECK_ICON} Plays</span>`
+          : `<span class="cd-compat-badge cd-compat-badge-no">${X_ICON} ${!c.fsCompatible ? 'Can\u2019t read the drive' : `Can\u2019t play ${escapeHtml(c.formatIssues.join(', '))}`}</span>`;
         const image = c.controller.imageUrl
           ? `<img src="${escapeHtml(c.controller.imageUrl)}" alt="${escapeHtml(c.controller.name)}" class="cd-compat-img" loading="lazy" />`
           : '';
@@ -602,7 +603,7 @@ function updateVolumeCardState(path: string) {
 
   if (issuesTracks.length > 0) {
     trackIssuesHeader.style.display = 'block';
-    trackIssuesHeader.innerHTML = `<div class="cd-section-label">Tracks with Issues <span class="cd-count-badge">${issuesTracks.length}</span></div>`;
+    trackIssuesHeader.innerHTML = `<div class="cd-section-label">Tracks with problems <span class="cd-count-badge">${issuesTracks.length.toLocaleString()}</span></div>`;
     const sorted = sortTracks(issuesTracks, 'status', 'desc');
     tbody.innerHTML = '';
     const frag = document.createDocumentFragment();
@@ -701,22 +702,22 @@ function showMultiContextMenu(tracks: LibraryHealthTrack[], volumePath: string, 
 
   if (convertible.length > 0) {
     items.push({
-      label: `Convert ${convertible.length} to AIFF`,
+      label: `Make AIFF copies of ${convertible.length.toLocaleString()}`,
       icon: icons.wrench,
-      hint: 'Asks first. Makes AIFF copies next to the originals, which stay where they are.',
+      hint: 'Asks first. Saves CDJ-ready AIFF copies next to the originals, which stay where they are.',
       action: () => bulkConvertToAiff(convertible, volumePath),
     });
   }
 
   items.push({
-    label: `Archive ${n} tracks`,
+    label: `Move ${n.toLocaleString()} to archive folder`,
     icon: icons.archive,
     hint: 'Moves them off this drive into your archive folder. Nothing is deleted.',
     action: () => bulkArchive(archivable, volumePath),
   });
 
   items.push({
-    label: `Move ${n} tracks to Trash…`,
+    label: `Move ${n.toLocaleString()} to Trash\u2026`,
     icon: icons.trash,
     danger: true,
     hint: 'Asks first. You can put them back from the Trash.',
@@ -771,19 +772,19 @@ async function bulkConvertToAiff(tracks: LibraryHealthTrack[], volumePath: strin
     bulkBusy.delete(volumePath);
   }
   if (ok > 0) {
-    showToast('success', 'Bulk Convert', `${ok} AIFF cop${ok > 1 ? 'ies' : 'y'} made. Checking the drive again…`);
+    showToast('success', 'AIFF copies made', `${ok} AIFF cop${ok > 1 ? 'ies' : 'y'} made. Checking the drive again\u2026`);
     rescanVolume(volumePath);
   }
-  if (fail > 0) showToast('error', 'Bulk Convert', `${fail} track${fail > 1 ? 's' : ''} failed to convert.`);
+  if (fail > 0) showToast('error', 'Some copies weren\u2019t made', `${fail} track${fail > 1 ? 's' : ''} couldn\u2019t be copied. The originals are unchanged.`);
 }
 
 async function bulkArchive(tracks: LibraryHealthTrack[], volumePath: string) {
   if (tracks.length === 0 || bulkBusy.has(volumePath)) return;
   const confirmed = await confirmAction({
-    title: `Archive ${tracks.length} track${tracks.length > 1 ? 's' : ''}?`,
+    title: `Move ${tracks.length} track${tracks.length > 1 ? 's' : ''} to your archive folder?`,
     message: 'They will be moved off this drive and into your archive folder.',
     safetyNote: 'Nothing is deleted. You can move them back from the archive folder any time.',
-    confirmLabel: 'Archive',
+    confirmLabel: 'Move to archive folder',
     tone: 'info',
   });
   if (!confirmed) return;
@@ -792,8 +793,8 @@ async function bulkArchive(tracks: LibraryHealthTrack[], volumePath: string) {
     const result = await window.candybar.archiveTrackFile(t.filePath);
     return { ok: result.success, error: result.errorMessage };
   });
-  if (ok > 0) showToast('success', 'Bulk Archive', `${ok} track${ok > 1 ? 's' : ''} archived.`);
-  if (failed > 0) showToast('error', 'Bulk Archive', `${failed} track${failed > 1 ? 's' : ''} couldn't be archived.${firstError ? ` ${firstError}` : ''}`);
+  if (ok > 0) showToast('success', 'Moved to your archive folder', `${ok} track${ok > 1 ? 's' : ''} moved off the drive. Nothing was deleted.`);
+  if (failed > 0) showToast('error', 'Some tracks weren\u2019t moved', `${failed} track${failed > 1 ? 's' : ''} stayed on the drive.${firstError ? ` ${firstError}` : ''}`);
 }
 
 async function bulkDelete(tracks: LibraryHealthTrack[], volumePath: string) {
@@ -860,19 +861,19 @@ async function handleUsbTrackAction(
         showToast('error', 'Not moved to Trash', result.error || 'The file is still on the drive.');
       }
     } catch (err) {
-      showToast('error', 'Delete Failed', getErrorMessage(err));
+      showToast('error', 'Couldn\u2019t move it to the Trash', getErrorMessage(err));
     }
   } else if (action === 'archive') {
     try {
       const result = await window.candybar.archiveTrackFile(track.filePath);
       if (result.success) {
-        showToast('success', 'Track Archived', `${track.fileName} moved to archive.`);
+        showToast('success', 'Moved to your archive folder', `${track.fileName} is off the drive. Nothing was deleted.`);
         removeTrackFromUsbResult(volumePath, track);
       } else {
-        showToast('error', 'Archive Failed', result.errorMessage || 'Unknown error archiving file.');
+        showToast('error', 'Couldn\u2019t move it to the archive folder', result.errorMessage || 'The file is still on the drive.');
       }
     } catch (err) {
-      showToast('error', 'Archive Failed', getErrorMessage(err));
+      showToast('error', 'Couldn\u2019t move it to the archive folder', getErrorMessage(err));
     }
   } else if (action === 'fix') {
     try {
@@ -882,10 +883,10 @@ async function handleUsbTrackAction(
         showToast('success', 'AIFF copy made', `${track.fileName} now has an AIFF copy next to it. Checking the drive again…`);
         rescanVolume(volumePath);
       } else {
-        showToast('error', 'Conversion Failed', result.errorMessage || 'Unknown error during conversion.');
+        showToast('error', 'Couldn\u2019t make the copy', result.errorMessage || 'It stopped without saying why. The original is unchanged.');
       }
     } catch (err) {
-      showToast('error', 'Conversion Failed', getErrorMessage(err));
+      showToast('error', 'Couldn\u2019t make the copy', getErrorMessage(err));
     }
   } else if (action === 'reencode') {
     try {
@@ -894,10 +895,10 @@ async function handleUsbTrackAction(
         showToast('success', '320 kbps copy made', `${track.fileName} now has a 320 kbps copy next to it. Checking the drive again…`);
         rescanVolume(volumePath);
       } else {
-        showToast('error', 'Re-encode Failed', result.errorMessage || 'Unknown error during re-encoding.');
+        showToast('error', 'Couldn\u2019t re-save the MP3', result.errorMessage || 'It stopped without saying why. The original is unchanged.');
       }
     } catch (err) {
-      showToast('error', 'Re-encode Failed', getErrorMessage(err));
+      showToast('error', 'Couldn\u2019t re-save the MP3', getErrorMessage(err));
     }
   } else if (action === 'edit') {
     openTagEditor({ ...track, bpm: track.bpm != null ? String(track.bpm) : undefined }, (updated) => {
@@ -940,14 +941,13 @@ async function detectVolumes() {
         knownVolumes.set(vol.path, { volume: vol, result: null, scanning: false, error: null });
         const card = renderVolumeCard(vol.path);
         volumeListEl.appendChild(card);
+        if (!vol.isLibrary) updateVolumeCardState(vol.path);
       }
     }
 
     // Update visibility
     section.style.display = knownVolumes.size > 0 ? 'block' : 'none';
-    statusEl.textContent = knownVolumes.size > 0
-      ? `${knownVolumes.size} device${knownVolumes.size > 1 ? 's' : ''}`
-      : '';
+    statusEl.textContent = knownVolumes.size > 1 ? `${knownVolumes.size} drives` : '';
   } catch {
     // Silent — will retry on next poll
   }
@@ -992,10 +992,10 @@ async function processQueue() {
       if (response.success && response.result) {
         entry.result = response.result;
       } else {
-        entry.error = response.error || 'Scan failed';
+        entry.error = response.error || 'the check stopped without saying why';
       }
     } catch (err) {
-      entry.error = getErrorMessage(err, 'Scan failed');
+      entry.error = getErrorMessage(err, 'the check stopped without saying why');
     } finally {
       entry.scanning = false;
       activeScanPath = null;

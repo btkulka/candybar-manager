@@ -24,6 +24,7 @@ import { recordWrite } from './writeJournal';
 import { sessionFetch, sessionFetchJson, closeStoreBrowsers } from './storeBrowser';
 import { getQobuzReleaseTracks, parseQobuzPopin } from './qobuz';
 import { bestOwnedMatch, pickReleaseTrack, pickQobuzLosslessTier, withVersion } from './storeMatching';
+import { persistentCookieCopy } from './mainGuards';
 import { sniffAudio, extFromUrlOrType } from './audioSniff';
 import type {
   StoreTrackInput,
@@ -71,8 +72,11 @@ export async function loginQobuz(accountId: string): Promise<boolean> {
   return loginQobuzWindow(accountId);
 }
 
+// The Bearer token lives in memory only, so after a relaunch a session cookie
+// alone isn't a sign-in: everything after this reads the token. A session that
+// survived the relaunch hands it over again here.
 export async function loginBeatport(accountId: string): Promise<boolean> {
-  if (await isBeatportLoggedIn(accountId)) {
+  if (await ensureBeatportToken(accountId)) {
     log.info(`Beatport[${accountId}]: session still valid, skipping login window`);
     return true;
   }
@@ -414,6 +418,36 @@ export async function isBeatportLoggedIn(accountId: string): Promise<boolean> {
   const cookies = await ses.cookies.get({ url: 'https://www.beatport.com' });
   if (cookies.some(c => isBeatportAuthCookie(c.name))) return true;
   return beatportKnownConnected.has(accountId) && cookies.length > 0;
+}
+
+// ========== Keeping Sign-ins Across Launches ==========
+//
+// A store's session cookies (no Expires) never reach disk, so they're written
+// back with an expiry as the store sets them (persistentCookieCopy). The store
+// still ends the session: it overwrites or deletes the cookie, and the live
+// probes above catch an expiry on its side.
+
+const keptCookieJars = new Set<Electron.Session>();
+
+/** Watch a store partition's jar and keep its session cookies. Idempotent. */
+export function keepStoreSessionCookies(ses: Electron.Session): void {
+  if (keptCookieJars.has(ses)) return;
+  keptCookieJars.add(ses);
+  ses.cookies.on('changed', (_event, cookie, _cause, removed) => {
+    if (removed) return;
+    const copy = persistentCookieCopy(cookie, Date.now() / 1000);
+    if (!copy) return;
+    ses.cookies.set(copy).catch((err) => log.warn(`Couldn't keep ${cookie.name} (${cookie.domain}) past this launch:`, err));
+  });
+}
+
+/** Write the watched jars to disk now. Chromium batches cookie writes (about
+ *  every 30s) and app.exit() doesn't wait for the batch, so a sign-in just
+ *  before quitting was lost. Capped so a stuck flush can't hold up quitting. */
+export async function flushStoreCookies(timeoutMs = 2000): Promise<void> {
+  const flushes = [...keptCookieJars].map((ses) =>
+    ses.cookies.flushStore().catch((err) => log.warn('Cookie flush failed:', err)));
+  await Promise.race([Promise.all(flushes), sleep(timeoutMs)]);
 }
 
 /** Invalidate the cached auth-probe result — e.g. right after a login window closes. */
@@ -773,6 +807,10 @@ export type DownloadProgress = {
 
 export type DownloadResult = {
   downloaded: string[];
+  /** Which file each downloaded match ended up as, by the match's input key
+   *  (`rb:<id>` for a Lossless Upgrades row). Matches without a key are left
+   *  out; `downloaded` still lists every file. */
+  files: Array<{ key: string; path: string }>;
   failed: Array<{ trackId: string; artist: string; title: string; error: string }>;
   /** Not fetched on purpose: a track you deleted stays deleted. */
   skipped: Array<{ trackId: string; artist: string; title: string; reason: string }>;
@@ -879,6 +917,12 @@ function priorDownload(source: 'qobuz' | 'beatport', track: StoreMatch): { reuse
   return null;
 }
 
+/** Note which file a match became, under the match's input key. */
+function keyedFile(files: DownloadResult['files'], track: StoreMatch, filePath: string): void {
+  const key = track.input?.key;
+  if (key) files.push({ key, path: filePath });
+}
+
 export async function downloadQobuzPurchases(
   defaultAccountId: string,
   tracks: StoreMatch[],
@@ -887,6 +931,7 @@ export async function downloadQobuzPurchases(
   concurrency: number = 1
 ): Promise<DownloadResult> {
   const downloaded: string[] = [];
+  const files: DownloadResult['files'] = [];
   const failed: Array<{ trackId: string; artist: string; title: string; error: string }> = [];
   const skipped: DownloadResult['skipped'] = [];
   await fsp.mkdir(destDir, { recursive: true });
@@ -918,6 +963,7 @@ export async function downloadQobuzPurchases(
     if (prior && 'reuse' in prior) {
       log.info(`Already downloaded: ${label} (${prior.reuse})`);
       downloaded.push(prior.reuse);
+      keyedFile(files, track, prior.reuse);
       onProgress?.({ ...progress, currentTrack: label, phase: 'downloading', message: `Already downloaded: ${label}` });
       return;
     }
@@ -971,6 +1017,7 @@ export async function downloadQobuzPurchases(
       const finalPath = await ensureAiff(saved);
       if (finalPath !== saved.path) recordDownload('qobuz', track.trackId, track.artist, track.title, finalPath);
       downloaded.push(finalPath);
+      keyedFile(files, track, finalPath);
     } catch (err) {
       log.error('Qobuz download failed for', label, err);
       fail(err instanceof Error ? err.message : 'Download failed');
@@ -988,7 +1035,7 @@ export async function downloadQobuzPurchases(
   await Promise.allSettled(workers);
 
   onProgress?.({ current: tracks.length, total: tracks.length, currentTrack: '', phase: 'complete', message: `Done: ${downloaded.length} downloaded, ${failed.length} failed${skipped.length ? `, ${skipped.length} skipped` : ''}` });
-  return { downloaded, failed, skipped, destDir };
+  return { downloaded, files, failed, skipped, destDir };
 }
 
 /** track id → order_item_download_id from the account's downloads list. Cart
@@ -1018,6 +1065,7 @@ export async function downloadBeatportPurchases(
   concurrency: number = 1
 ): Promise<DownloadResult> {
   const downloaded: string[] = [];
+  const files: DownloadResult['files'] = [];
   const failed: Array<{ trackId: string; artist: string; title: string; error: string }> = [];
   const skipped: DownloadResult['skipped'] = [];
   await fsp.mkdir(destDir, { recursive: true });
@@ -1042,6 +1090,7 @@ export async function downloadBeatportPurchases(
     if (prior && 'reuse' in prior) {
       log.info(`Already downloaded: ${label} (${prior.reuse})`);
       downloaded.push(prior.reuse);
+      keyedFile(files, track, prior.reuse);
       onProgress?.({ ...progress, currentTrack: label, phase: 'downloading', message: `Already downloaded: ${label}` });
       return;
     }
@@ -1100,6 +1149,7 @@ export async function downloadBeatportPurchases(
       const finalPath = await ensureAiff(saved);
       if (finalPath !== saved.path) recordDownload('beatport', track.trackId, track.artist, track.title, finalPath);
       downloaded.push(finalPath);
+      keyedFile(files, track, finalPath);
     } catch (err) {
       log.error('Beatport download failed for', label, err);
       fail(err instanceof Error ? err.message : 'Download failed');
@@ -1118,7 +1168,7 @@ export async function downloadBeatportPurchases(
   await Promise.allSettled(workers);
 
   onProgress?.({ current: tracks.length, total: tracks.length, currentTrack: '', phase: 'complete', message: `Done: ${downloaded.length} downloaded, ${failed.length} failed${skipped.length ? `, ${skipped.length} skipped` : ''}` });
-  return { downloaded, failed, skipped, destDir };
+  return { downloaded, files, failed, skipped, destDir };
 }
 
 // ========== Helpers ==========
@@ -1408,7 +1458,11 @@ export async function fetchAllQobuzPurchases(accounts: StoreAccount[]): Promise<
 async function ensureBeatportToken(accountId: string): Promise<string | null> {
   const cached = getBeatportAccessToken(accountId);
   if (cached) return cached;
-  const fresh = await readBeatportSessionToken(beatportPartition(accountId)).catch(() => null);
+  const partition = beatportPartition(accountId);
+  // No session cookie, no session: skip the hidden-page round trip.
+  const cookies = await session.fromPartition(partition).cookies.get({ url: BEATPORT_ORIGIN });
+  if (!cookies.some(c => isBeatportAuthCookie(c.name))) return null;
+  const fresh = await readBeatportSessionToken(partition).catch(() => null);
   if (!fresh) return null;
   setBeatportToken(accountId, fresh.token, fresh.expiresIn);
   return fresh.token;

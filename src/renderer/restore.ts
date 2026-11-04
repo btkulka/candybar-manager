@@ -1,4 +1,4 @@
-import { escapeHtml, showToast, getErrorMessage, requestOpenSettings } from './shared';
+import { escapeHtml, showToast, getErrorMessage, requestOpenSettings, plural } from './shared';
 
 // ========== Types ==========
 
@@ -79,6 +79,7 @@ type Report = {
 };
 
 type Stage = 'configure' | 'review' | 'running' | 'report';
+type Store = 'beatport' | 'qobuz';
 
 // ========== DOM ==========
 
@@ -97,6 +98,9 @@ const concurrencyInput = document.getElementById('restore-concurrency') as HTMLI
 const usbTagMatchingInput = document.getElementById('restore-usb-tag-matching') as HTMLInputElement | null;
 const rewriteXmlInput = document.getElementById('restore-rewrite-xml') as HTMLInputElement | null;
 
+const stepBackup = document.getElementById('restore-step-backup');
+const stepSources = document.getElementById('restore-step-sources');
+
 const toReviewBtn = document.getElementById('restore-to-review') as HTMLButtonElement | null;
 const backToConfigureBtn = document.getElementById('restore-back-to-configure') as HTMLButtonElement | null;
 const startBtn = document.getElementById('restore-start') as HTMLButtonElement | null;
@@ -107,40 +111,43 @@ const newRunBtn = document.getElementById('restore-new-run') as HTMLButtonElemen
 const timelineEl = document.getElementById('restore-timeline') as HTMLElement | null;
 const kpiRecovered = document.getElementById('kpi-recovered');
 const kpiStillMissing = document.getElementById('kpi-still-missing');
-const kpiRate = document.getElementById('kpi-rate');
 const kpiEta = document.getElementById('kpi-eta');
 const kpiElapsed = document.getElementById('kpi-elapsed');
 const progressBarEl = document.getElementById('restore-progress-bar') as HTMLDivElement | null;
 const phaseCurrentEl = document.getElementById('restore-phase-current');
+const runLineEl = document.getElementById('restore-run-line');
 const currentTrackEl = document.getElementById('restore-current-track');
 const accountsEl = document.getElementById('restore-accounts') as HTMLDivElement | null;
 const logEl = document.getElementById('restore-log') as HTMLDivElement | null;
 const logCountEl = document.getElementById('restore-log-count');
 
 // Review stage
-const reviewXmlCount = document.getElementById('review-xml-count');
-const reviewLibCount = document.getElementById('review-lib-count');
-const reviewMissingCount = document.getElementById('review-missing-count');
-const reviewPlanEl = document.getElementById('review-plan') as HTMLUListElement | null;
-const reviewEtaEl = document.getElementById('review-eta');
+const reviewLeadEl = document.getElementById('review-lead');
+const reviewLeadSubEl = document.getElementById('review-lead-sub');
+const reviewStatsEl = document.getElementById('restore-review-hero');
+const reviewPlanEl = document.getElementById('review-plan') as HTMLOListElement | null;
 const reviewWarningsCard = document.getElementById('review-warnings-card');
-const reviewWarningsEl = document.getElementById('review-warnings') as HTMLUListElement | null;
+const reviewWarningsEl = document.getElementById('review-warnings');
 
 // Report stage
+const reportHeadline = document.getElementById('restore-report-headline');
 const reportHero = document.getElementById('restore-report-hero');
 const reportBySourceEl = document.getElementById('report-by-source');
 const reportByAccountEl = document.getElementById('report-by-account');
+const reportSourcesHint = document.getElementById('report-sources-hint');
 const reportFailuresEl = document.getElementById('report-failures');
 const reportFailureCard = document.getElementById('report-failure-card');
 const reportXmlEl = document.getElementById('report-xml');
 const reportXmlCard = document.getElementById('report-xml-card');
 const reportTable = document.getElementById('restore-report-table') as HTMLTableElement | null;
+const reportTracksHint = document.getElementById('report-tracks-hint');
+const reportEmpty = document.getElementById('restore-report-empty');
 const reportExportBtn = document.getElementById('report-export') as HTMLButtonElement | null;
 const reportOpenStageBtn = document.getElementById('report-open-stage') as HTMLButtonElement | null;
 const reportRetryBtn = document.getElementById('report-retry-failed') as HTMLButtonElement | null;
 
-// Source status pills (on Configure stage)
-const statusEls: Record<string, HTMLElement | null> = {
+// Source status (pill + Sign in) on the Configure stage
+const statusEls: Record<'usb' | Store, HTMLElement | null> = {
   usb: document.getElementById('restore-status-usb'),
   beatport: document.getElementById('restore-status-beatport'),
   qobuz: document.getElementById('restore-status-qobuz'),
@@ -149,6 +156,7 @@ const statusEls: Record<string, HTMLElement | null> = {
 // ========== State ==========
 
 let detectedVolumes: Volume[] = [];
+let volumesChecked = false;
 let currentStage: Stage = 'configure';
 let running = false;
 let currentReport: Report | null = null;
@@ -156,10 +164,12 @@ let currentReportPath: string | null = null;
 let reportFilter: 'all' | 'recovered' | 'still_missing' = 'all';
 let logEntries: LogEntry[] = [];
 const MAX_LOG_ENTRIES = 500;
+/** Account names seen during the run, so the results can say "Qobuz · ben@…" instead of an id. */
+const accountNames = new Map<string, string>();
 
 // Cached live progress state used by the renderer-local ticker between real
-// backend events so KPIs (elapsed / rate / ETA) keep ticking even when the
-// main process is busy doing something that doesn't emit for several seconds
+// backend events so the counts and time keep ticking even when the main
+// process is busy doing something that doesn't emit for several seconds
 // (e.g. sniffing play.qobuz.com credentials, walking the library).
 type LiveState = {
   startWallTime: number;          // when running started, in ms (Date.now())
@@ -173,8 +183,8 @@ let live: LiveState | null = null;
 let liveTicker: ReturnType<typeof setInterval> | null = null;
 
 // Rough weights used for phase-aware progress. Numbers add to 100. They reflect
-// typical time share — not perfect, but a huge UX upgrade over "0% until the
-// first download lands".
+// typical time share — not perfect, but far better than "0% until the first
+// download lands".
 const PHASE_WEIGHTS: Record<string, number> = {
   parsing: 2,
   scanning_library: 8,
@@ -193,9 +203,91 @@ const PHASE_ORDER = [
   'qobuz_fetch', 'qobuz_download', 'xml_rewrite', 'complete',
 ];
 
+/** What Track Lab is doing right now, as the running headline. */
+const PHASE_HEADLINE: Record<string, string> = {
+  init: 'Getting started…',
+  parsing: 'Reading your backup file…',
+  scanning_library: 'Checking your library folder…',
+  computing_missing: 'Working out what\'s missing…',
+  usb_scan: 'Looking on your USB sticks…',
+  beatport_fetch: 'Checking your Beatport purchases…',
+  beatport_download: 'Downloading from Beatport…',
+  qobuz_fetch: 'Checking your Qobuz purchases…',
+  qobuz_download: 'Downloading from Qobuz…',
+  xml_rewrite: 'Updating your backup file…',
+  complete: 'Finishing up…',
+};
+
+/** Short names for the activity log. */
+const PHASE_SHORT: Record<string, string> = {
+  init: 'Start',
+  parsing: 'Backup file',
+  scanning_library: 'Library',
+  computing_missing: 'What\'s missing',
+  usb_scan: 'USB sticks',
+  beatport_fetch: 'Beatport',
+  beatport_download: 'Beatport',
+  qobuz_fetch: 'Qobuz',
+  qobuz_download: 'Qobuz',
+  xml_rewrite: 'Backup file',
+  complete: 'Done',
+};
+
+const SOURCE_NAME: Record<string, string> = {
+  usb: 'USB stick',
+  beatport: 'Beatport',
+  qobuz: 'Qobuz',
+  soundcloud: 'SoundCloud',
+};
+
+const STORE_NAME: Record<Store, string> = { beatport: 'Beatport', qobuz: 'Qobuz' };
+
 // Account status cache populated on Configure / Review entry.
-type AccountStatus = { qobuz: { connected: number; total: number }; beatport: { connected: number; total: number } };
+type AccountStatus = Record<Store, { connected: number; total: number }>;
 let accountStatus: AccountStatus = { qobuz: { connected: 0, total: 0 }, beatport: { connected: 0, total: 0 } };
+let accountsChecked = false;
+
+// ========== Icons ==========
+
+const svg = (body: string) =>
+  `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${body}</svg>`;
+const WARN_BODY = '<path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>';
+const CHECK_CIRCLE_BODY = '<path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/>';
+const SEARCH_BODY = '<circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>';
+
+// ========== Small helpers ==========
+
+const isAre = (n: number) => (n === 1 ? 'is' : 'are');
+
+/** "about 6 minutes", "less than a minute", "1 hour 20 minutes". */
+function humanDuration(sec: number | undefined): string {
+  if (sec == null || !Number.isFinite(sec)) return '';
+  const s = Math.max(0, Math.round(sec));
+  if (s < 60) return 'less than a minute';
+  const m = Math.round(s / 60);
+  if (m < 60) return plural(m, 'minute');
+  const h = Math.floor(m / 60);
+  const mm = m % 60;
+  return mm === 0 ? plural(h, 'hour') : `${plural(h, 'hour')} ${plural(mm, 'minute')}`;
+}
+
+/** Clock-style time for the "Time so far" tile: 0:42, 12:05, 1:02:09. */
+function clock(sec: number): string {
+  const s = Math.max(0, Math.floor(sec));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const r = String(s % 60).padStart(2, '0');
+  return h > 0 ? `${h}:${String(m).padStart(2, '0')}:${r}` : `${m}:${r}`;
+}
+
+function baseName(p: string): string {
+  const parts = p.split('/').filter(Boolean);
+  return parts[parts.length - 1] || p;
+}
+
+function callout(tone: 'warn' | 'info' | 'danger', title: string, body: string): string {
+  return `<div class="callout callout--${tone}" role="status">${svg(tone === 'info' ? '<circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/>' : WARN_BODY).replace('<svg', '<svg class="callout-icon"')}<div class="callout-body"><strong>${escapeHtml(title)}</strong><p>${escapeHtml(body)}</p></div></div>`;
+}
 
 // ========== Stage switching ==========
 
@@ -209,17 +301,21 @@ function setStage(next: Stage) {
   });
   if (stepper) {
     stepper.querySelectorAll<HTMLButtonElement>('.wiz-step').forEach(btn => {
-      btn.classList.toggle('is-active', btn.dataset.step === next);
+      const isCurrent = btn.dataset.step === next;
+      btn.classList.toggle('is-active', isCurrent);
       btn.classList.toggle('is-done', stageOrder(btn.dataset.step as Stage) < stageOrder(next));
+      if (isCurrent) btn.setAttribute('aria-current', 'step'); else btn.removeAttribute('aria-current');
     });
   }
+  // The scroller is the shared content column; start each stage at the top.
+  if (document.getElementById('page-restore')?.classList.contains('active')) document.querySelector('.content')?.scrollTo({ top: 0 });
 }
 
 function stageOrder(s: Stage): number {
   return { configure: 0, review: 1, running: 2, report: 3 }[s];
 }
 
-// ========== Configure stage ==========
+// ========== Configure stage: a guided, one-question-at-a-time flow ==========
 
 async function pickXml() {
   const res = await window.candybar.restorePickXml();
@@ -227,12 +323,30 @@ async function pickXml() {
   updateReviewButton();
 }
 
-// Review needs a backup to read; the button says why while it's locked.
+// Step 1 answers itself once a backup is chosen; step 2 unlocks.
 function updateReviewButton() {
-  const hasXml = !!xmlInput?.value.trim();
+  const xml = xmlInput?.value.trim() || '';
+  const hasXml = !!xml;
   if (toReviewBtn) toReviewBtn.disabled = !hasXml;
   const hint = document.getElementById('restore-xml-hint');
   if (hint) hint.style.display = hasXml ? 'none' : '';
+  if (pickXmlBtn) pickXmlBtn.textContent = hasXml ? 'Choose another…' : 'Choose file…';
+  const backupDesc = document.getElementById('restore-step-backup-desc');
+  if (backupDesc) {
+    backupDesc.textContent = hasXml
+      ? `Using ${baseName(xml)}. Track Lab reads it to see which tracks your library should have.`
+      : 'Track Lab reads it to see which tracks your library should have.';
+  }
+  stepBackup?.classList.toggle('is-done', hasXml);
+  stepBackup?.classList.toggle('is-current', !hasXml);
+  stepSources?.classList.toggle('is-locked', !hasXml);
+  stepSources?.classList.toggle('is-current', hasXml);
+  const sourcesDesc = document.getElementById('restore-step-sources-desc');
+  if (sourcesDesc) {
+    sourcesDesc.textContent = hasXml
+      ? 'Track Lab has ticked the places it can use right now. It tries them in this order.'
+      : 'Choose your backup first.';
+  }
 }
 
 async function pickLibraryRoot() {
@@ -240,28 +354,39 @@ async function pickLibraryRoot() {
   if (chosen && libRootInput) libRootInput.value = chosen;
 }
 
+// Sources the person ticked or unticked themselves keep their choice; the rest
+// follow what's plugged in and signed in.
+const userTouched = new Set<'usb' | Store>();
+
 async function refreshVolumes() {
   if (!volumesEl) return;
-  volumesEl.innerHTML = '<span class="wiz-hint">Detecting…</span>';
+  volumesEl.innerHTML = '<p class="restore-volumes-note">Looking for USB sticks…</p>';
   const res = await window.candybar.restoreListVolumes();
+  volumesChecked = true;
   if (!res.success || !res.volumes) {
-    volumesEl.innerHTML = `<span class="wiz-hint">Error: ${escapeHtml(res.error || 'unknown')}</span>`;
+    detectedVolumes = [];
+    volumesEl.innerHTML = `<p class="restore-volumes-note is-error">Track Lab couldn't look for USB sticks. Press Look again.</p>`;
+    if (res.error) volumesEl.title = res.error;
+    updateSourceStatuses();
     return;
   }
+  // A stick the person unticked stays unticked across a Look again.
+  const unticked = new Set(Array.from(volumesEl.querySelectorAll<HTMLInputElement>('input.restore-volume-check:not(:checked)')).map(el => el.value));
   detectedVolumes = res.volumes;
   if (detectedVolumes.length === 0) {
-    volumesEl.innerHTML = '<span class="wiz-hint">No external volumes mounted.</span>';
+    volumesEl.innerHTML = '<p class="restore-volumes-note">No USB sticks plugged in. Plug them in, then press Look again.</p>';
   } else {
     volumesEl.innerHTML = detectedVolumes.map(v =>
-      `<label class="wiz-volume"><input type="checkbox" class="restore-volume" value="${escapeHtml(v.name)}" checked> <b>${escapeHtml(v.name)}</b> <span class="wiz-hint">${escapeHtml(v.scanRoot)}</span></label>`,
+      `<label class="restore-volume" title="${escapeHtml(v.scanRoot)}"><input type="checkbox" class="restore-volume-check" value="${escapeHtml(v.name)}"${unticked.has(v.name) ? '' : ' checked'}><span>${escapeHtml(v.name)}</span></label>`,
     ).join('');
   }
+  if (srcUsb && !userTouched.has('usb')) srcUsb.checked = detectedVolumes.length > 0;
   updateSourceStatuses();
 }
 
 function selectedVolumeNames(): string[] {
   if (!volumesEl) return [];
-  return Array.from(volumesEl.querySelectorAll('input.restore-volume:checked'))
+  return Array.from(volumesEl.querySelectorAll('input.restore-volume-check:checked'))
     .map(el => (el as HTMLInputElement).value);
 }
 
@@ -277,45 +402,57 @@ async function refreshAccountStatuses() {
   } catch {
     accountStatus = { qobuz: { connected: 0, total: 0 }, beatport: { connected: 0, total: 0 } };
   }
+  accountsChecked = true;
   updateSourceStatuses();
+}
+
+function pill(tone: 'ok' | 'warn' | 'danger' | 'info' | '', text: string): string {
+  return `<span class="status-pill${tone ? ` status-pill--${tone}` : ''}">${escapeHtml(text)}</span>`;
 }
 
 function updateSourceStatuses() {
   if (statusEls.usb) {
     const n = detectedVolumes.length;
-    statusEls.usb.textContent = n === 0 ? 'No volumes detected' : `${n} volume${n === 1 ? '' : 's'} detected`;
-    statusEls.usb.className = `wiz-source-status ${n === 0 ? 'is-warn' : 'is-ok'}`;
+    statusEls.usb.innerHTML = !volumesChecked
+      ? pill('', 'Looking…')
+      : n === 0 ? pill('warn', 'None plugged in') : pill('ok', `${plural(n, 'stick')} found`);
   }
+  document.querySelector('.restore-source[data-source="usb"]')?.classList.toggle('is-off', !srcUsb?.checked);
   updateStoreSource('beatport', srcBeatport);
   updateStoreSource('qobuz', srcQobuz);
-  // SoundCloud has no status line; its label carries the "experimental, lossy" badge.
+  // SoundCloud isn't part of a restore yet; its row says so.
 }
 
 // Stores this page switched off because no account was signed in. They come
 // back on once one connects, so a choice the user made themselves is kept.
-const autoDisabledStores = new Set<'beatport' | 'qobuz'>();
+const autoDisabledStores = new Set<Store>();
 
-function updateStoreSource(service: 'beatport' | 'qobuz', input: HTMLInputElement | null) {
+function updateStoreSource(service: Store, input: HTMLInputElement | null) {
   const statusEl = statusEls[service];
   const { connected, total } = accountStatus[service];
-  if (input) {
+  if (input && accountsChecked) {
     if (connected === 0) {
       if (!input.disabled && input.checked) autoDisabledStores.add(service);
       input.checked = false;
       input.disabled = true;
     } else if (input.disabled) {
       input.disabled = false;
-      if (autoDisabledStores.delete(service)) input.checked = true;
+      if (autoDisabledStores.delete(service) || !userTouched.has(service)) input.checked = true;
     }
   }
+  document.querySelector(`.restore-source[data-source="${service}"]`)?.classList.toggle('is-off', !input?.checked);
   if (!statusEl) return;
+  if (!accountsChecked) { statusEl.innerHTML = pill('', 'Checking…'); return; }
+  const signIn = (label: string) =>
+    `<button type="button" class="btn-secondary btn-sm wiz-source-link" data-settings-section="${service}" data-tooltip="Open Settings to ${label === 'Add account' ? 'add' : 'sign in to'} your ${STORE_NAME[service]} account">${label}</button>`;
   if (connected === 0) {
-    const what = total === 0 ? 'No account' : 'Not signed in';
-    statusEl.innerHTML = `${what} · <button type="button" class="wiz-source-link" data-settings-section="${service}">Connect in Settings</button>`;
-    statusEl.className = 'wiz-source-status is-warn';
+    statusEl.innerHTML = total === 0
+      ? `${pill('', 'No account added')}${signIn('Add account')}`
+      : `${pill('warn', 'Not signed in')}${signIn('Sign in')}`;
+  } else if (connected < total) {
+    statusEl.innerHTML = `${pill('warn', `${connected} of ${total} signed in`)}${signIn('Sign in')}`;
   } else {
-    statusEl.textContent = `${connected} of ${total} connected`;
-    statusEl.className = `wiz-source-status ${connected < total ? 'is-warn' : 'is-ok'}`;
+    statusEl.innerHTML = pill('ok', total === 1 ? 'Signed in' : `${total} accounts signed in`);
   }
 }
 
@@ -323,16 +460,13 @@ function updateStoreSource(service: 'beatport' | 'qobuz', input: HTMLInputElemen
 
 async function goToReview() {
   const xmlPath = xmlInput?.value.trim() || '';
-  if (!xmlPath) { showToast('error', 'Missing XML', 'Choose a Rekordbox XML first.'); return; }
+  if (!xmlPath) { showToast('error', 'Choose your backup file', 'Pick the Rekordbox backup file (.xml) first.'); return; }
 
-  // We don't yet have a cheap "dry-run scan" IPC; show "—" for now and let
-  // the actual run fill these in live. The plan + source summary still
-  // gives plenty of pre-flight value.
-  if (reviewXmlCount) reviewXmlCount.textContent = '—';
-  if (reviewLibCount) reviewLibCount.textContent = '—';
-  if (reviewMissingCount) reviewMissingCount.textContent = '—';
-
-  renderPlan();
+  let libraryRoot = libRootInput?.value.trim() || '';
+  if (!libraryRoot) {
+    try { libraryRoot = await window.candybar.getLibraryRoot(); } catch { /* shown as "your library folder" */ }
+  }
+  renderPlan(xmlPath, libraryRoot);
   renderWarnings();
   renderLastRunNotes();
   setStage('review');
@@ -353,78 +487,132 @@ function renderLastRunNotes() {
     const n = last ? deletedCount(last) : 0;
     note.hidden = n === 0;
     note.textContent = n > 0
-      ? `${n} track${n === 1 ? '' : 's'} you deleted will be left out again. They aren't counted as missing.`
+      ? `${plural(n, 'track')} you deleted will be left out again. They aren't counted as missing.`
       : '';
   }
 }
 
-function renderPlan() {
+function placesToLook(): string[] {
+  const places: string[] = [];
+  if (srcUsb?.checked && selectedVolumeNames().length > 0) places.push('usb');
+  if (srcBeatport?.checked) places.push('beatport');
+  if (srcQobuz?.checked) places.push('qobuz');
+  return places;
+}
+
+function renderPlan(xmlPath: string, libraryRoot: string) {
+  const places = placesToLook();
+  const vols = selectedVolumeNames();
+  const signedIn = (s: Store) => accountStatus[s].connected;
+
+  if (reviewLeadEl) {
+    reviewLeadEl.textContent = places.length === 0
+      ? 'Track Lab has nowhere to look yet'
+      : `Track Lab will look for your missing tracks in ${plural(places.length, 'place')}`;
+  }
+  if (reviewLeadSubEl) {
+    reviewLeadSubEl.textContent = places.length === 0
+      ? 'Go back and plug in a USB stick, or sign in to Beatport or Qobuz. Track Lab can still tell you what\'s missing.'
+      : 'It compares your backup with your library first, so only the tracks you\'ve lost are recovered.';
+  }
+  if (reviewStatsEl) {
+    const tiles: string[] = [];
+    tiles.push(`<div class="stat-tile${vols.length && srcUsb?.checked ? ' stat-tile--accent' : ''}"><span class="stat-value">${srcUsb?.checked ? vols.length : 0}</span><span class="stat-label">${srcUsb?.checked && vols.length === 1 ? 'USB stick' : 'USB sticks'}</span><span class="stat-hint">${srcUsb?.checked ? (vols.length ? escapeHtml(vols.slice(0, 2).join(', ') + (vols.length > 2 ? '…' : '')) : 'None plugged in') : 'Not looking here'}</span></div>`);
+    for (const s of ['beatport', 'qobuz'] as const) {
+      const on = s === 'beatport' ? srcBeatport?.checked : srcQobuz?.checked;
+      const n = on ? signedIn(s) : 0;
+      tiles.push(`<div class="stat-tile${n ? ' stat-tile--accent' : ''}"><span class="stat-value">${n}</span><span class="stat-label">${STORE_NAME[s]} ${n === 1 ? 'account' : 'accounts'}</span><span class="stat-hint">${on ? 'Signed in' : 'Not looking here'}</span></div>`);
+    }
+    reviewStatsEl.innerHTML = tiles.join('');
+  }
+
   if (!reviewPlanEl) return;
-  const parts: string[] = [];
+  const steps: Array<{ title: string; detail?: string }> = [];
+  steps.push({ title: 'Read your backup file', detail: baseName(xmlPath) });
+  steps.push({ title: 'Check your library folder for the tracks you still have', detail: libraryRoot || 'The library folder from Settings' });
   if (srcUsb?.checked) {
-    const vols = selectedVolumeNames();
-    parts.push(`USB · ${vols.length ? vols.join(', ') : 'no volumes selected'}`);
+    steps.push(vols.length
+      ? { title: `Look on your USB ${vols.length === 1 ? 'stick' : 'sticks'}`, detail: `${vols.join(', ')}${usbTagMatchingInput?.checked ? '. Also matching by artist and title (slower).' : ''}` }
+      : { title: 'Look on your USB sticks', detail: 'None are plugged in, so Track Lab skips this.' });
   }
-  if (srcBeatport?.checked) {
-    const { connected, total } = accountStatus.beatport;
-    parts.push(`Beatport · ${connected} of ${total} accounts connected`);
+  for (const s of ['beatport', 'qobuz'] as const) {
+    const on = s === 'beatport' ? srcBeatport?.checked : srcQobuz?.checked;
+    if (!on) continue;
+    const { connected, total } = accountStatus[s];
+    steps.push({
+      title: `Download what you've bought on ${STORE_NAME[s]} again`,
+      detail: connected === total ? `${plural(total, 'account')}, all signed in.` : `${connected} of ${plural(total, 'account')} signed in.`,
+    });
   }
-  if (srcQobuz?.checked) {
-    const { connected, total } = accountStatus.qobuz;
-    parts.push(`Qobuz · ${connected} of ${total} accounts connected`);
+  if (rewriteXmlInput?.checked) {
+    steps.push({ title: 'Update your backup file to point at the recovered tracks', detail: 'A copy of the original file is saved first.' });
   }
-  if (srcSoundcloud?.checked) parts.push('SoundCloud (experimental, lossy)');
-  if (usbTagMatchingInput?.checked) parts.push('USB tag-matching enabled (slower, higher recall)');
-  if (rewriteXmlInput?.checked) parts.push('Rekordbox XML will be rewritten (backup first)');
-  const c = concurrencyInput?.value || '5';
-  parts.push(`Concurrency: ${c}`);
-  reviewPlanEl.innerHTML = parts.map(p => `<li>${escapeHtml(p)}</li>`).join('');
-  if (reviewEtaEl) reviewEtaEl.textContent = 'Run the job to see live progress, ETA, and per-account recovery counts.';
+  steps.push({ title: 'Save everything it finds in restore_recovered', detail: 'A new folder inside tracks_to_organize. Your library isn\'t touched.' });
+
+  reviewPlanEl.innerHTML = steps.map((st, i) => `
+    <li><span class="how-step-num">${i + 1}</span><div><strong>${escapeHtml(st.title)}</strong>${st.detail ? `<span>${escapeHtml(st.detail)}</span>` : ''}</div></li>`,
+  ).join('');
 }
 
 function renderWarnings() {
   if (!reviewWarningsEl || !reviewWarningsCard) return;
-  const warnings: string[] = [];
-  if (srcQobuz?.checked && accountStatus.qobuz.total === 0) warnings.push('Qobuz is enabled but no Qobuz accounts are configured.');
-  if (srcBeatport?.checked && accountStatus.beatport.total === 0) warnings.push('Beatport is enabled but no Beatport accounts are configured.');
-  if (srcQobuz?.checked && accountStatus.qobuz.total > 0 && accountStatus.qobuz.connected < accountStatus.qobuz.total) {
-    warnings.push(`${accountStatus.qobuz.total - accountStatus.qobuz.connected} Qobuz account(s) are not connected — they'll open a login window during the run.`);
+  const warnings: Array<{ title: string; body: string }> = [];
+  for (const s of ['qobuz', 'beatport'] as const) {
+    const on = s === 'qobuz' ? srcQobuz?.checked : srcBeatport?.checked;
+    const { connected, total } = accountStatus[s];
+    if (on && total === 0) {
+      warnings.push({ title: `No ${STORE_NAME[s]} account added`, body: `Add one in Settings, or Track Lab can't check what you bought there.` });
+    } else if (on && connected < total) {
+      const n = total - connected;
+      warnings.push({
+        title: `${plural(n, `${STORE_NAME[s]} account`)} ${n === 1 ? 'isn\'t' : 'aren\'t'} signed in`,
+        body: `A sign-in window opens for ${n === 1 ? 'it' : 'them'} during the restore. Sign in there, or in Settings now, so nothing is missed.`,
+      });
+    }
   }
-  if (srcBeatport?.checked && accountStatus.beatport.total > 0 && accountStatus.beatport.connected < accountStatus.beatport.total) {
-    warnings.push(`${accountStatus.beatport.total - accountStatus.beatport.connected} Beatport account(s) are not connected — they'll open a login window during the run.`);
+  if (srcUsb?.checked && detectedVolumes.length === 0) {
+    warnings.push({ title: 'No USB sticks plugged in', body: 'Plug in any sticks you\'ve exported to before, then go back and press Look again.' });
   }
-  if (srcUsb?.checked && detectedVolumes.length === 0) warnings.push('USB is enabled but no volumes are mounted.');
   if (warnings.length === 0) {
     reviewWarningsCard.style.display = 'none';
+    reviewWarningsEl.innerHTML = '';
     return;
   }
   reviewWarningsCard.style.display = '';
-  reviewWarningsEl.innerHTML = warnings.map(w => `<li>${escapeHtml(w)}</li>`).join('');
+  reviewWarningsEl.innerHTML = warnings.map(w => callout('warn', w.title, w.body)).join('');
 }
 
 // ========== Running stage ==========
 
+function setPhaseState(li: HTMLElement, state: 'active' | 'done' | 'skipped' | null) {
+  li.classList.toggle('is-active', state === 'active');
+  li.classList.toggle('is-done', state === 'done');
+  li.classList.toggle('is-skipped', state === 'skipped');
+  const word = li.querySelector('.wiz-phase-state');
+  if (word) word.textContent = state === 'active' ? 'Now' : state === 'done' ? 'Done' : state === 'skipped' ? 'Skipped' : '';
+}
+
 function resetRunState() {
   logEntries = [];
   if (logEl) logEl.innerHTML = '';
-  if (logCountEl) logCountEl.textContent = '0 entries';
-  if (accountsEl) accountsEl.innerHTML = '<p class="wiz-hint">No store accounts active yet.</p>';
+  if (logCountEl) logCountEl.textContent = 'Nothing yet';
+  if (accountsEl) accountsEl.innerHTML = '<p class="card-desc">Your Beatport and Qobuz accounts show up here when Track Lab gets to them.</p>';
   if (progressBarEl) {
     progressBarEl.style.width = '0%';
     progressBarEl.classList.remove('is-indeterminate');
   }
   if (kpiRecovered) kpiRecovered.textContent = '0';
-  if (kpiStillMissing) kpiStillMissing.textContent = '0';
-  if (kpiRate) kpiRate.textContent = '—';
-  if (kpiEta) kpiEta.textContent = '—';
-  if (kpiElapsed) kpiElapsed.textContent = '0s';
-  if (phaseCurrentEl) phaseCurrentEl.textContent = 'Starting…';
+  if (kpiStillMissing) kpiStillMissing.textContent = '—';
+  if (kpiEta) kpiEta.textContent = 'Since you pressed Start';
+  if (kpiElapsed) kpiElapsed.textContent = '0:00';
+  if (phaseCurrentEl) phaseCurrentEl.textContent = PHASE_HEADLINE.init;
+  if (runLineEl) runLineEl.textContent = 'Track Lab is working out which tracks are missing.';
   if (currentTrackEl) currentTrackEl.textContent = '';
   if (timelineEl) {
-    timelineEl.querySelectorAll<HTMLElement>('.wiz-phase').forEach(li => {
-      li.classList.remove('is-active', 'is-done', 'is-skipped', 'is-failed');
-    });
+    timelineEl.querySelectorAll<HTMLElement>('.wiz-phase').forEach(li => setPhaseState(li, null));
   }
+  const logDisclosure = document.getElementById('restore-log-disclosure') as HTMLDetailsElement | null;
+  if (logDisclosure) logDisclosure.open = false;
 
   live = {
     startWallTime: Date.now(),
@@ -435,14 +623,19 @@ function resetRunState() {
     activePhase: 'parsing',
   };
   if (liveTicker) clearInterval(liveTicker);
-  // 500ms ticker: refresh elapsed, ETA, rate, and phase-weighted progress bar
-  // even when the main process is silent between events. Keeps the UI "alive"
-  // during the multi-second sniff / scan / fetch phases.
+  // 500ms ticker: refresh time, time left and the phase-weighted progress bar
+  // even when the main process is silent between events.
   liveTicker = setInterval(tickLive, 500);
 }
 
 function stopLiveTicker() {
   if (liveTicker) { clearInterval(liveTicker); liveTicker = null; }
+}
+
+function missingKnown(): boolean {
+  if (!live) return false;
+  const st = live.phaseStatus.get('computing_missing');
+  return st === 'done' || st === 'skipped' || live.totals.missing > 0;
 }
 
 function tickLive() {
@@ -451,23 +644,28 @@ function tickLive() {
   // spoken recently, but prefer main's authoritative elapsed when available.
   const wallElapsed = (Date.now() - live.startWallTime) / 1000;
   const elapsed = Math.max(wallElapsed, live.latestElapsedSec);
-  if (kpiElapsed) kpiElapsed.textContent = formatDuration(elapsed);
+  if (kpiElapsed) kpiElapsed.textContent = clock(elapsed);
 
-  // Rate / ETA: only show once main has reported one, since tracks/min needs
-  // recovery data we can't derive locally.
-  if (kpiRate) kpiRate.textContent = live.latestRate ? (live.latestRate * 60).toFixed(1) : '—';
-  if (kpiEta) {
-    if (live.latestRate && live.latestRate > 0 && live.totals.stillMissing > 0) {
-      const est = live.totals.stillMissing / live.latestRate;
-      kpiEta.textContent = formatDuration(est);
+  // Time left: only once main has reported a rate, since tracks per minute
+  // needs recovery data we can't derive locally.
+  let left = '';
+  if (live.latestRate && live.latestRate > 0 && live.totals.stillMissing > 0) {
+    left = `about ${humanDuration(live.totals.stillMissing / live.latestRate)} left`;
+  }
+
+  if (runLineEl) {
+    const t = live.totals;
+    if (!missingKnown()) {
+      runLineEl.textContent = 'Track Lab is working out which tracks are missing.';
+    } else if (t.missing === 0) {
+      runLineEl.textContent = 'Nothing is missing from your library.';
     } else {
-      kpiEta.textContent = '—';
+      runLineEl.textContent = `${t.recovered.toLocaleString()} of ${plural(t.missing, 'missing track')} recovered${left ? ` · ${left}` : ''}`;
     }
   }
 
   // Phase-weighted overall progress: completed phases contribute full weight,
-  // the active phase contributes half + track-based fraction if we're in a
-  // download phase with real recoveries happening.
+  // the active phase contributes part of its weight, more as tracks come back.
   if (progressBarEl) {
     const totalWeight = Object.values(PHASE_WEIGHTS).reduce((a, b) => a + b, 0);
     let score = 0;
@@ -480,7 +678,6 @@ function tickLive() {
         let frac = 0.35; // baseline for "phase started, no track-level progress yet"
         if ((phase === 'usb_scan' || phase === 'beatport_download' || phase === 'qobuz_download')
             && live.totals.missing > 0) {
-          // Blend phase-baseline with track-level ratio within this phase
           frac = 0.2 + 0.6 * (live.totals.recovered / live.totals.missing);
         }
         score += weight * Math.min(1, frac);
@@ -489,8 +686,7 @@ function tickLive() {
     const pct = Math.min(100, Math.max(0, (score / totalWeight) * 100));
     progressBarEl.style.width = pct.toFixed(1) + '%';
 
-    // Show indeterminate stripe when a phase is active but we haven't had any
-    // recovery movement in the last few seconds (sniff / fetch / indexing).
+    // Stripe while a phase is busy without countable progress (reading, fetching).
     const isFetchy = live.activePhase === 'parsing' || live.activePhase === 'scanning_library' ||
       live.activePhase === 'computing_missing' || live.activePhase === 'beatport_fetch' ||
       live.activePhase === 'qobuz_fetch' || live.activePhase === 'xml_rewrite';
@@ -517,22 +713,19 @@ function onProgress(p: Progress) {
     live.activePhase = p.phase;
   }
 
-  // Timeline UI
+  // Steps checklist
   if (timelineEl) {
     const li = timelineEl.querySelector<HTMLElement>(`.wiz-phase[data-phase="${CSS.escape(p.phase)}"]`);
     if (li) {
       if (p.phaseStatus === 'start') {
         timelineEl.querySelectorAll<HTMLElement>('.wiz-phase.is-active').forEach(el => {
-          if (el !== li) { el.classList.remove('is-active'); el.classList.add('is-done'); }
+          if (el !== li) setPhaseState(el, 'done');
         });
-        li.classList.add('is-active');
-        li.classList.remove('is-done', 'is-skipped');
+        setPhaseState(li, 'active');
       } else if (p.phaseStatus === 'end') {
-        li.classList.remove('is-active');
-        li.classList.add('is-done');
+        setPhaseState(li, 'done');
       } else if (p.phaseStatus === 'skipped') {
-        li.classList.remove('is-active');
-        li.classList.add('is-skipped');
+        setPhaseState(li, 'skipped');
       }
     }
   }
@@ -542,45 +735,40 @@ function onProgress(p: Progress) {
   live.latestElapsedSec = p.elapsedSec;
   if (p.rate) live.latestRate = p.rate;
 
-  // KPIs that depend on real counts (ticker handles the smoothing/animation)
-  if (kpiRecovered) kpiRecovered.textContent = String(p.totals.recovered);
-  if (kpiStillMissing) kpiStillMissing.textContent = String(p.totals.stillMissing);
-  // Phase + current track
-  if (phaseCurrentEl) phaseCurrentEl.textContent = `${humanPhase(p.phase)} · ${p.message}`;
-  if (currentTrackEl) currentTrackEl.textContent = p.currentTrack || '';
-  // Per-account cards
+  if (kpiRecovered) kpiRecovered.textContent = p.totals.recovered.toLocaleString();
+  if (kpiStillMissing) kpiStillMissing.textContent = missingKnown() ? p.totals.stillMissing.toLocaleString() : '—';
+  if (phaseCurrentEl) phaseCurrentEl.textContent = PHASE_HEADLINE[live.activePhase] ?? PHASE_HEADLINE.init;
+  if (currentTrackEl) currentTrackEl.textContent = p.currentTrack ? `Now: ${p.currentTrack}` : '';
   if (p.perAccount && p.perAccount.length > 0) renderAccounts(p.perAccount);
-  // Log stream
   if (p.log) appendLog(p.log);
 
   // Immediate re-tick so the progress bar doesn't lag a beat behind the event
   tickLive();
 }
 
+function accountName(r: PerAccountCounter): string {
+  return r.label || r.email || `Account ${r.accountId.slice(0, 6)}`;
+}
+
 function renderAccounts(rows: PerAccountCounter[]) {
   if (!accountsEl) return;
-  if (rows.length === 0) {
-    accountsEl.innerHTML = '<p class="wiz-hint">No store accounts active yet.</p>';
-    return;
-  }
+  for (const r of rows) accountNames.set(r.accountId, accountName(r));
   accountsEl.innerHTML = rows.map(r => {
-    const name = r.label || r.email || r.accountId.slice(0, 8);
     const owned = r.ownedCount ?? 0;
     const matched = r.matchedCount ?? 0;
     const downloaded = r.downloadedCount ?? 0;
     const failed = r.failedCount ?? 0;
-    const serviceClass = r.service === 'qobuz' ? 'is-qobuz' : 'is-beatport';
     return `
-      <div class="wiz-account ${serviceClass}">
+      <div class="wiz-account">
         <div class="wiz-account-head">
-          <span class="wiz-account-service">${escapeHtml(r.service)}</span>
-          <span class="wiz-account-name" title="${escapeHtml(r.email || r.accountId)}">${escapeHtml(name)}</span>
+          <strong class="wiz-account-name" title="${escapeHtml(r.email || r.accountId)}">${escapeHtml(accountName(r))}</strong>
+          <span class="status-pill">${escapeHtml(STORE_NAME[r.service] ?? r.service)}</span>
         </div>
         <div class="wiz-account-stats">
-          <span><b>${owned}</b> owned</span>
-          <span><b>${matched}</b> matched</span>
-          <span class="wiz-ok"><b>${downloaded}</b> downloaded</span>
-          ${failed ? `<span class="wiz-bad"><b>${failed}</b> failed</span>` : ''}
+          <span><b>${owned.toLocaleString()}</b> bought</span>
+          <span><b>${matched.toLocaleString()}</b> missing tracks found</span>
+          <span class="wiz-ok"><b>${downloaded.toLocaleString()}</b> downloaded</span>
+          ${failed ? `<span class="wiz-bad"><b>${failed.toLocaleString()}</b> couldn't download</span>` : ''}
         </div>
       </div>`;
   }).join('');
@@ -596,41 +784,12 @@ function appendLog(entry: LogEntry) {
   const hh = String(t.getHours()).padStart(2, '0');
   const mm = String(t.getMinutes()).padStart(2, '0');
   const ss = String(t.getSeconds()).padStart(2, '0');
-  line.innerHTML = `<span class="wiz-log-time">${hh}:${mm}:${ss}</span><span class="wiz-log-phase">${escapeHtml(humanPhase(entry.phase))}</span><span class="wiz-log-msg">${escapeHtml(entry.message)}</span>`;
+  line.innerHTML = `<span class="wiz-log-time">${hh}:${mm}:${ss}</span><span class="wiz-log-phase">${escapeHtml(PHASE_SHORT[entry.phase] ?? entry.phase)}</span><span class="wiz-log-msg">${escapeHtml(entry.message)}</span>`;
   logEl.appendChild(line);
   // Cap DOM to last N lines
   while (logEl.childElementCount > MAX_LOG_ENTRIES) logEl.removeChild(logEl.firstChild!);
   logEl.scrollTop = logEl.scrollHeight;
-  if (logCountEl) logCountEl.textContent = `${logEntries.length} entries`;
-}
-
-function humanPhase(p: string): string {
-  const map: Record<string, string> = {
-    parsing: 'Parse XML',
-    scanning_library: 'Scan library',
-    computing_missing: 'Find missing',
-    usb_scan: 'USB scan',
-    beatport_fetch: 'Beatport purchases',
-    beatport_download: 'Beatport download',
-    qobuz_fetch: 'Qobuz purchases',
-    qobuz_download: 'Qobuz download',
-    xml_rewrite: 'Rewrite XML',
-    complete: 'Complete',
-    init: 'Init',
-  };
-  return map[p] || p;
-}
-
-function formatDuration(sec: number | undefined): string {
-  if (sec == null) return '—';
-  const s = Math.max(0, Math.round(sec));
-  if (s < 60) return `${s}s`;
-  const m = Math.floor(s / 60);
-  const r = s % 60;
-  if (m < 60) return `${m}m ${r}s`;
-  const h = Math.floor(m / 60);
-  const mm = m % 60;
-  return `${h}h ${mm}m`;
+  if (logCountEl) logCountEl.textContent = plural(logEntries.length, 'line');
 }
 
 // ========== Run ==========
@@ -638,12 +797,13 @@ function formatDuration(sec: number | undefined): string {
 async function startRestore() {
   if (running) return;
   const xmlPath = xmlInput?.value.trim() || '';
-  if (!xmlPath) { showToast('error', 'Missing XML', 'Choose a Rekordbox XML first.'); return; }
+  if (!xmlPath) { showToast('error', 'Choose your backup file', 'Pick the Rekordbox backup file (.xml) first.'); return; }
 
   running = true;
   if (startBtn) startBtn.disabled = true;
-  // A previous run's Abort leaves the button disabled.
-  if (abortBtn) abortBtn.disabled = false;
+  // A previous run's Stop leaves the button disabled.
+  if (abortBtn) { abortBtn.disabled = false; abortBtn.textContent = 'Stop'; }
+  accountNames.clear();
   resetRunState();
   setStage('running');
 
@@ -666,17 +826,26 @@ async function startRestore() {
       rewriteXml: !!rewriteXmlInput?.checked,
     });
     if (!res.success) {
-      showToast('error', 'Restore failed', res.error || 'Unknown error');
+      // Back to the plan either way, so the page never strands on a dead run.
+      if (res.aborted) {
+        showToast('info', 'Restore stopped', 'Tracks recovered before you stopped are in the restore_recovered folder.');
+      } else {
+        showToast('error', 'The restore didn\'t finish', res.error || 'Something went wrong. Check your backup file and drives, then try again.');
+      }
+      setStage('review');
     } else {
       currentReport = res.report as Report;
-      currentReportPath = (res as { reportPath?: string }).reportPath ?? null;
-      showToast('success', 'Restore complete',
-        `Recovered ${currentReport.totals.recovered} of ${currentReport.totals.missing}`);
+      currentReportPath = res.reportPath ?? null;
+      const t = currentReport.totals;
+      showToast('success', 'Restore finished', t.missing === 0
+        ? 'Nothing was missing from your library.'
+        : `Track Lab got back ${t.recovered.toLocaleString()} of ${plural(t.missing, 'missing track')}.`);
       renderReport(currentReport);
       setStage('report');
     }
   } catch (err) {
-    showToast('error', 'Restore failed', getErrorMessage(err));
+    showToast('error', 'The restore didn\'t finish', getErrorMessage(err));
+    setStage('review');
   } finally {
     offProgress?.();
     stopLiveTicker();
@@ -688,45 +857,95 @@ async function startRestore() {
 
 // ========== Report stage ==========
 
+const FAILURE: Record<string, { label: string; next: string }> = {
+  no_match: {
+    label: 'Not found anywhere Track Lab looked',
+    next: 'Plug in any other USB sticks you have and run again, or buy the track again from Find and buy.',
+  },
+  login: {
+    label: 'A store sign-in didn\'t work, so some purchases couldn\'t be checked',
+    next: 'Sign in again in Settings, then run again.',
+  },
+  download: {
+    label: 'Found, but the download didn\'t finish',
+    next: 'Run again. Downloads that fail once often work the second time.',
+  },
+  copy: {
+    label: 'Found on a USB stick, but copying it failed',
+    next: 'Check the stick is still plugged in and has no errors, then run again.',
+  },
+  rewrite: {
+    label: 'Couldn\'t update the backup file for these',
+    next: 'The tracks themselves may still be in restore_recovered. Check the full details in the track list.',
+  },
+  other: {
+    label: 'Some places couldn\'t be checked',
+    next: 'Sign in to every store account in Settings, then run again.',
+  },
+};
+
+function failureLabel(c: string): string {
+  return FAILURE[c]?.label ?? c;
+}
+
 function renderReport(report: Report) {
   const t = report.totals;
-  const recoveredPct = t.missing > 0 ? Math.round((t.recovered / t.missing) * 100) : 0;
+  const deleted = deletedCount(report);
+  const took = report.durationSec ? ` It took ${humanDuration(report.durationSec)}.` : '';
+
+  let tone: 'ok' | 'warn' = 'ok';
+  let headline: string;
+  let sentence: string;
+  if (t.missing === 0) {
+    headline = 'Nothing was missing';
+    sentence = `Your library already has every track in this backup${deleted ? ', apart from the ones you deleted' : ''}.${took}`;
+  } else if (t.recovered === t.missing) {
+    headline = 'All done! Every missing track is back';
+    sentence = `Track Lab recovered ${plural(t.recovered, 'track')} into the restore_recovered folder.${took}`;
+  } else if (t.recovered === 0) {
+    tone = 'warn';
+    headline = `Track Lab couldn't find any of the ${plural(t.missing, 'missing track')}`;
+    sentence = `Still missing, below, says what got in the way and what to try next.${took}`;
+  } else {
+    headline = `Track Lab got back ${t.recovered.toLocaleString()} of ${plural(t.missing, 'missing track')}`;
+    sentence = `They're in the restore_recovered folder. ${plural(t.stillMissing, 'track')} ${isAre(t.stillMissing)} still missing; see why below.${took}`;
+  }
+
+  if (reportHeadline) {
+    reportHeadline.innerHTML = `
+      <span class="restore-verdict-icon is-${tone}">${svg(tone === 'ok' ? CHECK_CIRCLE_BODY : SEARCH_BODY)}</span>
+      <div>
+        <h3 class="restore-lead">${escapeHtml(headline)}</h3>
+        <p class="restore-lead-sub">${escapeHtml(sentence)}</p>
+      </div>`;
+  }
   if (reportHero) {
     reportHero.innerHTML = `
-      <div class="wiz-hero-stat is-primary">
-        <div class="wiz-hero-num">${t.recovered}<span class="wiz-hero-total"> / ${t.missing}</span></div>
-        <div class="wiz-hero-label">recovered (${recoveredPct}%)</div>
-      </div>
-      <div class="wiz-hero-stat">
-        <div class="wiz-hero-num">${t.stillMissing}</div>
-        <div class="wiz-hero-label">still missing</div>
-      </div>
-      <div class="wiz-hero-stat">
-        <div class="wiz-hero-num">${formatDuration(report.durationSec)}</div>
-        <div class="wiz-hero-label">duration</div>
-      </div>
-      ${deletedCount(report) > 0 ? `
-      <div class="wiz-hero-stat is-quiet">
-        <div class="wiz-hero-num">${deletedCount(report)}</div>
-        <div class="wiz-hero-label">left out (you deleted)</div>
-      </div>` : ''}
-    `;
+      <div class="stat-tile stat-tile--ok"><span class="stat-value">${t.recovered.toLocaleString()}</span><span class="stat-label">Recovered</span><span class="stat-hint">In restore_recovered</span></div>
+      <div class="stat-tile${t.stillMissing ? ' stat-tile--warn' : ''}"><span class="stat-value">${t.stillMissing.toLocaleString()}</span><span class="stat-label">Still missing</span><span class="stat-hint">${t.stillMissing ? 'See why below' : 'None'}</span></div>
+      <div class="stat-tile"><span class="stat-value">${t.alreadyInLibrary.toLocaleString()}</span><span class="stat-label">Already in your library</span><span class="stat-hint">Left as they are</span></div>
+      ${deleted > 0 ? `<div class="stat-tile restore-stat-quiet"><span class="stat-value">${deleted.toLocaleString()}</span><span class="stat-label">Left out</span><span class="stat-hint">You deleted these</span></div>` : ''}`;
   }
 
   renderStoreErrors(document.getElementById('report-store-errors'), report.storeErrors ?? [],
-    'Tracks marked "Couldn\'t check" below may be in those purchases. Sign in again in Settings, then run again.');
+    'Tracks bought there may show as still missing. Sign in again in Settings, then run again.');
   renderDeletedGroup(report.deletedSkipped ?? []);
   renderLastRunNotes(); // the Configure stage's store rows show it too
 
+  const sourceEntries = Object.entries(report.bySource);
   if (reportBySourceEl) {
-    const rows = Object.entries(report.bySource);
-    reportBySourceEl.innerHTML = rows.length === 0
-      ? '<span class="wiz-hint">No recoveries.</span>'
-      : rows.map(([src, n]) => `<div class="wiz-breakdown-row"><span class="wiz-breakdown-label">${escapeHtml(src)}</span><span class="wiz-breakdown-value"><b>${n}</b></span></div>`).join('');
+    reportBySourceEl.innerHTML = sourceEntries.length === 0
+      ? '<p class="card-desc">Nothing was recovered.</p>'
+      : sourceEntries.map(([src, n]) => `<div class="wiz-breakdown-row"><span class="wiz-breakdown-label">${escapeHtml(src === 'usb' ? 'USB sticks' : SOURCE_NAME[src] ?? src)}</span><span class="wiz-breakdown-value"><b>${n.toLocaleString()}</b></span></div>`).join('');
+  }
+  if (reportSourcesHint) {
+    reportSourcesHint.textContent = sourceEntries.length === 0
+      ? 'Nothing recovered'
+      : sourceEntries.map(([src, n]) => `${src === 'usb' ? 'USB' : SOURCE_NAME[src] ?? src} ${n.toLocaleString()}`).join(' · ');
   }
 
   if (reportByAccountEl) {
-    // Derive per-account counts from report.results (post-run the perAccount snapshot isn't on the report yet; this is a fair reconstruction).
+    // Per-account counts from report.results; names from what the run reported.
     const byAccount = new Map<string, { service: string; count: number; accountId: string }>();
     for (const r of report.results) {
       if (r.status !== 'recovered' || !r.sourceAccountId || !r.source) continue;
@@ -734,13 +953,11 @@ function renderReport(report: Report) {
       const existing = byAccount.get(key);
       byAccount.set(key, { service: r.source, count: (existing?.count ?? 0) + 1, accountId: r.sourceAccountId });
     }
-    if (byAccount.size === 0) {
-      reportByAccountEl.innerHTML = '<span class="wiz-hint">No per-account store recoveries.</span>';
-    } else {
-      reportByAccountEl.innerHTML = Array.from(byAccount.values()).map(a =>
-        `<div class="wiz-breakdown-row"><span class="wiz-breakdown-label">${escapeHtml(a.service)} · ${escapeHtml(a.accountId.slice(0, 8))}</span><span class="wiz-breakdown-value"><b>${a.count}</b></span></div>`,
+    reportByAccountEl.innerHTML = byAccount.size === 0
+      ? '<p class="card-desc">Nothing came from a store account.</p>'
+      : Array.from(byAccount.values()).map(a =>
+        `<div class="wiz-breakdown-row"><span class="wiz-breakdown-label">${escapeHtml(SOURCE_NAME[a.service] ?? a.service)} · ${escapeHtml(accountNames.get(a.accountId) ?? `account ${a.accountId.slice(0, 6)}`)}</span><span class="wiz-breakdown-value"><b>${a.count.toLocaleString()}</b></span></div>`,
       ).join('');
-    }
   }
 
   if (reportFailuresEl && reportFailureCard) {
@@ -758,7 +975,14 @@ function renderReport(report: Report) {
       reportFailureCard.style.display = '';
       reportFailuresEl.innerHTML = entries
         .sort((a, b) => b[1] - a[1])
-        .map(([cat, n]) => `<div class="wiz-breakdown-row"><span class="wiz-breakdown-label">${escapeHtml(failureLabel(cat))}</span><span class="wiz-breakdown-value"><b>${n}</b></span></div>`)
+        .map(([cat, n]) => `
+          <div class="restore-why">
+            <span class="restore-why-count">${n.toLocaleString()}</span>
+            <div class="restore-why-body">
+              <strong>${escapeHtml(failureLabel(cat))}</strong>
+              <p><span class="restore-why-next">Try this:</span> ${escapeHtml(FAILURE[cat]?.next ?? 'Run again.')}</p>
+            </div>
+          </div>`)
         .join('');
     }
   }
@@ -767,27 +991,27 @@ function renderReport(report: Report) {
     if (report.xmlRewrite) {
       reportXmlCard.style.display = '';
       reportXmlEl.innerHTML = `
-        <div class="wiz-breakdown-row"><span class="wiz-breakdown-label">Updated</span><span class="wiz-breakdown-value"><b>${report.xmlRewrite.updated}</b></span></div>
-        ${report.xmlRewrite.notFound > 0 ? `<div class="wiz-breakdown-row"><span class="wiz-breakdown-label">Not found in XML</span><span class="wiz-breakdown-value"><b>${report.xmlRewrite.notFound}</b></span></div>` : ''}
-        ${report.xmlRewrite.backupPath ? `<div class="wiz-breakdown-row"><span class="wiz-breakdown-label">Backup</span><span class="wiz-breakdown-value">${escapeHtml(report.xmlRewrite.backupPath)}</span></div>` : ''}
+        <div class="wiz-breakdown-row"><span class="wiz-breakdown-label">Tracks updated in the backup file</span><span class="wiz-breakdown-value"><b>${report.xmlRewrite.updated.toLocaleString()}</b></span></div>
+        ${report.xmlRewrite.notFound > 0 ? `<div class="wiz-breakdown-row"><span class="wiz-breakdown-label">Not found in the backup file</span><span class="wiz-breakdown-value"><b>${report.xmlRewrite.notFound.toLocaleString()}</b></span></div>` : ''}
+        ${report.xmlRewrite.backupPath ? `<div class="wiz-breakdown-row"><span class="wiz-breakdown-label">Copy of the original</span><span class="wiz-breakdown-value restore-path" title="${escapeHtml(report.xmlRewrite.backupPath)}">${escapeHtml(baseName(report.xmlRewrite.backupPath))}</span></div>` : ''}
       `;
     } else {
       reportXmlCard.style.display = 'none';
     }
   }
 
+  // Filter counts and the track list
+  const n = (f: typeof reportFilter) => f === 'all' ? report.results.length : report.results.filter(r => r.status === f).length;
+  for (const f of ['all', 'recovered', 'still_missing'] as const) {
+    const el = document.getElementById(`report-count-${f}`);
+    if (el) el.textContent = n(f).toLocaleString();
+  }
+  if (reportTracksHint) {
+    reportTracksHint.textContent = `${plural(n('recovered'), 'recovered track')} · ${n('still_missing').toLocaleString()} still missing`;
+  }
+  const tracksDisclosure = document.getElementById('report-tracks-disclosure') as HTMLDetailsElement | null;
+  if (tracksDisclosure) tracksDisclosure.open = false;
   drawReportRows(report.results);
-}
-
-function failureLabel(c: string): string {
-  return ({
-    no_match: 'No match in any enabled source',
-    login: 'Store sign-in problem, or purchases couldn\'t be checked',
-    download: 'Download failed',
-    copy: 'USB copy failed',
-    rewrite: 'XML rewrite skipped',
-    other: 'Couldn\'t check every source',
-  } as Record<string, string>)[c] || c;
 }
 
 function deletedCount(report: Report): number {
@@ -800,9 +1024,13 @@ function renderStoreErrors(el: HTMLElement | null, errors: string[], hint: strin
   if (errors.length === 0) { el.hidden = true; el.innerHTML = ''; return; }
   el.hidden = false;
   el.innerHTML = `
-    <div class="wiz-callout-title">Couldn't check ${errors.length === 1 ? 'one store account' : `${errors.length} store accounts`}</div>
-    <ul class="wiz-callout-list">${errors.map(e => `<li>${escapeHtml(e)}</li>`).join('')}</ul>
-    <p class="wiz-callout-hint">${escapeHtml(hint)}</p>`;
+    ${svg(WARN_BODY).replace('<svg', '<svg class="callout-icon"')}
+    <div class="callout-body">
+      <strong>Track Lab couldn't check ${errors.length === 1 ? 'one store account' : `${errors.length} store accounts`}</strong>
+      <p>${escapeHtml(hint)}</p>
+      <details class="restore-callout-details"><summary>Show details</summary><ul>${errors.map(e => `<li>${escapeHtml(e)}</li>`).join('')}</ul></details>
+    </div>
+    <div class="callout-actions"><button type="button" class="btn-secondary btn-sm" data-settings-section="${/qobuz/i.test(errors[0]) ? 'qobuz' : 'beatport'}">Open Settings</button></div>`;
 }
 
 /** Quiet, collapsed list of tracks left out because Ben deleted them. */
@@ -813,10 +1041,21 @@ function renderDeletedGroup(skipped: SkippedTrack[]) {
   if (!card || !summary || !list) return;
   card.hidden = skipped.length === 0;
   card.open = false;
-  summary.textContent = `Left out — you deleted these (${skipped.length})`;
+  summary.textContent = `Left out because you deleted them (${skipped.length.toLocaleString()})`;
   list.innerHTML = skipped.map(t =>
     `<li><b>${escapeHtml(t.artist || 'Unknown artist')}</b> — ${escapeHtml(t.title || 'Untitled')}</li>`,
   ).join('');
+}
+
+/** Plain words for where a recovered track came from; the raw detail stays in the tooltip. */
+function recoveredDetail(r: TrackResult): string {
+  if (r.source === 'usb') {
+    const vol = r.detail?.split(': ').pop();
+    const close = r.detail?.startsWith('fuzzy');
+    return `${close ? 'Close match, copied' : 'Copied'}${vol ? ` from ${vol}` : ' from a USB stick'}`;
+  }
+  if (r.source === 'beatport' || r.source === 'qobuz') return 'Downloaded again from your purchases';
+  return r.detail || '';
 }
 
 function drawReportRows(results: TrackResult[]) {
@@ -825,47 +1064,65 @@ function drawReportRows(results: TrackResult[]) {
   if (!body) return;
   const filtered = reportFilter === 'all' ? results : results.filter(r => r.status === reportFilter);
   body.innerHTML = filtered.map(r => {
-    const acct = r.sourceAccountId ? r.sourceAccountId.slice(0, 8) : '';
+    const recovered = r.status === 'recovered';
+    const result = recovered
+      ? '<span class="status-pill status-pill--ok">Recovered</span>'
+      : '<span class="status-pill status-pill--warn">Still missing</span>';
+    const acct = r.sourceAccountId ? accountNames.get(r.sourceAccountId) : '';
+    const found = r.source ? `${SOURCE_NAME[r.source] ?? r.source}${acct ? ` · ${acct}` : ''}` : '—';
+    const details = recovered
+      ? `<span title="${escapeHtml(r.detail || '')}">${escapeHtml(recoveredDetail(r))}</span>`
+      : r.failureCategory
+        ? `<span class="restore-reason" title="${escapeHtml(r.detail || '')}">${escapeHtml(failureLabel(r.failureCategory))}</span>${r.detail ? `<span class="restore-detail">${escapeHtml(r.detail)}</span>` : ''}`
+        : escapeHtml(r.detail || '');
     return `
       <tr data-status="${escapeHtml(r.status)}">
-        <td><b>${escapeHtml(r.track.artist)}</b> — ${escapeHtml(r.track.title)}</td>
-        <td class="source" data-source="${r.source || ''}">${escapeHtml(r.source || '—')}</td>
-        <td>${escapeHtml(acct || '—')}</td>
-        <td>${r.status === 'still_missing' && r.failureCategory
-          ? `<span class="restore-reason">${escapeHtml(failureLabel(r.failureCategory))}</span>${r.detail ? `<span class="restore-detail">${escapeHtml(r.detail)}</span>` : ''}`
-          : escapeHtml(r.detail || '')}</td>
+        <td><b>${escapeHtml(r.track.artist || 'Unknown artist')}</b> — ${escapeHtml(r.track.title || 'Untitled')}</td>
+        <td>${result}</td>
+        <td class="source" data-source="${r.source || ''}">${escapeHtml(found)}</td>
+        <td>${details}</td>
       </tr>
     `;
   }).join('');
+
+  const empty = filtered.length === 0;
+  const wrap = reportTable.closest('.table-container') as HTMLElement | null;
+  if (wrap) wrap.style.display = empty ? 'none' : '';
+  if (reportEmpty) {
+    reportEmpty.hidden = !empty;
+    reportEmpty.innerHTML = empty
+      ? `<h4>${reportFilter === 'still_missing' ? 'Nothing is still missing' : reportFilter === 'recovered' ? 'Nothing was recovered' : 'No tracks to show'}</h4>`
+      : '';
+  }
 }
 
 async function exportReport() {
-  // The backend already writes the report JSON to userData on every run; just
+  // The backend already writes the report file to userData on every run; just
   // reveal it in Finder rather than re-serializing client-side.
   if (!currentReportPath) {
-    showToast('info', 'No report on disk', 'Run a restore first.');
+    showToast('info', 'No report file yet', 'Run a restore first.');
     return;
   }
   try {
     await window.candybar.showInFinder(currentReportPath);
   } catch {
-    showToast('error', 'Could not open report', currentReportPath);
+    showToast('error', 'Couldn\'t open the report file', currentReportPath);
   }
 }
 
 async function openStageFolder() {
   if (!currentReport) return;
   const p = currentReport.options.stageDir;
-  if (p) await window.candybar.showInFinder(p).catch(() => { /* ignore */ });
+  if (p) await window.candybar.showInFinder(p).catch(() => {
+    showToast('error', 'Couldn\'t open the folder', p);
+  });
 }
 
-function runAgain() {
+async function runAgain() {
   // The backend can't yet limit a run to the still-missing tracks, so this
   // goes back to the plan for a full re-run with the same settings.
   if (!currentReport) return;
-  renderPlan();
-  renderWarnings();
-  setStage('review');
+  await goToReview();
 }
 
 // ========== Init ==========
@@ -884,45 +1141,47 @@ export function initRestore() {
     // Cooperative cancellation: restore stops at the next phase boundary and,
     // crucially, before the destructive XML rewrite. In-flight downloads finish.
     void window.candybar.abortRestore();
-    if (abortBtn) abortBtn.disabled = true;
-    showToast('info', 'Aborting restore…', 'Stopping at the next safe point; in-flight downloads finish.');
+    if (abortBtn) { abortBtn.disabled = true; abortBtn.textContent = 'Stopping…'; }
+    showToast('info', 'Stopping the restore…', 'Track Lab stops at the next safe point. Downloads already under way finish first.');
   });
   newRunBtn?.addEventListener('click', () => setStage('configure'));
 
   reportExportBtn?.addEventListener('click', () => void exportReport());
   reportOpenStageBtn?.addEventListener('click', () => void openStageFolder());
-  reportRetryBtn?.addEventListener('click', () => runAgain());
+  reportRetryBtn?.addEventListener('click', () => void runAgain());
 
-  // Report filter buttons (within stage 4)
+  // Report filter tabs (within the Results stage)
   document.querySelectorAll<HTMLButtonElement>('#restore-stage-report .restore-filter').forEach(btn => {
     btn.addEventListener('click', () => {
-      document.querySelectorAll('#restore-stage-report .restore-filter').forEach(b => b.classList.remove('is-active'));
-      btn.classList.add('is-active');
+      document.querySelectorAll<HTMLButtonElement>('#restore-stage-report .restore-filter').forEach(b => {
+        b.classList.toggle('active', b === btn);
+        b.setAttribute('aria-pressed', String(b === btn));
+      });
       reportFilter = btn.dataset.filter as typeof reportFilter;
       if (currentReport) drawReportRows(currentReport.results);
     });
   });
 
-  // Auto-refresh volumes + account status on first visit
+  // Look up drives and store accounts on every visit, so the ticks match what's plugged in now.
   const page = document.getElementById('page-restore');
   if (page) {
     const observer = new MutationObserver(() => {
-      if (page.classList.contains('active')) {
-        if (detectedVolumes.length === 0) void refreshVolumes();
+      if (page.classList.contains('active') && currentStage === 'configure' && !running) {
+        void refreshVolumes();
         void refreshAccountStatuses();
       }
     });
     observer.observe(page, { attributes: true, attributeFilter: ['class'] });
   }
 
-  // Sources checkboxes — update the Configure-stage status summary on toggle
-  [srcUsb, srcBeatport, srcQobuz, srcSoundcloud].forEach(el => {
-    el?.addEventListener('change', () => updateSourceStatuses());
+  // Remember which sources the person chose themselves.
+  ([['usb', srcUsb], ['beatport', srcBeatport], ['qobuz', srcQobuz]] as const).forEach(([key, el]) => {
+    el?.addEventListener('change', () => { userTouched.add(key); updateSourceStatuses(); });
   });
 
-  // "Connect in Settings" links inside the store source rows.
-  document.getElementById('restore-sources')?.addEventListener('click', (e) => {
-    const link = (e.target as HTMLElement).closest<HTMLButtonElement>('.wiz-source-link');
+  // "Sign in" / "Add account" / "Open Settings" buttons on this page.
+  page?.addEventListener('click', (e) => {
+    const link = (e.target as HTMLElement).closest<HTMLButtonElement>('[data-settings-section]');
     if (!link?.dataset.settingsSection) return;
     e.preventDefault();
     requestOpenSettings(link.dataset.settingsSection);
@@ -932,4 +1191,5 @@ export function initRestore() {
   });
 
   updateReviewButton();
+  updateSourceStatuses();
 }

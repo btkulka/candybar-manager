@@ -10,8 +10,8 @@
  * comes back next launch.
  */
 
-import { setActiveTab, showToast } from './shared';
-import { openSettingsTo, closeSettings } from './settings';
+import { setActiveTab, showToast, requestOpenSetup } from './shared';
+import { closeSettings } from './settings';
 
 interface TourStep {
   /** Selector for the area to spotlight; several matches are spotlit as one box.
@@ -28,65 +28,65 @@ interface TourStep {
 const STEPS: TourStep[] = [
   {
     title: 'Welcome to Track Lab',
-    body: 'A one-minute tour of what each page is for. Arrow keys move through it, Esc skips it.',
+    body: 'A one-minute look at what each page does. The arrow keys move through it, and Esc skips it.',
   },
   {
     target: '.topbar-nav',
-    title: 'Pages',
-    body: 'Every tool lives in this sidebar: Rekordbox tools on top, Ableton tools below.',
+    title: 'Everything lives in the side bar',
+    body: 'Pages are grouped by what you\'re doing: looking after your library, getting new music, getting ready for a gig, and fixing things.',
   },
   {
     target: '.nav-link[data-page="library"]',
     page: 'library',
     title: 'Library',
-    body: 'Your whole collection at a glance: health counts, problems like missing files, lossy or unplayable formats and missing tags, possible duplicates, and connected drives. It rescans in the background each time the app opens.',
+    body: 'Your whole collection at a glance: what\'s ready to play, what could use a fix (like missing cover art or a lower-quality file), and any drives plugged in. Track Lab checks it again every time it opens.',
   },
   {
     target: '.nav-link[data-page="organize"]',
     page: 'organize',
-    title: 'Organize',
-    body: 'Point it at a folder of new downloads and it moves each track into an artist folder in your library, based on its artist tag.',
+    title: 'Sort new music',
+    body: 'Point it at the folder your downloads land in, and it files each track into your library, one folder per artist. Nothing moves until you say so.',
   },
   {
     target: '.nav-link[data-page="source"]',
     page: 'source',
-    title: 'Sourcing',
-    body: 'Add a Spotify playlist, a SoundCloud set or a CSV. It checks which tracks you already own, then finds lossless copies of the rest on Qobuz and Beatport and builds a cart.',
+    title: 'Find & buy',
+    body: 'Add a Spotify playlist, a SoundCloud set or a spreadsheet. Track Lab shows which tracks you already have and finds full-quality copies of the rest on Qobuz and Beatport. Playlists are saved, so you can check one again in a click.',
   },
   {
     target: '.nav-link[data-page="upgrade"]',
     page: 'upgrade',
-    title: 'Upgrades',
-    body: 'Pick a Rekordbox playlist and it finds the tracks you only have as MP3, AAC or a streaming link, then looks for full-quality copies to buy.',
+    title: 'Upgrade quality',
+    body: 'Pick a Rekordbox playlist. Track Lab finds the MP3s and streaming tracks, helps you buy full-quality copies, then swaps them in for you — keeping your cue points, play counts and date added.',
   },
   {
     target: '.nav-link[data-page="usb-health"]',
     page: 'usb-health',
-    title: 'USB',
-    body: 'Before a gig, plug in your USB stick and check it for files a Pioneer XDJ-RX3 won’t play.',
+    title: 'Check a USB',
+    body: 'Before a gig, plug in your USB stick and make sure every track on it will play on Pioneer CDJs and XDJs.',
   },
   {
     target: '.nav-link[data-page="restore"]',
     page: 'restore',
-    title: 'Restore',
-    body: 'Rebuild a library from a Rekordbox XML, pulling files from connected drives and re-downloading your Beatport and Qobuz purchases.',
+    title: 'Restore library',
+    body: 'Lost your library? Rebuild it from a Rekordbox backup file, your USB sticks, and the tracks you\'ve bought on Beatport and Qobuz.',
   },
   {
     target: '.nav-link[data-page="splice-recovery"]',
     page: 'splice-recovery',
-    title: 'Splice Recovery',
-    body: 'Open an Ableton .als project and re-download the Splice samples it can’t find.',
+    title: 'Splice samples',
+    body: 'Ableton project missing sounds? Track Lab finds them on Splice and downloads them back into place.',
   },
   {
-    target: '#spotify-status, #soundcloud-status, #qobuz-status, #beatport-status',
-    title: 'Connections',
-    body: 'These show whether Spotify, SoundCloud, Qobuz and Beatport are connected. Click one to refresh it or sign in.',
+    target: '#connections-toggle',
+    title: 'Your connections',
+    body: 'This says whether Spotify, SoundCloud, Qobuz and Beatport are working, in a few words. Click it to see each one and sign in.',
   },
   {
-    target: '#start-tour, #open-settings',
-    title: 'Start in Settings',
-    body: 'Choose your library folder first. Rekordbox XML, Spotify keys and store sign-ins can wait until a page asks for them. The ? button replays this tour.',
-    action: { label: 'Open Settings', run: () => openSettingsTo('library') },
+    target: '#open-setup, #start-tour, #open-settings',
+    title: 'Setup and help',
+    body: 'The setup guide, this tour and Settings are always down here. Anything you skipped during setup can be finished from the setup guide.',
+    action: { label: 'Open the setup guide', run: () => requestOpenSetup() },
   },
 ];
 
@@ -160,7 +160,7 @@ export function offerTour(): void {
   showToast(
     'info',
     'New: a quick tour',
-    'Upgrades, SoundCloud sets in Sourcing and more. The one-minute tour shows where everything lives. It\'s also under ? in the top bar.',
+    'Pages have plainer names, there\'s a setup guide, and Find & buy remembers your playlists. The one-minute tour shows where everything lives — it\'s also at the bottom of the side bar.',
     15000,
     { label: 'Take the tour', onClick: startTour }
   );

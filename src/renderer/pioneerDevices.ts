@@ -105,7 +105,11 @@ export function normalizeFS(fs: string): string {
   if (upper.includes('FAT32') || upper === 'MSDOSFAT32') return 'FAT32';
   if (upper.includes('FAT16') || upper === 'MSDOSFAT16') return 'FAT16';
   if (upper.includes('EXFAT')) return 'exFAT';
-  if (upper.includes('HFS') || upper.includes('APFS')) return 'HFS+';
+  // APFS is its own thing: no Pioneer player reads it (it used to be lumped
+  // in with HFS+, which made APFS sticks look playable).
+  if (upper.includes('APFS')) return 'APFS';
+  // diskutil calls HFS+ "Mac OS Extended (Journaled)".
+  if (upper.includes('HFS') || upper.includes('MACOSEXTENDED')) return 'HFS+';
   if (upper.includes('NTFS')) return 'NTFS';
   if (upper.includes('FAT')) return 'FAT32'; // generic FAT → FAT32
   return fs;
@@ -131,9 +135,9 @@ export function countFormats(tracks: LibraryHealthTrack[]): Record<string, numbe
 }
 
 export function categoryLabel(cat: PioneerDevice['category']): string {
-  return cat === 'flagship' ? 'Club Standard'
-    : cat === 'all-in-one' ? 'All-in-One'
-    : 'Media Player';
+  return cat === 'flagship' ? 'Club standard'
+    : cat === 'all-in-one' ? 'All-in-one'
+    : 'Media player';
 }
 
 export function deviceReadsFS(device: PioneerDevice, fileSystem: string): boolean {

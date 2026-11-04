@@ -2,7 +2,38 @@ import { describe, it, expect } from 'vitest';
 import {
   isStorePartition, isAllowedWebviewSrc, isAllowedGuestNavigation, isAllowedExternalUrl,
   isStoreCheckoutUrl, PLACE_ORDER_RE, ADVANCE_RE, scrapeItemCount, resyncRefusal,
+  persistentCookieCopy, KEPT_SESSION_COOKIE_SECONDS, type JarCookie,
 } from '../mainGuards';
+
+describe('persistentCookieCopy', () => {
+  const now = 1_800_000_000;
+  // What Qobuz's shop sends: `set-cookie: qobuz-session=…; path=/; secure; HttpOnly`
+  const qobuzSession: JarCookie = {
+    name: 'qobuz-session', value: 'abc', domain: 'www.qobuz.com', hostOnly: true,
+    path: '/', secure: true, httpOnly: true, session: true, sameSite: 'unspecified',
+  };
+
+  it("keeps the Qobuz shop's session cookie, host-only and with an expiry", () => {
+    const copy = persistentCookieCopy(qobuzSession, now);
+    expect(copy).toEqual({
+      url: 'https://www.qobuz.com/', name: 'qobuz-session', value: 'abc', path: '/',
+      secure: true, httpOnly: true, sameSite: 'unspecified', expirationDate: now + KEPT_SESSION_COOKIE_SECONDS,
+    });
+    expect(copy).not.toHaveProperty('domain');
+  });
+  it('keeps a domain cookie on its domain', () => {
+    const copy = persistentCookieCopy({ ...qobuzSession, domain: '.beatport.com', hostOnly: false, path: '/x' }, now);
+    expect(copy).toMatchObject({ url: 'https://beatport.com/x', domain: '.beatport.com' });
+  });
+  it('leaves cookies that already persist alone', () => {
+    expect(persistentCookieCopy({ ...qobuzSession, session: false }, now)).toBeNull();
+  });
+  it("never keeps another site's cookie from the same jar", () => {
+    for (const domain of ['.evergage.com', 'beatportllc.us-7.evergage.com', 'notqobuz.com', 'qobuz.com.evil.io', undefined]) {
+      expect(persistentCookieCopy({ ...qobuzSession, domain }, now)).toBeNull();
+    }
+  });
+});
 
 describe('resyncRefusal', () => {
   const root = '/Volumes/Candy Bar/Music';

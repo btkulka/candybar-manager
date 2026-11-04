@@ -330,6 +330,11 @@ export type AppConfig = {
   organizeSourceDir: string;
   spotifyClientId: string;
   spotifyClientSecret: string;
+  /** Long-lived token from `claude setup-token`, for a machine where Claude Code
+   *  isn't signed in. Empty uses the install's own login. Kept in secrets.json. */
+  claudeOauthToken: string;
+  /** Model alias for Claude jobs ('opus', 'sonnet', …); empty is Claude Code's default. */
+  claudeModel: string;
   floatingConsoleEnabled: boolean;
   activeTab: string;
   checkCsvPath: string;
@@ -355,6 +360,8 @@ export type AppConfig = {
   showAdvancedTools?: boolean; // when false (default), hides developer and repair controls marked data-advanced
   tutorialCompleted?: boolean; // false until the first-run tour is finished or skipped; config files that predate the tour read as true
   tourOffered?: boolean; // set once someone who predates the tour has been offered it, so the nudge shows only once
+  setupCompleted?: boolean; // true once the setup guide has been finished or skipped; a first launch opens it before the tour
+  rekordboxBackupDir: string; // master.db snapshots go here before the app writes to Rekordbox; '' = <library's parent>/backups/rekordbox (resolveRekordboxBackupDir)
 };
 
 // Store purchase types
@@ -468,6 +475,56 @@ export type LibrarySourcingResult = {
   notFound: import('./lib/qobuzCart').QobuzCartTrackInput[];
 };
 
+// ---------- Saved playlists (Find and buy → "Your playlists") ----------
+
+export type SavedSourceKind = 'spotify' | 'soundcloud' | 'csv';
+
+/** What the last check of a saved source found, in the page's own buckets. */
+export type SavedSourceCounts = {
+  /** Not in the library, with a full-quality copy for sale. */
+  toBuy: number;
+  /** Something close is in the library; a full-quality copy is for sale too. */
+  maybeOwned: number;
+  /** Already in the library. */
+  owned: number;
+  /** No full-quality copy on Qobuz or Beatport (compressed-only included). */
+  notForSale: number;
+};
+
+/** A playlist, SoundCloud set or spreadsheet checked on Find and buy, kept so
+ *  it can be checked again in one click. Stored in candybar.db (saved_sources). */
+export type SavedSource = {
+  id: number;
+  kind: SavedSourceKind;
+  /** The link or CSV path the check ran on (as last given). */
+  ref: string;
+  /** Shown name: the user's rename when there is one, else the playlist's own. */
+  name: string;
+  /** The playlist's own name, as the service (or file name) gave it. */
+  originalName: string;
+  renamed: boolean;
+  imageUrl: string | null;
+  owner: string;
+  trackCount: number;
+  counts: SavedSourceCounts;
+  createdAt: number;
+  lastCheckedAt: number;
+  /** CSV only: no file at `ref` any more (moved, renamed or deleted). */
+  missing?: boolean;
+};
+
+export type SavedSourceInput = {
+  kind: SavedSourceKind;
+  ref: string;
+  name: string;
+  imageUrl?: string | null;
+  owner?: string;
+  trackCount: number;
+  counts: SavedSourceCounts;
+  /** When the check ran; defaults to now. */
+  checkedAt?: number;
+};
+
 // ---------- Lossless upgrades (Rekordbox playlist → lossless store copies) ----------
 
 /** A regular or smart playlist in the live Rekordbox collection. Folders are
@@ -505,8 +562,15 @@ export type LosslessUpgradeRow = {
   /** A lossless entry for the same track (same version) is already in the
    *  collection, so this one needs relinking in Rekordbox, not buying. */
   losslessCopy?: { rbId: string; filePath: string; formatLabel: string };
-  /** Store search result. Only set for lossy/streaming rows with no lossless copy. */
+  /** Store search result. Only set for lossy/streaming rows with no lossless
+   *  copy, and skipped when Bandcamp gives the track away (no email needed). */
   match?: import('./lib/qobuzCart').QobuzCartMatch;
+  /** Free and cheap copies, looked for before the stores: a SoundCloud free
+   *  download first, then Bandcamp. Set on the same rows as `match`. */
+  free?: import('./lib/freeSources').FreeSources;
+  /** What "Get free downloads" did for this row: the full-quality file that
+   *  landed (for the swap step), or why none did. */
+  freeOutcome?: import('./lib/freeSources').FreeUpgradeOutcome;
   /** Why a row couldn't be searched (e.g. a streaming title that couldn't be read). */
   note?: string;
 };
@@ -517,11 +581,47 @@ export type LosslessUpgradeResult = {
 };
 
 export type LosslessUpgradeProgress = {
-  phase: 'reading' | 'resolving' | 'searching';
+  /** free: SoundCloud + Bandcamp search. searching: Qobuz + Beatport.
+   *  fetching: "Get free downloads" running (message is the downloader's line). */
+  phase: 'reading' | 'resolving' | 'free' | 'searching' | 'fetching';
   current: number;
   total: number;
   message: string;
 };
+
+// ---------- Lossless swap (a downloaded lossless file replaces a Rekordbox entry's file in place) ----------
+//
+// The entry keeps its DjmdContent row (same ID), so cue points, loops, Date
+// Added, play count, rating, colour, comments, playlists and MyTags all stay.
+
+export type UpgradeSwapInput = { rbId: string; newFilePath: string };
+
+/** Where the same music sits in the two files. `offsetMs` is how much later (+)
+ *  or earlier (−) a moment is in the new file than on the original's Rekordbox
+ *  timeline (which, for an MP3, includes the encoder's start-up delay).
+ *  `confidence` is the weakest window's correlation, 0–1. */
+export type UpgradeSwapAlignment = { status: 'aligned' | 'shifted' | 'mismatch' | 'unchecked'; offsetMs: number; confidence: number; note: string };
+
+export type UpgradeSwapPlanItem = {
+  rbId: string; title: string; artist: string;
+  action: 'swap' | 'skip'; reason?: string;
+  before: { path: string; format: string; bitRate: number; sampleRate: number; bitDepth: number; fileSize: number; lengthSec: number };
+  /** fileSize is null until the file is written (apply). */
+  after: { path: string; format: string; sampleRate: number; bitDepth: number; fileSize: number | null; lengthSec: number };
+  keeps: { hotCues: number; memoryCues: number; loops: number; playlists: number; myTags: number; playCount: number; dateAdded: string; rating: number };
+  alignment: UpgradeSwapAlignment;
+  cueShiftMs: number;          // 0 when cues stay as they are; else added to every cue (whole ms)
+  checkBeatgrid: boolean;      // true when the user should eyeball the grid in Rekordbox afterwards
+  oldFileGoesTo: string | null;
+};
+
+export type UpgradeSwapPreflight = { rekordboxRunning: boolean; dbFound: boolean; backupDir: string; backupDirOk: boolean; archiveDir: string; libraryRoot: string; error?: string };
+
+export type UpgradeSwapProgress = { phase: 'planning' | 'converting' | 'writing' | 'verifying' | 'archiving' | 'done'; current: number; total: number; message: string };
+
+export type UpgradeSwapResultItem = { rbId: string; title: string; artist: string; status: 'swapped' | 'skipped' | 'failed'; detail: string; cueShiftMs: number; checkBeatgrid: boolean };
+
+export type UpgradeSwapResult = { swapped: number; skipped: number; failed: number; backupPath: string | null; rollbackPath: string | null; items: UpgradeSwapResultItem[] };
 
 export type StoreSearchProgress = {
   current: number;
@@ -555,7 +655,11 @@ export type JobType =
   | 'album-art-scan'
   | 'catalog-export'
   | 'organize-tracks'
-  | 'usb-health-scan';
+  | 'usb-health-scan'
+  | 'claude-ask'
+  | 'claude-sourcing-review'
+  | 'claude-track-tags'
+  | 'claude-soundcloud';
 
 export type JobProgress = {
   jobId: string;
@@ -576,6 +680,105 @@ export type JobInfo = {
   startedAt: number | null;
   completedAt: number | null;
   error: string | null;
+};
+
+// ========== Claude jobs ==========
+// Jobs that run a headless Claude Code session on the signed-in subscription.
+
+/** The subscription's rate-limit state, as the stream reports it. */
+export type ClaudeRateLimit = {
+  status: string;
+  rateLimitType: string | null;
+  /** 0..1 share of the window used, when reported. */
+  utilization: number | null;
+  /** Epoch seconds. */
+  resetsAt: number | null;
+};
+
+export type ClaudeStatus = {
+  installed: boolean;
+  binaryPath: string | null;
+  version: string | null;
+  loggedIn: boolean;
+  /** 'claude.ai' (signed in), 'oauth_token' (setup-token), or an API method. */
+  authMethod: string | null;
+  email: string | null;
+  subscriptionType: string | null;
+  /** The login is a Claude subscription, so jobs bill the plan. */
+  subscription: boolean;
+  usingAppToken: boolean;
+  /** Last rate-limit state a job saw, so Settings can show how much is left. */
+  rateLimit: ClaudeRateLimit | null;
+  error: string | null;
+};
+
+export type ClaudeAskParams = { prompt: string; /** Continue this conversation. */ sessionId?: string };
+export type ClaudeAskResult = { text: string; sessionId: string | null };
+
+/** One Sources row sent for review: what was wanted, what the library thinks
+ *  it has, and the store link the engine picked. */
+export type SourcingReviewRow = {
+  id: string;
+  wanted: { artist: string; title: string; album?: string };
+  library?: { ownedArtist: string; ownedTitle: string; confidence: number; reason?: string };
+  store: {
+    source: 'qobuz' | 'beatport';
+    artists: string[];
+    title: string;
+    remixers?: string[];
+    release?: string;
+    label?: string;
+    confidence: number;
+    /** The engine already suspects a different version. */
+    versionFlag: boolean;
+    /** The link is a whole release, not the one track. */
+    releaseLevel: boolean;
+    note?: string;
+  };
+};
+export type SourcingVerdictKind = 'buy' | 'skip' | 'wrong' | 'flag';
+export type SourcingVerdict = { id: string; verdict: SourcingVerdictKind; note: string };
+export type SourcingReviewResult = { verdicts: SourcingVerdict[]; summary: string };
+
+export type TrackTagField = 'title' | 'artist' | 'remixer' | 'album' | 'genre' | 'year' | 'bpm' | 'key' | 'label';
+export type ClaudeTrackTagsParams = { filePath: string; tags: Record<TrackTagField | 'comment', string> };
+/** Suggested values; '' means Claude found nothing it trusts for that field. */
+export type ClaudeTrackTagsResult = {
+  fields: Record<TrackTagField, string>;
+  confidence: 'high' | 'medium' | 'low';
+  source: string;
+  sourceUrl: string;
+  notes: string;
+};
+
+export type ClaudeSoundcloudParams = {
+  /** A set link; empty means the signed-in account's likes. */
+  setUrl?: string;
+  limit?: number;
+  /** ISO date: likes made on/after it. */
+  since?: string;
+  listOnly?: boolean;
+  dropLossy?: boolean;
+  /** Handed to gates that ask for an address; never sent otherwise. */
+  email?: string;
+  /** Let gates follow/like/comment for real through the SoundCloud session. */
+  accountActions?: boolean;
+  /** Retry the stalled gates of an earlier run. */
+  resumeSessionPath?: string;
+};
+export type SoundcloudReview = {
+  summary: string;
+  needsYou: { artist: string; title: string; reason: string; action: string }[];
+  possibleDuplicates: { artist: string; title: string; file: string; ownedAs: string }[];
+  nextSteps: string[];
+  resumeWorthIt: boolean;
+};
+export type ClaudeSoundcloudResult = {
+  sessionPath: string;
+  counts: Record<string, number>;
+  review: SoundcloudReview | null;
+  /** Why the review step failed, when the downloads themselves went fine. */
+  reviewError?: string;
 };
 
 // ========== USB Health ==========

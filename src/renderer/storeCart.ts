@@ -10,13 +10,15 @@
 
 import type { QobuzCartMatch } from '../lib/qobuzCart';
 import type { StoreCartProgress, StoreMatch } from '../types';
-import { showToast, getErrorMessage } from './shared';
+import { showToast, getErrorMessage, escapeHtml, isReleaseMatch } from './shared';
 
 export type Store = 'qobuz' | 'beatport';
 export const STORE_LABEL: Record<Store, string> = { qobuz: 'Qobuz', beatport: 'Beatport' };
 
 /** Matches at or above this are pre-selected (when also lossless and the right version). */
 export const AUTO_SELECT_CONFIDENCE = 0.75;
+/** At or above this a match reads as "Exact match". */
+export const EXACT_MATCH_CONFIDENCE = 0.9;
 
 /** The match is for a different version than the one asked for: a remix of an
  *  original, the original of a remix, a sped-up edit. Still offered, flagged. */
@@ -24,8 +26,66 @@ export function isOtherVersion(m: QobuzCartMatch): boolean {
   return (m.scoreParts?.penalty ?? 0) > 0;
 }
 
-/** Inline flag for a row whose match is a different version. */
-export const OTHER_VERSION_TAG = '<span class="src-tag-version" title="This looks like a different version from the one you have or asked for (a remix, the original, or a sped-up edit). Check it before buying.">other version?</span>';
+// ---------- Row wording shared by Find and buy and Upgrade quality ----------
+
+/**
+ * How sure the match is, as a word with the number in its tooltip:
+ * "Exact match", "Close match", "Close match — check", plus the two flags that
+ * always need a look before buying (a different version, a whole release).
+ */
+export function matchPillHtml(m: QobuzCartMatch): string {
+  const pct = Math.round((m.confidence ?? 0) * 100);
+  const sure = `Track Lab is ${pct}% sure this is the same track.`;
+  const pill = (tone: string, label: string, tip: string) =>
+    `<span class="status-pill status-pill--${tone} buy-match" tabindex="0" data-tooltip="${escapeHtml(tip)}">${escapeHtml(label)}</span>`;
+  if (isOtherVersion(m)) {
+    return pill('warn', 'Different version?', `This looks like a different version from the one in your list: a remix, the original or a sped-up edit. Listen before you buy. ${sure}`);
+  }
+  if (isReleaseMatch(m)) {
+    return pill('warn', 'Whole release — check', `Qobuz matched the whole release, not this one track, so the name and price may be the release's. Open it on Qobuz before buying. ${sure}`);
+  }
+  if (m.confidence >= EXACT_MATCH_CONFIDENCE) return pill('ok', 'Exact match', sure);
+  if (m.confidence >= AUTO_SELECT_CONFIDENCE) return pill('info', 'Close match', `${sure} Worth a quick listen.`);
+  return pill('warn', 'Close match — check', `${sure} Listen before you buy.`);
+}
+
+/** "Full quality · 24-bit" with a plain explanation in its tooltip. */
+export function qualityHtml(m: QobuzCartMatch): string {
+  const raw = m.source === 'qobuz' ? m.qobuzTrack?.quality ?? '' : '';
+  const bits = raw.match(/(\d+)\s*-?\s*bit/i)?.[1];
+  const rate = raw.match(/([\d.]+)\s*kHz/i)?.[1];
+  const label = bits ? `Full quality · ${bits}-bit` : 'Full quality';
+  const detail = bits === '24'
+    ? `Studio quality: 24-bit${rate ? `, ${rate} kHz` : ''}. Better than a CD.`
+    : bits === '16'
+      ? `CD quality: 16-bit${rate ? `, ${rate} kHz` : ''}.`
+      : m.source === 'beatport' ? 'Beatport sells it as a full-quality (lossless) file.' : '';
+  const tip = `Full quality (lossless) means nothing was thrown away to make the file smaller, unlike an MP3. ${detail}`.trim();
+  return `<span class="term" tabindex="0" data-tooltip="${escapeHtml(tip)}">${escapeHtml(label)}</span>`;
+}
+
+/** The only copy for sale is compressed (MP3, AAC): shown, never carted. */
+export function isCompressedOnly(m: QobuzCartMatch): boolean {
+  return m.status === 'matched' && !m.lossless;
+}
+
+/** Why a track has nothing to buy, as a sentence. */
+export function notForSaleReason(m: QobuzCartMatch): string {
+  if (m.status === 'error') return "Track Lab couldn't search the stores for this one. Check the list again later.";
+  if (isCompressedOnly(m)) {
+    const store = m.source ? STORE_LABEL[m.source] : 'The store';
+    const what = m.qobuzTrack?.quality ? ` (${m.qobuzTrack.quality})` : '';
+    return `${store} only sells a compressed copy${what}, so it stays out of your cart.`;
+  }
+  return m.error || 'Not found in full quality on Qobuz or Beatport.';
+}
+
+/** A short status pill for a track with nothing to buy. */
+export function notForSalePillHtml(m: QobuzCartMatch): string {
+  if (m.status === 'error') return `<span class="status-pill status-pill--danger" tabindex="0" data-tooltip="${escapeHtml(m.error || 'The store search failed.')}">Search didn't work</span>`;
+  if (isCompressedOnly(m)) return '<span class="status-pill status-pill--warn">Compressed only</span>';
+  return '<span class="status-pill">Not found</span>';
+}
 
 /** Safe to pre-select: a confident, lossless match of the same version, by an
  *  artist that actually matched, and — on Qobuz — pinned to the one track on
@@ -166,7 +226,7 @@ async function addBatches(
     const items = uniqueByTrack(batches[store] ?? []);
     if (items.length === 0) continue;
     const label = STORE_LABEL[store];
-    onProgress(store, { current: 0, total: items.length, message: `Authenticating with ${label}…` });
+    onProgress(store, { current: 0, total: items.length, message: `Signing in to ${label}…` });
     const off = window.candybar.onStoreCartProgress((p: StoreCartProgress) => onProgress(store, p));
     try {
       const res = await window.candybar.storeCartAdd(items, store);
@@ -190,14 +250,28 @@ async function addBatches(
 /** One toast summarizing a cart-add. */
 export function toastCartOutcome({ added, failures, owned }: CartAddOutcome): void {
   const total = added.qobuz.length + added.beatport.length;
-  const ownedSuffix = owned.length > 0 ? ` · ${owned.length} already owned, skipped` : '';
+  const n = (k: number) => `${k.toLocaleString()} ${k === 1 ? 'track' : 'tracks'}`;
+  const ownedSuffix = owned.length > 0 ? ` ${n(owned.length)} you already bought ${owned.length === 1 ? 'was' : 'were'} left out.` : '';
   if (total > 0 && failures.length === 0) {
-    showToast('success', 'Cart Updated', `${total} ${total === 1 ? 'track' : 'tracks'} added${ownedSuffix}.`);
+    showToast('success', 'Added to your carts', `${n(total)} added. Nothing is bought until you check out.${ownedSuffix}`);
   } else if (total > 0) {
-    showToast('warning', 'Partially Added', `${total} added, ${failures.length} failed${ownedSuffix}.`);
+    showToast('warning', "Some tracks didn't go in", `${n(total)} added; ${n(failures.length)} couldn't be added.${ownedSuffix}`);
   } else if (owned.length > 0 && failures.length === 0) {
-    showToast('info', 'Already Owned', `You already own all ${owned.length} of these tracks.`);
+    showToast('info', 'You already bought these', `The store says you already own all ${n(owned.length)}.`);
   } else {
-    showToast('error', 'Cart Failed', failures[0] ?? 'Failed to add tracks to cart.');
+    showToast('error', "Couldn't add to your carts", failures[0] ?? "The store didn't accept the tracks. Try again in a moment.");
   }
+}
+
+/** Scroll the page's own scroller (.content) so `el` shows — never the window
+ *  or the app shell, which scrollIntoView can shift. */
+export function revealInContent(el: HTMLElement | null, where: 'start' | 'nearest' = 'nearest'): void {
+  const box = el?.closest<HTMLElement>('.content');
+  if (!el || !box) return;
+  const r = el.getBoundingClientRect();
+  const b = box.getBoundingClientRect();
+  let top: number | null = null;
+  if (where === 'start' || r.top < b.top) top = box.scrollTop + (r.top - b.top) - 16;
+  else if (r.bottom > b.bottom) top = box.scrollTop + Math.min(r.bottom - b.bottom + 16, r.top - b.top - 16);
+  if (top !== null) box.scrollTo({ top: Math.max(0, top), behavior: 'smooth' });
 }

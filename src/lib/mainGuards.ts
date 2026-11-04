@@ -15,6 +15,47 @@ export function isStorePartition(partition: string | undefined | null): boolean 
   return typeof partition === 'string' && STORE_PARTITION_RE.test(partition);
 }
 
+/** The parts of an Electron cookie the keep rule below reads. */
+export type JarCookie = {
+  name: string;
+  value: string;
+  domain?: string;
+  hostOnly?: boolean;
+  path?: string;
+  secure?: boolean;
+  httpOnly?: boolean;
+  session?: boolean;
+  sameSite?: 'unspecified' | 'no_restriction' | 'lax' | 'strict';
+};
+
+/** The stores' own domains. Third-party cookies in the same jar (trackers,
+ *  payment providers) are never kept past the launch. */
+const STORE_COOKIE_DOMAIN_RE = /(?:^|\.)(?:qobuz|beatport)\.com$/;
+export const KEPT_SESSION_COOKIE_SECONDS = 30 * 24 * 60 * 60;
+
+/**
+ * The copy of a store's session cookie to write back with an expiry, or null
+ * to leave the cookie alone. Chromium only writes cookies that have an expiry
+ * to disk, and Qobuz's shop session (`qobuz-session`) has none, so every
+ * relaunch came back signed out of the shop. A host-only cookie stays
+ * host-only: naming its domain would widen it to every subdomain.
+ */
+export function persistentCookieCopy(cookie: JarCookie, nowSeconds: number) {
+  if (!cookie.session || !cookie.domain || !STORE_COOKIE_DOMAIN_RE.test(cookie.domain)) return null;
+  const host = cookie.domain.replace(/^\./, '');
+  return {
+    url: `https://${host}${cookie.path || '/'}`,
+    name: cookie.name,
+    value: cookie.value,
+    ...(cookie.hostOnly ? {} : { domain: cookie.domain }),
+    path: cookie.path,
+    secure: cookie.secure,
+    httpOnly: cookie.httpOnly,
+    sameSite: cookie.sameSite,
+    expirationDate: nowSeconds + KEPT_SESSION_COOKIE_SECONDS,
+  };
+}
+
 function parseUrl(url: string): URL | null {
   try {
     return new URL(url);
