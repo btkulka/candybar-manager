@@ -88,6 +88,10 @@ candybar_sync_packages \
 say "Building Candy Bar Manager (first run takes a few minutes)"
 candybar_build
 
+# --- Applications shortcut ---
+say "Adding Track Lab to Applications"
+candybar_make_app
+
 # --- Optional: Claude Code MCP server ---
 if command -v claude >/dev/null 2>&1 && ask "Register the candybar-audio-tools MCP server with Claude Code?"; then
   claude mcp add candybar-audio-tools -s user -- node "$REPO_DIR/dist/mcp/mcp-server.js" \
@@ -96,7 +100,8 @@ fi
 
 say "Installed to $REPO_DIR"
 cat <<EOF
-Start it any time with:
+Open Track Lab from Applications, Launchpad or Spotlight like any other app.
+Or from Terminal:
   cd "$REPO_DIR" && npm start
 
 The app checks GitHub on launch and offers "Update & Restart" when a newer

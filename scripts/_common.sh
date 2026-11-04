@@ -86,3 +86,82 @@ candybar_launch() {
   nohup npm start -- --skipBuild >>"$log_dir/app-stdout.log" 2>&1 &
   disown || true
 }
+
+# A clickable "Track Lab" in Applications (and so Launchpad and Spotlight) with
+# the record icon. It holds no code of its own: it starts this checkout through
+# candybar_launch, so updates never leave it stale. Rewritten when its stamp
+# (checkout path + icon) changes, and never written over another app of the
+# same name. --refresh-only updates one that's there but never makes one: the
+# app runs it that way on launch, so a Track Lab someone deleted stays deleted.
+# CANDYBAR_APPS_DIR overrides /Applications (for trying it out). Needs REPO_DIR.
+CANDYBAR_APP_NAME="Track Lab"
+CANDYBAR_APP_ID="com.btkulka.tracklab.launcher"
+
+candybar_make_app() {
+  local refresh_only=0 apps app stamp id tmp
+  [ "${1:-}" = "--refresh-only" ] && refresh_only=1
+  local icon="$REPO_DIR/assets/AppIcon.icns"
+  [ -f "$icon" ] || { echo "!! $icon is missing, so there's no Applications shortcut."; return 0; }
+  apps="${CANDYBAR_APPS_DIR:-/Applications}"
+  [ -w "$apps" ] || apps="$HOME/Applications"
+  app="$apps/$CANDYBAR_APP_NAME.app"
+  stamp="$REPO_DIR $(shasum "$icon" | cut -c1-12)"
+  if [ -d "$app" ]; then
+    id="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app/Contents/Info.plist" 2>/dev/null || true)"
+    [ "$id" = "$CANDYBAR_APP_ID" ] || { echo "!! $app isn't Track Lab's shortcut; leaving it alone."; return 0; }
+    [ "$(cat "$app/Contents/Resources/stamp" 2>/dev/null || true)" = "$stamp" ] && return 0
+  elif [ "$refresh_only" = 1 ]; then
+    return 0
+  fi
+
+  mkdir -p "$apps"
+  tmp="$apps/.$CANDYBAR_APP_NAME.app.$$"
+  rm -rf "$tmp"
+  mkdir -p "$tmp/Contents/MacOS" "$tmp/Contents/Resources"
+  cp "$icon" "$tmp/Contents/Resources/AppIcon.icns"
+  printf '%s' "$stamp" >"$tmp/Contents/Resources/stamp"
+  cat >"$tmp/Contents/Info.plist" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleName</key><string>$CANDYBAR_APP_NAME</string>
+  <key>CFBundleDisplayName</key><string>$CANDYBAR_APP_NAME</string>
+  <key>CFBundleIdentifier</key><string>$CANDYBAR_APP_ID</string>
+  <key>CFBundleExecutable</key><string>track-lab</string>
+  <key>CFBundleIconFile</key><string>AppIcon</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleShortVersionString</key><string>1.0</string>
+  <key>CFBundleVersion</key><string>1</string>
+  <key>LSMinimumSystemVersion</key><string>11.0</string>
+  <!-- Starts the app and exits; the app itself shows in the Dock. -->
+  <key>LSUIElement</key><true/>
+</dict>
+</plist>
+EOF
+  {
+    printf '#!/bin/bash\n# Starts Track Lab from its checkout. Written by scripts/_common.sh (candybar_make_app).\n'
+    printf 'REPO_DIR=%q\n' "$REPO_DIR"
+    cat <<'EOF'
+alert() { osascript -e "display alert \"Track Lab can't open\" message \"$1\" as critical" >/dev/null 2>&1; }
+if [ ! -f "$REPO_DIR/scripts/_common.sh" ]; then
+  alert "Its files aren't in $REPO_DIR any more. Run its install script again."
+  exit 1
+fi
+. "$REPO_DIR/scripts/_common.sh"
+set -eu
+candybar_setup_path
+candybar_node_ok || { alert "It needs Node.js $CANDYBAR_MIN_NODE_MAJOR or newer. Run its install script again to set that up."; exit 1; }
+[ -f "$REPO_DIR/dist/main/main.js" ] || { alert "It hasn't been built yet. Run its install script again."; exit 1; }
+cd "$REPO_DIR"
+candybar_launch
+EOF
+  } >"$tmp/Contents/MacOS/track-lab"
+  chmod +x "$tmp/Contents/MacOS/track-lab"
+  rm -rf "$app"
+  mv "$tmp" "$app"
+  # Finder and the Dock cache icons; make them read this one.
+  touch "$app"
+  /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$app" >/dev/null 2>&1 || true
+  echo "==> Track Lab is in $apps: open it from there, Launchpad or Spotlight"
+}

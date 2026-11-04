@@ -12,6 +12,10 @@ Full setup on a Mac. It works from a checkout, or standalone, where it clones in
 - the shared packages: `btkulka/packages` cloned beside this repo, then
   `npm install` and `npm run build` there under its `.npm-lock`
 - `npm ci`, the app build, and the MCP build
+- a clickable **Track Lab** in `/Applications` (or `~/Applications`), with the
+  record icon, that starts this checkout (`candybar_make_app` in `_common.sh`).
+  The app also makes it once on launch for installs from before it existed, and
+  refreshes it after that, but never brings back one that was deleted
 - optionally, `claude mcp add`
 
 ## update.sh (Mac)
@@ -23,6 +27,14 @@ itself, detached, from the **Update & Restart** prompt
 (`--wait-pid <pid> --relaunch`), and the log goes to
 `~/Library/Logs/candybar-manager/update.log`. `_common.sh` holds what the two
 scripts share.
+
+## make-icons.mjs (Mac)
+
+`node scripts/make-icons.mjs` draws the app icon and the sidebar mark from the
+record graphic and writes `assets/app-icon.png` (the window and Dock icon),
+`assets/AppIcon.icns` (the Applications shortcut) and their SVG sources in
+`assets/icon/`. It uses macOS's own `sips` and `iconutil`, so nothing needs
+installing. The sidebar's inline copy of the mark is in `index.html`.
 
 ## install.ps1
 

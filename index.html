@@ -25,10 +25,15 @@
       <!-- Side Navigation -->
       <aside class="sidenav">
         <div class="sidenav-brand">
-          <svg class="logo topbar-logo" viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
-            <rect x="3" y="3" width="26" height="26" rx="6" fill="var(--accent-muted)" stroke="var(--accent-dim)"/>
-            <circle cx="16" cy="16" r="7" fill="none" stroke="var(--accent)"/>
-            <circle cx="16" cy="16" r="2" fill="var(--accent)" stroke="none"/>
+          <!-- The record mark (assets/icon/mark.svg, drawn by scripts/make-icons.mjs) -->
+          <svg class="logo topbar-logo" viewBox="0 0 64 64" aria-hidden="true">
+            <defs><linearGradient id="brand-sheen" x1="1" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fff" stop-opacity="0.16"/><stop offset="0.42" stop-color="#fff" stop-opacity="0"/><stop offset="0.58" stop-color="#fff" stop-opacity="0"/><stop offset="1" stop-color="#fff" stop-opacity="0.07"/></linearGradient></defs>
+            <circle cx="32" cy="32" r="30" fill="#070b0e" stroke="var(--accent)" stroke-opacity="0.6" stroke-width="2"/>
+            <circle cx="32" cy="32" r="24.5" fill="none" stroke="var(--accent)" stroke-opacity="0.22" stroke-width="1.4"/>
+            <circle cx="32" cy="32" r="19.5" fill="none" stroke="var(--accent)" stroke-opacity="0.22" stroke-width="1.4"/>
+            <circle cx="32" cy="32" r="30" fill="url(#brand-sheen)"/>
+            <circle cx="32" cy="32" r="12" fill="var(--accent)"/>
+            <circle cx="32" cy="32" r="2.6" fill="#05090c"/>
           </svg>
           <span class="topbar-brand">Track Lab</span>
         </div>

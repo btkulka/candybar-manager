@@ -429,7 +429,53 @@ app.on('session-created', (ses) => {
   if (isStoreSession(ses)) keepStoreSessionCookies(ses);
 });
 
+// One Track Lab at a time: opening it again (the Applications shortcut, the
+// Dock) brings the open window forward instead of starting a second copy.
+// The lock is per user-data folder, so scratch runs with --user-data-dir have
+// their own; e2e tests (NODE_ENV=test) share the real one and skip it.
+if (process.env.NODE_ENV !== 'test' && !app.requestSingleInstanceLock()) {
+  app.exit(0);
+}
+app.on('second-instance', () => {
+  const win = getMainWindow();
+  if (!win) {
+    if (app.isReady()) createWindow();
+    return;
+  }
+  if (win.isMinimized()) win.restore();
+  win.show();
+  win.focus();
+});
+
+/**
+ * The clickable "Track Lab" in Applications (scripts/_common.sh,
+ * candybar_make_app). install.sh makes it; this makes it once for installs
+ * from before it existed (their update.sh predates it), then only refreshes
+ * it, so a shortcut someone deleted stays deleted. Never for scratch runs.
+ */
+function ensureAppShortcut(): void {
+  if (process.platform !== 'darwin' || process.env.NODE_ENV === 'test' || app.commandLine.hasSwitch('user-data-dir')) return;
+  const repoDir = app.getAppPath();
+  if (!fs.existsSync(path.join(repoDir, 'scripts', '_common.sh')) || !fs.existsSync(path.join(repoDir, '.git'))) return;
+  const marker = path.join(app.getPath('userData'), 'app-shortcut-made');
+  const refreshOnly = fs.existsSync(marker);
+  execFile(
+    '/bin/bash',
+    ['-c', `. "$1/scripts/_common.sh" && REPO_DIR="$1" candybar_make_app${refreshOnly ? ' --refresh-only' : ''}`, 'bash', repoDir],
+    { timeout: 30_000 },
+    (err, stdout) => {
+      if (err) {
+        mainLog.warn('Could not add Track Lab to Applications:', err);
+        return;
+      }
+      if (stdout.trim()) mainLog.info(stdout.trim());
+      if (!refreshOnly) fs.writeFile(marker, new Date().toISOString(), () => {});
+    },
+  );
+}
+
 app.whenReady().then(async () => {
+  ensureAppShortcut();
   const iconPath = resolveIconPath();
   if (iconPath && app.dock) {
     const icon = nativeImage.createFromPath(iconPath);

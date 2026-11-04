@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <defs><linearGradient id="sheen" x1="1" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ffffff" stop-opacity="0.16"/><stop offset="0.42" stop-color="#ffffff" stop-opacity="0"/><stop offset="0.58" stop-color="#ffffff" stop-opacity="0"/><stop offset="1" stop-color="#ffffff" stop-opacity="0.07"/></linearGradient></defs>
+  <circle cx="32" cy="32" r="30" fill="#070b0e" stroke="#7fffd4" stroke-opacity="0.6" stroke-width="2"/>
+  <circle cx="32" cy="32" r="24.5" fill="none" stroke="#7fffd4" stroke-opacity="0.22" stroke-width="1.4"/>
+  <circle cx="32" cy="32" r="19.5" fill="none" stroke="#7fffd4" stroke-opacity="0.22" stroke-width="1.4"/>
+  <circle cx="32" cy="32" r="30" fill="url(#sheen)"/>
+  <circle cx="32" cy="32" r="12" fill="#7fffd4"/>
+  <circle cx="32" cy="32" r="2.6" fill="#05090c"/>
+</svg>
