@@ -22,7 +22,7 @@ import { getErrorMessage } from './errorUtils';
 import { isTrackDownloaded, recordDownload, getDownloadedTrackPath, isTrackDeleted } from './db';
 import { recordWrite } from './writeJournal';
 import { sessionFetch, sessionFetchJson, closeStoreBrowsers } from './storeBrowser';
-import { getQobuzReleaseTracks, parseQobuzPopin } from './qobuz';
+import { getQobuzReleaseTracks, parseQobuzPopin, readQobuzCartPage } from './qobuz';
 import { bestOwnedMatch, pickReleaseTrack, pickQobuzLosslessTier, withVersion } from './storeMatching';
 import { persistentCookieCopy } from './mainGuards';
 import { sniffAudio, extFromUrlOrType } from './audioSniff';
@@ -30,6 +30,7 @@ import type {
   StoreTrackInput,
   StoreMatch,
   StoreCartResult,
+  StoreCartCheck,
   StoreCartProgress,
   StoreAccount
 } from '../types';
@@ -615,18 +616,69 @@ export async function addToQobuzCart(
 
 // ========== Beatport Cart ==========
 
+/** The account's default cart ("cart"): the one Beatport's own /cart page shows. */
+async function findBeatportCart(accountId: string, token: string): Promise<{ cartId: string } | { error: string }> {
+  try {
+    const res = await beatportApi(token, '/my/carts/');
+    const text = await res.text();
+    if (!res.ok) {
+      if (res.status === 401) invalidateBeatportToken(accountId);
+      return { error: `${res.status}: ${text.slice(0, 180).replace(/\s+/g, ' ')}` };
+    }
+    type BpCart = { id?: number; cart_id?: number; default?: boolean; name?: string };
+    const raw = JSON.parse(text) as BpCart[] | { results?: BpCart[]; carts?: BpCart[] };
+    const list: BpCart[] = Array.isArray(raw) ? raw : (raw.results ?? raw.carts ?? []);
+    const c = list.find(x => x.default) || list.find(x => x.name === 'cart') || list[0];
+    const rawId = c?.id ?? c?.cart_id;
+    if (rawId != null) return { cartId: String(rawId) };
+    return { error: `200 but no usable id; snippet=${text.slice(0, 180).replace(/\s+/g, ' ')}` };
+  } catch (err) {
+    return { error: `exception: ${getErrorMessage(err, 'cart lookup failed')}` };
+  }
+}
+
+/** Track ids in the cart, or null when the cart can't be read. */
+async function readBeatportCartTrackIds(token: string, cartId: string): Promise<Set<string> | null> {
+  try {
+    const res = await beatportApi(token, `/my/carts/${cartId}/`);
+    if (!res.ok) return null;
+    const cart = await res.json() as { tracks?: Array<{ item_id?: number; item?: { id?: number } }> };
+    return new Set((cart.tracks ?? []).map(t => String(t.item_id ?? t.item?.id ?? '')).filter(Boolean));
+  } catch {
+    return null;
+  }
+}
+
 /** Track ids already in the cart, so a retry never adds a second copy (or the
  *  same track in a second format). Best effort: an unreadable cart reads empty
  *  and the API's own AlreadyInCart answer still holds the line. */
 async function beatportCartTrackIds(token: string, cartId: string): Promise<Set<string>> {
-  try {
-    const res = await beatportApi(token, `/my/carts/${cartId}/`);
-    if (!res.ok) return new Set();
-    const cart = await res.json() as { tracks?: Array<{ item_id?: number; item?: { id?: number } }> };
-    return new Set((cart.tracks ?? []).map(t => String(t.item_id ?? t.item?.id ?? '')).filter(Boolean));
-  } catch {
-    return new Set();
-  }
+  return (await readBeatportCartTrackIds(token, cartId)) ?? new Set();
+}
+
+/** Which of these tracks are still in the Beatport cart. Reads the session's
+ *  token; never opens a sign-in window. */
+export async function checkBeatportCart(accountId: string, trackIds: string[]): Promise<StoreCartCheck> {
+  const token = await ensureBeatportToken(accountId);
+  if (!token) return { known: false, reason: 'Not signed in to Beatport' };
+  const cart = await findBeatportCart(accountId, token);
+  if ('error' in cart) return { known: false, reason: `Couldn't find your Beatport cart (${cart.error})` };
+  const inCart = await readBeatportCartTrackIds(token, cart.cartId);
+  if (!inCart) return { known: false, reason: "Couldn't read your Beatport cart" };
+  return { known: true, empty: inCart.size === 0, present: trackIds.filter(id => inCart.has(String(id))) };
+}
+
+/** Which of these tracks are still in the Qobuz cart, read from the shop's
+ *  cart page on the account's own session. Never opens a sign-in window. */
+export async function checkQobuzCart(accountId: string, items: Array<{ trackId: string; articleId?: string }>): Promise<StoreCartCheck> {
+  const partition = qobuzPartition(accountId);
+  const cookies = await session.fromPartition(partition).cookies.get({ url: QOBUZ_ORIGIN });
+  if (!hasQobuzAuthCookie(cookies)) return { known: false, reason: 'Not signed in to Qobuz' };
+  const res = await sessionFetch(partition, QOBUZ_ORIGIN, '/shopping-cart', { timeoutMs: 20_000 });
+  if (!res.ok) return { known: false, reason: `Qobuz didn't answer (${res.status || res.text})` };
+  const page = readQobuzCartPage(res.url, res.text, items);
+  if (page.signedOut) return { known: false, reason: 'Not signed in to Qobuz' };
+  return { known: true, empty: page.empty, present: page.present };
 }
 
 export async function addToBeatportCart(
@@ -656,34 +708,15 @@ export async function addToBeatportCart(
     current: 0, total: matches.length, currentTrack: '',
     phase: 'adding', message: 'Finding your Beatport cart…'
   });
-  let cartId: string | null = null;
-  let cartDiag = '';
-  try {
-    const res = await beatportApi(token, '/my/carts/');
-    const text = await res.text();
-    if (res.ok) {
-      type BpCart = { id?: number; cart_id?: number; default?: boolean; name?: string };
-      const raw = JSON.parse(text) as BpCart[] | { results?: BpCart[]; carts?: BpCart[] };
-      const list: BpCart[] = Array.isArray(raw) ? raw : (raw.results ?? raw.carts ?? []);
-      const c = list.find(x => x.default) || list.find(x => x.name === 'cart') || list[0];
-      const rawId = c?.id ?? c?.cart_id;
-      if (rawId != null) cartId = String(rawId);
-      else cartDiag = `200 but no usable id; snippet=${text.slice(0, 180).replace(/\s+/g, ' ')}`;
-    } else {
-      if (res.status === 401) invalidateBeatportToken(accountId);
-      cartDiag = `${res.status}: ${text.slice(0, 180).replace(/\s+/g, ' ')}`;
-    }
-  } catch (err) {
-    cartDiag = `exception: ${getErrorMessage(err, 'cart lookup failed')}`;
-  }
-
-  if (!cartId) {
+  const cart = await findBeatportCart(accountId, token);
+  if ('error' in cart) {
     return {
       added: [],
-      failed: matches.map(m => ({ match: m, error: `Could not find cart (${cartDiag})` })),
+      failed: matches.map(m => ({ match: m, error: `Could not find cart (${cart.error})` })),
       totalCost: '$0.00',
     };
   }
+  const cartId = cart.cartId;
 
   const inCart = await beatportCartTrackIds(token, cartId);
 
@@ -1188,6 +1221,8 @@ export type OwnedTrack = {
   orderItemDownloadId?: string;
   /** Which configured account this purchase came from — needed to pick the right session for download. */
   sourceAccountId?: string;
+  /** When it was bought (ISO), when the store says. */
+  purchasedAt?: string;
 };
 
 /** A purchase history plus what couldn't be read. An account whose history
@@ -1372,17 +1407,22 @@ export async function fetchQobuzPurchases(accountId: string, displayName?: strin
     await sniffQobuzCredentials(accountId, displayName);
   }
 
-  type QTrack = { id?: number; title?: string; version?: string | null; performer?: { name?: string }; album?: { artist?: { name?: string } } };
+  type QTrack = { id?: number; title?: string; version?: string | null; performer?: { name?: string }; album?: { artist?: { name?: string } }; purchased_at?: number };
   const owned: OwnedTrack[] = [];
   const seen = new Set<string>();
-  const add = (t: QTrack, fallbackArtist: string) => {
+  // purchased_at is Unix seconds; an album's tracks take the album's.
+  const isoFromSeconds = (s?: number) => (s ? new Date(s * 1000).toISOString() : undefined);
+  const add = (t: QTrack, fallbackArtist: string, albumPurchasedAt?: number) => {
     if (!t.id || !t.title) return;
     const trackId = String(t.id);
     if (seen.has(trackId)) return;
     seen.add(trackId);
     const artist = t.performer?.name || t.album?.artist?.name || fallbackArtist;
     // Qobuz keeps "HNTR Remix" in `version`; without it a purchased remix reads as the original.
-    owned.push({ source: 'qobuz', trackId, artist, title: withVersion(t.title, t.version), sourceAccountId: accountId });
+    owned.push({
+      source: 'qobuz', trackId, artist, title: withVersion(t.title, t.version), sourceAccountId: accountId,
+      purchasedAt: isoFromSeconds(t.purchased_at ?? albumPurchasedAt),
+    });
   };
 
   // Fetch purchased tracks (paginated)
@@ -1392,7 +1432,7 @@ export async function fetchQobuzPurchases(accountId: string, displayName?: strin
   while (true) {
     const res = await qobuzApi<{
       tracks?: { total?: number; items?: QTrack[] };
-      albums?: { total?: number; items?: Array<{ id?: string; title?: string; artist?: { name?: string } }> };
+      albums?: { total?: number; items?: Array<{ id?: string; title?: string; artist?: { name?: string }; purchased_at?: number }> };
     }>(accountId, 'purchase/getUserPurchases', { limit, offset });
     if (!res.ok || !res.data) {
       throw new Error(`Qobuz purchase history (offset ${offset}): HTTP ${res.status}${res.status === 401 ? ' — signed out of play.qobuz.com' : ''}`);
@@ -1410,7 +1450,7 @@ export async function fetchQobuzPurchases(accountId: string, displayName?: strin
       if (!album.id) continue;
       const ar = await qobuzApi<{ tracks?: { items?: QTrack[] } }>(accountId, 'album/get', { album_id: album.id, extra: 'tracks' });
       if (!ar.ok) throw new Error(`Qobuz purchased album ${album.id}: HTTP ${ar.status}`);
-      for (const t of ar.data?.tracks?.items || []) add(t, album.artist?.name || '');
+      for (const t of ar.data?.tracks?.items || []) add(t, album.artist?.name || '', album.purchased_at);
       await sleep(200);
     }
     if (trackItems.length < limit && albumItems.length < limit) break;
@@ -1497,6 +1537,8 @@ export async function fetchBeatportPurchases(accountId: string): Promise<OwnedTr
         mix_name?: string;
         artists?: Array<{ name?: string }>;
         order_item_download_id?: number;
+        date_purchased?: string;
+        created_at?: string;
       }>;
     };
 
@@ -1523,6 +1565,7 @@ export async function fetchBeatportPurchases(accountId: string): Promise<OwnedTr
         title: titleWithMix,
         orderItemDownloadId: t.order_item_download_id != null ? String(t.order_item_download_id) : undefined,
         sourceAccountId: accountId,
+        purchasedAt: t.date_purchased || t.created_at || undefined,
       });
     }
 

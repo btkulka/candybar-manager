@@ -1,0 +1,59 @@
+# Builds Track Lab's .dmgs (Apple silicon and Intel) and publishes them as a
+# GitHub Release, which the packaged app's update check reads.
+#
+# To release: bump "version" in package.json, commit, then
+#   git tag v<version> && git push origin v<version>
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  mac:
+    runs-on: macos-15
+    steps:
+      # package.json links the shared packages as file:../packages/*, so both
+      # repos are checked out side by side.
+      - uses: actions/checkout@v4
+        with:
+          path: candybar-manager
+      - uses: actions/checkout@v4
+        with:
+          repository: btkulka/packages
+          path: packages
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Check the tag matches package.json
+        working-directory: candybar-manager
+        run: |
+          version="v$(node -p "require('./package.json').version")"
+          [ "$version" = "$GITHUB_REF_NAME" ] || { echo "Tag $GITHUB_REF_NAME doesn't match package.json ($version)"; exit 1; }
+
+      - name: Build the shared packages
+        working-directory: packages
+        run: npm ci && npm run build
+
+      - name: Install
+        working-directory: candybar-manager
+        run: npm ci
+
+      - name: Build the dmgs
+        working-directory: candybar-manager
+        run: npm run dist
+
+      - name: Publish the release
+        working-directory: candybar-manager
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" release/*.dmg \
+            --title "Track Lab ${GITHUB_REF_NAME#v}" \
+            --notes-file .github/release-notes.md \
+            --generate-notes

@@ -49,11 +49,13 @@ import type {
   StoreCartProgress,
   StoreSearchResult,
   StoreCartResult,
+  StoreCartCheck,
   OrganizeState,
   VolumeInfo,
   UsbVolumeIssue,
   UsbHealthResult,
-  UsbHealthProgress
+  UsbHealthProgress,
+  SoundCloudSignIn
 } from '../types';
 import type { AiffHeaderDiagnosis } from '../lib/aiffRepair';
 
@@ -189,7 +191,8 @@ declare global {
       migrateArchive: (oldPath: string, newPath: string) => Promise<{ success: boolean; error?: string }>;
       onMigrateProgress: (callback: (payload: { current: number; total: number; file: string }) => void) => void;
       checkSpotify: () => Promise<boolean>;
-      checkSoundCloud: () => Promise<boolean>;
+      soundcloudSignInStatus: () => Promise<SoundCloudSignIn | null>;
+      soundcloudSignIn: () => Promise<{ success: boolean; status?: SoundCloudSignIn; error?: string }>;
       searchMusic: (query: string, sources: ('spotify' | 'soundcloud' | 'beatport' | 'qobuz')[]) =>
         Promise<MusicSearchResult>;
       onOutput: (callback: (payload: ScriptOutput) => void) => void;
@@ -215,6 +218,10 @@ declare global {
       ) => Promise<{ success: boolean; error?: string }>;
       getTrackAlbumArt: (filePath: string) => Promise<string | null>;
       toggleDevTools: () => Promise<void>;
+      getUpdateState: () => Promise<import('../types').UpdateState>;
+      /** Checks GitHub now and shows the result; resolves once the dialog closes. */
+      checkForUpdates: () => Promise<void>;
+      onUpdateState: (callback: (state: import('../types').UpdateState) => void) => () => void;
       openExternal: (url: string) => Promise<void>;
       showInFinder: (filePath: string) => Promise<void>;
       convertTrack: (filePath: string) => Promise<ConversionResult>;
@@ -277,6 +284,10 @@ declare global {
       onLibrarySourcingPhase2Progress: (callback: (payload: { current: number; total: number; currentTrack: string }) => void) => void;
       onLibrarySourcingPhase2Match: (callback: (match: import('../lib/qobuzCart').QobuzCartMatch) => void) => void;
       onLibrarySourcingPlaylistInfo: (callback: (info: import('../types').SourcePlaylistInfo) => void) => void;
+      onLibrarySourcingFinderProgress: (callback: (p: import('../types').SourcingFinderProgress) => void) => (() => void);
+      librarySourcingFetchFree: (keys: string[], opts: { accountActions: boolean }) => Promise<{ success: boolean; outcomes?: Record<string, import('../lib/freeSources').FreeUpgradeOutcome>; error?: string }>;
+      librarySourcingFetchFreeStop: () => Promise<void>;
+      onLibrarySourcingFreeProgress: (callback: (p: { message: string }) => void) => (() => void);
 
       // Lossless upgrades (Rekordbox playlist → lossless copies of its lossy tracks)
       upgradeListPlaylists: () => Promise<{ success: boolean; playlists?: import('../types').RekordboxPlaylistSummary[]; error?: string }>;
@@ -320,6 +331,7 @@ declare global {
       storeCartAdd: (matches: StoreMatch[], source: 'qobuz' | 'beatport') => Promise<{ success: boolean; result?: StoreCartResult; error?: string }>;
       onStoreCartProgress: (callback: (payload: StoreCartProgress) => void) => (() => void);
       storeOpenCart: (store: 'qobuz' | 'beatport') => Promise<{ success: boolean }>;
+      storeCartCheck: (store: 'qobuz' | 'beatport', items: Array<{ trackId: string; articleId?: string }>) => Promise<StoreCartCheck>;
       storeLoadResults: () => Promise<{ success: boolean; matches?: StoreMatch[]; savedAt?: string; trackCount?: number }>;
       storeClearResults: () => Promise<{ success: boolean }>;
       storeDownloadPurchases: (matches: StoreMatch[]) => Promise<{ success: boolean; downloaded?: number; files?: Array<{ key: string; path: string }>; failed?: Array<{ artist: string; title: string; error: string }>; destDir?: string; error?: string }>;
@@ -1238,32 +1250,42 @@ export async function checkStoreConnections(showToasts = false) {
   }
 }
 
-export async function checkSoundCloudConnection(showToasts = false) {
+/** SoundCloud's pill is the one saved sign-in that private sets, the
+ *  downloader and Claude's SoundCloud jobs all use. Without `signIn` it reads
+ *  the note the last check left (no Chrome); with it, it checks for real and
+ *  opens a sign-in window only when the profile is signed out. */
+export async function checkSoundCloudConnection(signIn = false) {
   if (isCheckingSoundCloud) return;
   isCheckingSoundCloud = true;
 
   const soundcloudStatus = document.getElementById('soundcloud-status') as HTMLDivElement;
   const soundcloudStatusText = soundcloudStatus.querySelector('.soundcloud-status-text') as HTMLSpanElement;
-  setServiceState(soundcloudStatus, soundcloudStatusText, 'checking', 'checking', 'SoundCloud: checking the connection…');
+  setServiceState(soundcloudStatus, soundcloudStatusText, 'checking', 'checking', 'SoundCloud: checking your sign-in…');
 
   try {
-    const connected = await window.candybar.checkSoundCloud();
-    if (connected) {
-      setServiceState(soundcloudStatus, soundcloudStatusText, 'ok', 'connected',
-        'SoundCloud is reachable, so Track Lab can read sets and likes. Click to check again.');
-      if (showToasts) showToast('success', 'SoundCloud is connected', 'Track Lab can read your sets and likes.');
+    let status: SoundCloudSignIn | null;
+    if (signIn) {
+      const res = await window.candybar.soundcloudSignIn();
+      if (!res.success) throw new Error(res.error ?? 'Sign-in failed');
+      status = res.status ?? null;
     } else {
-      setServiceState(soundcloudStatus, soundcloudStatusText, 'problem', 'not reachable',
-        'SoundCloud isn\'t answering right now. Click to try again.');
-      if (showToasts) showToast('warning', 'Couldn\'t reach SoundCloud', 'Check your internet connection, then try again.');
+      status = await window.candybar.soundcloudSignInStatus();
+    }
+    if (status?.signedIn) {
+      const who = status.username || status.permalink || 'your account';
+      setServiceState(soundcloudStatus, soundcloudStatusText, 'ok', 'signed in',
+        `SoundCloud: signed in as ${who}. Private sets, your likes and free downloads all use this sign-in. Click to check again.`);
+      if (signIn) showToast('success', `Signed in to SoundCloud as ${who}`, 'Private sets, likes and free downloads use this sign-in.');
+    } else {
+      setServiceState(soundcloudStatus, soundcloudStatusText, 'off', 'not signed in',
+        'SoundCloud: not signed in. Track Lab needs it for private sets, your likes and SoundCloud\'s own download buttons. Click to sign in.');
+      if (signIn) showToast('warning', 'Not signed in to SoundCloud', 'The sign-in window closed before you finished.');
     }
   } catch (err) {
+    const message = getErrorMessage(err);
     setServiceState(soundcloudStatus, soundcloudStatusText, 'problem', 'not working',
-      'SoundCloud isn\'t answering right now. Click to try again.');
-    if (showToasts) {
-      const message = err instanceof Error ? err.message : 'Unknown error occurred';
-      showToast('error', 'Couldn\'t reach SoundCloud', message);
-    }
+      `SoundCloud: couldn't check your sign-in (${message}). Click to try again.`);
+    if (signIn) showToast('error', 'Couldn\'t check SoundCloud', message);
   } finally {
     isCheckingSoundCloud = false;
   }

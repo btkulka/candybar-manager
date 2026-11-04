@@ -64,6 +64,27 @@ candybar_sync_packages() {
   return $rc
 }
 
+# The Python the app runs its Rekordbox scripts with: pyrekordbox (playlists,
+# the library check, upgrade swaps) and mutagen in .venv-rbx at the repo root,
+# where src/lib/rekordboxPlaylists.ts and friends look for it. Built on the
+# Command Line Tools' python3, which install.sh already requires, so a newer
+# Homebrew Python without sqlcipher wheels never gets picked. A venv whose
+# interpreter has gone is rebuilt. Once it's set up, this only reaches the
+# network when requirements-rbx.txt changes. Needs REPO_DIR.
+candybar_python_env() {
+  local venv="$REPO_DIR/.venv-rbx" py=/usr/bin/python3
+  "$py" -c 'import sys' >/dev/null 2>&1 || py="$(command -v python3 || true)"
+  if ! "$venv/bin/python" -c 'import sys' >/dev/null 2>&1; then
+    [ -n "$py" ] || { echo "!! No python3 found (it comes with the Command Line Tools)."; return 1; }
+    echo "==> Creating the Python environment in $venv"
+    "$py" -m venv --clear "$venv" || return 1
+    "$venv/bin/python" -m pip install --quiet --disable-pip-version-check --upgrade pip || return 1
+  fi
+  echo "==> Installing pyrekordbox into $venv"
+  "$venv/bin/python" -m pip install --quiet --disable-pip-version-check -r "$REPO_DIR/requirements-rbx.txt" || return 1
+  "$venv/bin/python" -c 'import pyrekordbox, mutagen' || return 1
+}
+
 # Install deps, build the app and the MCP server.
 candybar_build() {
   echo "==> Installing dependencies (npm ci)"

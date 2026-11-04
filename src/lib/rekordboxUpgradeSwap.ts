@@ -27,6 +27,7 @@ import os from 'os';
 import path from 'path';
 import { parseFile, type IAudioMetadata } from 'music-metadata';
 import { createScopedLogger } from './logger';
+import { rbxPython } from './rbxPython';
 import { recordWrite, statBytes } from './writeJournal';
 import { safeDelete } from './safeDelete';
 import { normalizeArtist } from './organizeByArtist';
@@ -411,10 +412,6 @@ export function id3MetadataArgs(tags: TagSet): string[] {
 
 // ---------- Processes ----------
 
-function pythonPath(appRoot: string): string {
-  return path.join(appRoot, '.venv-rbx', 'bin', 'python');
-}
-
 class SwapScriptError extends Error {
   constructor(message: string, readonly code: string, readonly extra: Record<string, unknown>) {
     super(message);
@@ -433,8 +430,7 @@ function runSwapScript<T>(deps: SwapDeps, args: string[], opts: { input?: unknow
   const script = path.join(deps.appRoot, 'lib', 'rekordbox', 'upgrade_swap.py');
   const dbArgs = deps.dbPath && ['preflight', 'read', 'apply'].includes(args[0]) ? ['--db', deps.dbPath] : [];
   return new Promise((resolve, reject) => {
-    const venv = pythonPath(deps.appRoot);
-    fs.access(venv).then(() => venv, () => 'python3').then((python) => {
+    Promise.resolve(rbxPython(deps.appRoot)).then((python) => {
       const proc = spawn(python, [script, ...args, ...dbArgs], { stdio: ['pipe', 'pipe', 'pipe'] });
       let stdout = '';
       let stderrBuf = '';

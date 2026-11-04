@@ -1,4 +1,5 @@
-import type { ClaudeAskResult, ClaudeSoundcloudParams, ClaudeSoundcloudResult, ClaudeStatus, ClaudeTrackTagsResult, TrackTagField } from '../types';
+import type { ClaudeAskResult, ClaudeProfile, ClaudeSoundcloudParams, ClaudeSoundcloudResult, ClaudeStatus, ClaudeTrackTagsResult, TrackTagField } from '../types';
+import { PROFILE_QUESTIONS } from '../lib/claude/userProfile';
 import { escapeHtml, showToast, plural } from './shared';
 import {
   claudeBridge, startClaudeJob, getClaudeStatus, describeClaudeStatus, ensureClaudeReady, ClaudeJobError,
@@ -6,9 +7,10 @@ import {
 } from './claudeJobs';
 import { ensureSourcingReviewButton, SPINNER_SVG } from './claudeReview';
 
-// The Claude page (Ask, SoundCloud free downloads), the Claude section in
-// Settings, and the "Ask Claude" button in the track info editor. Every job
-// runs headless Claude Code on the user's Claude subscription.
+// Ask Claude (the round button and its chat drawer: first-run questions, the
+// chat, and Claude's settings behind the gear), the SoundCloud downloads page,
+// and the "Ask Claude" button in the track info editor. Every job runs
+// headless Claude Code on the user's Claude subscription.
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T | null;
 
@@ -59,6 +61,20 @@ function renderStatus(status: ClaudeStatus): void {
   }
 
   renderSettingsStatus(status);
+  renderFab();
+}
+
+/** The round button's badge: a spinner while Claude is answering (so closing
+ *  the drawer doesn't hide that it's working), a dot when it needs setting up. */
+function renderFab(): void {
+  const fab = $('claude-fab');
+  const badge = $('claude-fab-badge');
+  if (!fab || !badge) return;
+  const needsSetup = !!lastStatus && !describeClaudeStatus(lastStatus).ready;
+  const state = askJob ? 'busy' : needsSetup ? 'setup' : '';
+  badge.hidden = !state;
+  badge.dataset.state = state;
+  fab.dataset.tooltip = askJob ? 'Claude is answering' : needsSetup ? 'Ask Claude: connect it first' : 'Ask Claude about your music';
 }
 
 async function signIn(): Promise<void> {
@@ -85,7 +101,7 @@ const MODEL_OPTIONS: [string, string][] = [
 
 function settingsSectionHtml(): string {
   return `
-    <h4>Claude</h4>
+    <h4>Connection</h4>
     <p class="card-desc claude-settings-intro">Claude jobs (Ask Claude, checking matches, looking up track info, SoundCloud downloads) run on Claude Code and use your Claude subscription. They never use API credits.</p>
     <div class="callout" id="claude-settings-status" role="status">
       <div class="callout-body"><strong>Checking Claude…</strong><p></p></div>
@@ -97,6 +113,10 @@ function settingsSectionHtml(): string {
           ${MODEL_OPTIONS.map(([v, l]) => `<option value="${v}">${escapeHtml(l)}</option>`).join('')}
         </select>
         <span class="field-help">Used for every Claude job. Saved as soon as you pick one.</span>
+      </div>
+      <div class="field">
+        <label class="checkbox-label"><input type="checkbox" id="claude-setting-find-matches" checked /> <span>Find store matches with Claude</span></label>
+        <span class="field-help">On Find &amp; buy, small fast Claude sessions (Haiku) pick the exact record for each track on Beatport and Qobuz, and search again when the first results don't have it. Off, or when Claude isn't connected, the plain search's matches are used.</span>
       </div>
       <details class="disclosure">
         <summary>Use a token instead <span class="disclosure-hint">For a computer where Claude Code isn't signed in</span></summary>
@@ -116,41 +136,66 @@ function settingsSectionHtml(): string {
     </div>`;
 }
 
-/** Add the Claude tab to Settings. Safe to call again; the dialog's tabs are
- *  delegated, so an added item switches like the built-in ones. */
-function ensureSettingsSection(): void {
-  const modal = $('settings-modal');
-  const nav = modal?.querySelector<HTMLElement>('.settings-nav');
-  const sections = modal?.querySelector<HTMLElement>('.settings-sections');
-  if (!nav || !sections) return;
+/** About you: the first-run answers, changeable here. */
+function profileSettingsHtml(): string {
+  return `
+    <h4>About you</h4>
+    <p class="card-desc">Claude fits its answers to these, on top of what it already remembers.</p>
+    <div class="fields">
+      ${PROFILE_QUESTIONS.map((q) => `
+        <div class="field">
+          <label for="claude-profile-${q.key}">${escapeHtml(q.question)}</label>
+          <select id="claude-profile-${q.key}" data-profile-key="${q.key}">
+            <option value="">Rather not say</option>
+            ${q.options.map((o) => `<option value="${o.value}">${escapeHtml(o.label)}</option>`).join('')}
+          </select>
+        </div>`).join('')}
+    </div>`;
+}
 
-  if (!nav.querySelector('.settings-nav-item[data-target="claude"]')) {
-    const item = document.createElement('button');
-    item.type = 'button';
-    item.className = 'settings-nav-item';
-    item.dataset.target = 'claude';
-    item.setAttribute('role', 'tab');
-    item.dataset.tooltip = 'Connect your Claude subscription for Claude jobs';
-    item.dataset.tooltipPos = 'right';
-    item.textContent = 'Claude';
-    nav.appendChild(item);
+/** Claude's settings, behind the chat drawer's gear: the connection, model and
+ *  token, then About you. Mounted once into `container`. */
+function mountClaudeSettings(container: HTMLElement): void {
+  if (container.querySelector('.claude-settings')) {
+    syncProfileSelects(container);
+    return;
   }
-
-  if (sections.querySelector('.settings-section[data-section="claude"]')) return;
   const section = document.createElement('div');
-  section.className = 'settings-section';
-  section.dataset.section = 'claude';
-  section.setAttribute('role', 'tabpanel');
-  section.setAttribute('aria-label', 'Claude');
-  section.innerHTML = settingsSectionHtml();
-  sections.appendChild(section);
+  section.className = 'claude-settings';
+  section.innerHTML = settingsSectionHtml() + profileSettingsHtml();
+  container.appendChild(section);
+
+  syncProfileSelects(section);
+  for (const select of section.querySelectorAll<HTMLSelectElement>('select[data-profile-key]')) {
+    select.addEventListener('change', async () => {
+      const key = select.dataset.profileKey as keyof Omit<ClaudeProfile, 'answeredAt'>;
+      const next = { ...(profile ?? {}), answeredAt: profile?.answeredAt ?? new Date().toISOString() } as ClaudeProfile;
+      if (select.value) (next as Record<string, string>)[key] = select.value;
+      else delete next[key];
+      if (await saveProfile(next)) showToast('success', 'Saved', 'Claude uses it from your next question.');
+    });
+  }
 
   const model = section.querySelector<HTMLSelectElement>('#claude-setting-model')!;
   const token = section.querySelector<HTMLInputElement>('#claude-setting-token')!;
   const help = section.querySelector<HTMLElement>('#claude-setting-token-help')!;
   const clear = section.querySelector<HTMLButtonElement>('#claude-setting-token-clear')!;
 
+  const findMatches = section.querySelector<HTMLInputElement>('#claude-setting-find-matches')!;
+  findMatches.addEventListener('change', async () => {
+    try {
+      await window.candybar.updateConfig({ claudeFindMatches: findMatches.checked });
+      showToast('success', 'Saved', findMatches.checked
+        ? 'Find & buy has Claude pick the records from your next check.'
+        : 'Find & buy uses the plain search from your next check.');
+    } catch (err) {
+      findMatches.checked = !findMatches.checked;
+      showToast('error', 'Couldn\'t save that', err instanceof Error ? err.message : String(err));
+    }
+  });
+
   void window.candybar.getConfig().then((config) => {
+    findMatches.checked = config.claudeFindMatches !== false;
     model.value = config.claudeModel ?? '';
     clear.hidden = !config.claudeOauthToken;
     help.textContent = config.claudeOauthToken ? 'A token is saved. Jobs use it instead of Claude Code\'s own sign-in.' : '';
@@ -205,6 +250,123 @@ function ensureSettingsSection(): void {
   });
 
   if (lastStatus) renderSettingsStatus(lastStatus);
+}
+
+function syncProfileSelects(root: HTMLElement): void {
+  for (const select of root.querySelectorAll<HTMLSelectElement>('select[data-profile-key]')) {
+    select.value = (profile?.[select.dataset.profileKey as keyof ClaudeProfile] as string | undefined) ?? '';
+  }
+}
+
+// ========== The chat drawer ==========
+
+type ChatView = 'intro' | 'chat' | 'settings';
+
+/** The first-run answers; undefined until read from settings, null when the
+ *  questions haven't been answered or skipped yet. */
+let profile: ClaudeProfile | null | undefined;
+let chatView: ChatView = 'chat';
+let chatReturnFocus: HTMLElement | null = null;
+
+async function saveProfile(next: ClaudeProfile): Promise<boolean> {
+  try {
+    await window.candybar.updateConfig({ claudeProfile: next });
+    profile = next;
+    return true;
+  } catch (err) {
+    showToast('error', 'Couldn\'t save that', err instanceof Error ? err.message : String(err));
+    return false;
+  }
+}
+
+function chatIsOpen(): boolean {
+  const drawer = $('claude-chat-drawer');
+  return !!drawer && drawer.style.display !== 'none';
+}
+
+async function openChat(view?: ChatView): Promise<void> {
+  const drawer = $('claude-chat-drawer');
+  const scrim = $('claude-chat-scrim');
+  if (!drawer || !scrim) return;
+  if (!chatIsOpen()) chatReturnFocus = document.activeElement as HTMLElement | null;
+  scrim.style.display = '';
+  drawer.style.display = 'flex';
+  $('claude-fab')?.setAttribute('aria-expanded', 'true');
+  if (profile === undefined) {
+    try { profile = (await window.candybar.getConfig()).claudeProfile ?? null; } catch { profile = null; }
+  }
+  // The questions come first, once; after that the chat (or what was asked for).
+  showChatView(!profile && view !== 'settings' ? 'intro' : view ?? 'chat');
+  void refreshStatus();
+}
+
+function closeChat(): void {
+  const drawer = $('claude-chat-drawer');
+  const scrim = $('claude-chat-scrim');
+  if (!drawer || !scrim || !chatIsOpen()) return;
+  drawer.style.display = 'none';
+  scrim.style.display = 'none';
+  $('claude-fab')?.setAttribute('aria-expanded', 'false');
+  if (chatReturnFocus?.isConnected) chatReturnFocus.focus({ preventScroll: true });
+  chatReturnFocus = null;
+}
+
+function showChatView(view: ChatView): void {
+  chatView = view;
+  for (const el of document.querySelectorAll<HTMLElement>('#claude-chat-drawer .claude-chat-view')) el.hidden = el.dataset.view !== view;
+  const compose = $('claude-chat-compose');
+  if (compose) compose.hidden = view !== 'chat';
+  $('claude-chat-settings')?.setAttribute('aria-pressed', String(view === 'settings'));
+  const title = $('claude-chat-title');
+  if (title) title.textContent = view === 'settings' ? 'Claude settings' : 'Ask Claude';
+  if (view === 'settings') {
+    const box = $('claude-chat-settings-view');
+    if (box) mountClaudeSettings(box);
+    $('claude-chat-close')?.focus({ preventScroll: true });
+  } else if (view === 'intro') {
+    renderIntro();
+  } else {
+    renderAsk();
+    $<HTMLTextAreaElement>('claude-ask-input')?.focus({ preventScroll: true });
+  }
+}
+
+/** The three questions, the first time Ask Claude opens. */
+function renderIntro(): void {
+  const box = $('claude-chat-intro');
+  if (!box) return;
+  box.innerHTML = `
+    <div class="claude-intro">
+      <h4>Before your first question</h4>
+      <p class="card-desc">Three quick questions so Claude answers at the right level. You can change them any time under the gear.</p>
+      ${PROFILE_QUESTIONS.map((q) => `
+        <fieldset class="claude-intro-q">
+          <legend>${escapeHtml(q.question)}</legend>
+          <div class="claude-intro-options">
+            ${q.options.map((o) => `
+              <label class="claude-intro-option">
+                <input type="radio" name="claude-intro-${q.key}" value="${o.value}"${profile?.[q.key] === o.value ? ' checked' : ''} />
+                <span><strong>${escapeHtml(o.label)}</strong><span>${escapeHtml(o.hint)}</span></span>
+              </label>`).join('')}
+          </div>
+        </fieldset>`).join('')}
+      <div class="claude-intro-actions">
+        <button type="button" class="btn-ghost" id="claude-intro-skip" data-tooltip="Claude answers without knowing these">Skip</button>
+        <button type="button" class="btn-primary" id="claude-intro-save">Start chatting</button>
+      </div>
+    </div>`;
+  box.querySelector('#claude-intro-save')?.addEventListener('click', async () => {
+    const next: ClaudeProfile = { answeredAt: new Date().toISOString() };
+    for (const q of PROFILE_QUESTIONS) {
+      const picked = box.querySelector<HTMLInputElement>(`input[name="claude-intro-${q.key}"]:checked`)?.value;
+      if (picked) (next as Record<string, string>)[q.key] = picked;
+    }
+    if (await saveProfile(next)) showChatView('chat');
+  });
+  box.querySelector('#claude-intro-skip')?.addEventListener('click', async () => {
+    if (await saveProfile({ answeredAt: new Date().toISOString() })) showChatView('chat');
+  });
+  box.querySelector<HTMLInputElement>('input[type="radio"]')?.focus({ preventScroll: true });
 }
 
 function renderSettingsStatus(status: ClaudeStatus): void {
@@ -309,6 +471,8 @@ function renderAsk(live?: { steps: string[]; text: string; status: string }): vo
   }
   thread.innerHTML = items.join('');
   thread.hidden = items.length === 0;
+  const empty = $('claude-chat-empty');
+  if (empty) empty.hidden = items.length > 0;
   const fresh = $<HTMLButtonElement>('claude-ask-new');
   if (fresh) fresh.hidden = askMessages.length === 0 || !!askJob;
   thread.lastElementChild?.scrollIntoView({ block: 'nearest' });
@@ -323,6 +487,7 @@ function setAskBusy(busy: boolean): void {
     send.disabled = !busy && !!lastStatus && !describeClaudeStatus(lastStatus).ready;
   }
   if (input) input.disabled = busy;
+  renderFab();
 }
 
 async function sendAsk(): Promise<void> {
@@ -644,7 +809,6 @@ function ensureInjected(): void {
   ensureQueued = true;
   requestAnimationFrame(() => {
     ensureQueued = false;
-    ensureSettingsSection();
     ensureTagEditorButton();
     ensureSourcingReviewButton();
     // A note belongs to the track it was found for; drop it when the editor
@@ -690,11 +854,42 @@ export function initClaude(): void {
     else if (action === 'recheck') void refreshStatus(true);
   });
   document.querySelector('.nav-link[data-page="claude"]')?.addEventListener('click', () => void refreshStatus());
-  document.querySelector('.settings-nav')?.addEventListener('click', (e) => {
-    if ((e.target as HTMLElement).closest('.settings-nav-item[data-target="claude"]')) void refreshStatus();
+
+  // The SoundCloud form starts with the gate email saved in Settings.
+  void window.candybar.getConfig().then((config) => {
+    const email = $<HTMLInputElement>('claude-sc-email');
+    if (email && !email.value) email.value = config.gateEmail ?? '';
+  }).catch(() => {});
+
+  // Ask Claude: the round button, the drawer, and anything that opens it
+  // (data-claude-open="settings", or the claude-chat:open event from jobs that
+  // find Claude isn't set up).
+  $('claude-fab')?.addEventListener('click', () => (chatIsOpen() ? closeChat() : void openChat()));
+  $('claude-chat-close')?.addEventListener('click', closeChat);
+  $('claude-chat-scrim')?.addEventListener('click', closeChat);
+  $('claude-chat-settings')?.addEventListener('click', () => {
+    if (chatView === 'settings') showChatView(profile ? 'chat' : 'intro');
+    else showChatView('settings');
+  });
+  document.addEventListener('click', (e) => {
+    const opener = (e.target as HTMLElement).closest<HTMLElement>('[data-claude-open]');
+    if (opener) void openChat((opener.dataset.claudeOpen || undefined) as ChatView | undefined);
+  });
+  document.addEventListener('claude-chat:open', (e) => void openChat((e as CustomEvent<{ view?: ChatView }>).detail?.view));
+  document.addEventListener('keydown', (e) => {
+    // Only when nothing sits above the drawer (a confirm dialog, the tag editor).
+    if (e.key !== 'Escape' || !chatIsOpen()) return;
+    const covered = [...document.querySelectorAll<HTMLElement>('.modal-overlay, .drawer-overlay')].some((el) => getComputedStyle(el).display !== 'none');
+    if (!covered) closeChat();
+  });
+  $('claude-chat-view')?.addEventListener('click', (e) => {
+    const example = (e.target as HTMLElement).closest<HTMLElement>('[data-claude-example]');
+    const input = $<HTMLTextAreaElement>('claude-ask-input');
+    if (!example || !input || input.disabled) return;
+    input.value = example.textContent?.trim() ?? '';
+    input.focus();
   });
 
-  ensureSettingsSection();
   ensureTagEditorButton();
   new MutationObserver(ensureInjected).observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['style'] });
   void refreshStatus();

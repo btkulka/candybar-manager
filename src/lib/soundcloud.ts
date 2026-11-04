@@ -214,38 +214,6 @@ function mapUser(u: SoundCloudApiUser): SoundCloudUser {
   };
 }
 
-/**
- * Public reachability check — used when no API credentials are configured.
- * Confirms SoundCloud's API is responding (any HTTP status counts; only network
- * errors mean unreachable). Doesn't prove auth works, but matches the user's
- * "is the service up?" notion of connected.
- */
-export async function pingSoundCloudPublic(): Promise<boolean> {
-  log.debug('[SoundCloud:pingSoundCloudPublic] Called');
-  const startTime = Date.now();
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 5000);
-  try {
-    const response = await fetch('https://api.soundcloud.com/', {
-      method: 'HEAD',
-      signal: controller.signal
-    });
-    log.debug(
-      '[SoundCloud:pingSoundCloudPublic] Reachable, status',
-      response.status,
-      'in',
-      Date.now() - startTime,
-      'ms'
-    );
-    return true;
-  } catch (err) {
-    log.error('[SoundCloud:pingSoundCloudPublic] Unreachable after', Date.now() - startTime, 'ms', err);
-    return false;
-  } finally {
-    clearTimeout(timeout);
-  }
-}
-
 // ====== Public client_id scraping + V2 API ======
 
 // Extracted from https://soundcloud.com on page load; valid for days-to-weeks
@@ -378,19 +346,3 @@ type V2PublicSearchTrack = V2Track & {
   artwork_url?: string | null;
   playback_count?: number;
 };
-
-export async function testSoundCloudConnection(credentials: SoundCloudCredentials): Promise<boolean> {
-  log.debug('[SoundCloud:testSoundCloudConnection] Called');
-  const startTime = Date.now();
-
-  try {
-    log.debug('[SoundCloud:testSoundCloudConnection] Calling getAccessToken...');
-    await getAccessToken(credentials);
-    log.debug('[SoundCloud:testSoundCloudConnection] Success! Total time:', Date.now() - startTime, 'ms');
-    return true;
-  } catch (err) {
-    log.error('[SoundCloud:testSoundCloudConnection] Failed after', Date.now() - startTime, 'ms');
-    log.error('[SoundCloud:testSoundCloudConnection] Error:', err);
-    return false;
-  }
-}

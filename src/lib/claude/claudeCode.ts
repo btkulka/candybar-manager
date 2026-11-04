@@ -82,6 +82,9 @@ export function buildClaudeEnv(
     env[key] = value;
   }
   if (opts.oauthToken) env.CLAUDE_CODE_OAUTH_TOKEN = opts.oauthToken;
+  // Print mode otherwise starts the first turn while MCP servers are still
+  // connecting ("pending" at init), and the job runs without the app's tools.
+  env.MCP_CONNECTION_NONBLOCKING = 'false';
   const dirs = [...(opts.pathDirs ?? []), ...(env.PATH ?? '').split(path.delimiter)].filter(Boolean);
   env.PATH = [...new Set(dirs)].join(path.delimiter);
   return env;

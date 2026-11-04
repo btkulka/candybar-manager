@@ -4,10 +4,8 @@
 # From a checkout:   ./scripts/install.sh
 # Standalone:        bash install.sh      (clones into $CANDYBAR_DIR first)
 #
-# btkulka/candybar-manager is private: you need collaborator access and to be
-# signed in with the GitHub CLI (`gh auth login`) or git credentials. The
-# shared packages it links, btkulka/packages, are public and get cloned
-# beside it into ~/source/packages.
+# btkulka/candybar-manager and the shared packages it links, btkulka/packages,
+# are public. The packages get cloned beside it into ~/source/packages.
 #
 # Env:
 #   CANDYBAR_DIR   where to clone (default ~/source/candybar-manager)
@@ -44,7 +42,7 @@ else
       gh repo clone "$REPO_SLUG" "$REPO_DIR"
     else
       git clone "https://github.com/$REPO_SLUG.git" "$REPO_DIR" \
-        || die "Clone failed. The repo is private: ask Ben for access, then run 'gh auth login' (brew install gh) and retry."
+        || die "Clone failed. Check your internet connection and retry."
     fi
   fi
   # Runs the checkout's own copy, which has _common.sh beside it.
@@ -87,6 +85,11 @@ candybar_sync_packages \
 # --- Build ---
 say "Building Candy Bar Manager (first run takes a few minutes)"
 candybar_build
+
+# --- Python + pyrekordbox (reads and writes Rekordbox's master.db) ---
+say "Setting up Python for Rekordbox (pyrekordbox)"
+candybar_python_env \
+  || die "Couldn't install pyrekordbox into $REPO_DIR/.venv-rbx (see above), then re-run."
 
 # --- Applications shortcut ---
 say "Adding Track Lab to Applications"

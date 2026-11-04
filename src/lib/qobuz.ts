@@ -217,6 +217,27 @@ export function parseQobuzPopin(html: string): QobuzTierOption[] {
   return options;
 }
 
+/** What the shop's cart page says, read from where `/shopping-cart` ended up.
+ *  An empty cart sends you on to the shop (with a "Your basket is empty"
+ *  notice), a signed-out one to /signin. A cart with things in it is read by
+ *  looking for the ids Track Lab added; when none of them appears, the page
+ *  can't be told apart from one that names tracks some other way, so `present`
+ *  is null rather than a guess that they're gone. */
+export function readQobuzCartPage(
+  finalUrl: string,
+  html: string,
+  items: Array<{ trackId: string; articleId?: string }>
+): { signedOut: true } | { signedOut: false; empty: boolean; present: string[] | null } {
+  let pathname = '';
+  try { pathname = new URL(finalUrl).pathname; } catch { /* no URL: treat as the cart page */ }
+  if (/\/(?:signin|login)(?:\/|$)/.test(pathname)) return { signedOut: true };
+  if (pathname && !/\/shopping-cart\/?$/.test(pathname)) return { signedOut: false, empty: true, present: [] };
+  const present = items
+    .filter(i => [i.trackId, i.articleId].some(id => !!id && html.includes(id)))
+    .map(i => i.trackId);
+  return { signedOut: false, empty: false, present: present.length > 0 ? present : null };
+}
+
 /** The best positively-lossless tier Qobuz sells for one track, or null when
  *  it sells none. Throws when the popin can't be read at all. */
 export async function getQobuzLosslessTier(trackId: string, prefer: 'hires' | 'cd' = 'hires') {

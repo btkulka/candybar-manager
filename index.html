@@ -102,11 +102,11 @@
           </button>
 
           <div class="nav-section-label">Assistant</div>
-          <button class="nav-link" data-page="claude" data-tooltip-pos="right" data-tooltip="Ask Claude about your music, or let it fetch your SoundCloud free downloads. Runs on your Claude subscription.">
+          <button class="nav-link" data-page="claude" data-tooltip-pos="right" data-tooltip="Fetch the free downloads from your SoundCloud likes or a set; Claude checks what landed. Ask Claude anything from the round button at the bottom right.">
             <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/>
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
             </svg>
-            <span>Ask Claude</span>
+            <span>SoundCloud downloads</span>
           </button>
         </nav>
 
@@ -204,7 +204,7 @@
             <span class="service-name">Spotify</span>
             <span class="spotify-status-text sr-only"></span>
           </button>
-          <button type="button" class="service-status soundcloud-status checking" id="soundcloud-status" aria-label="SoundCloud connection" data-tooltip-pos="bottom" title="SoundCloud connection. Green means it's working. Click to check again.">
+          <button type="button" class="service-status soundcloud-status checking" id="soundcloud-status" aria-label="SoundCloud sign-in" data-tooltip-pos="bottom" title="SoundCloud sign-in. Green means you're signed in. Click to sign in or check again.">
             <span class="service-loading-dot"></span>
             <svg class="service-icon soundcloud-icon" viewBox="0 0 291.319 291.319" fill="currentColor">
               <path d="M72.83,218.485h18.207V103.832c-6.828,1.93-12.982,5.435-18.207,10.041V218.485z M36.415,140.921v77.436l1.174,0.127 h17.033v-77.682H37.589C37.191,140.812,36.814,140.857,36.415,140.921z M0,179.63c0,14.102,7.338,26.328,18.207,33.147V146.52 C7.338,153.329,0,165.556,0,179.63z M109.245,218.485h18.207v-109.6c-5.444-3.396-11.537-5.972-18.207-7.467V218.485z M253.73,140.803h-10.242c0.519-3.934,0.847-7.932,0.847-12.003c0-50.545-41.044-91.635-91.68-91.635 c-29.792,0-56.202,14.347-72.885,36.423v144.897h155.96c20.751,0,37.59-16.848,37.59-37.59S274.481,140.803,253.73,140.803z M181.66,218.485h18.207V130.417c-5.226-4.143-11.199-7.411-17.716-9.677h-0.491V218.485z"/>
@@ -231,6 +231,13 @@
               <p class="connections-panel-foot">Click one to sign in or check it again.</p>
             </div>
           </div>
+          <button type="button" class="topbar-btn topbar-update" id="check-updates" aria-label="Check for updates" data-tooltip-pos="bottom" data-tooltip="Check GitHub for a newer Track Lab" data-tooltip-disabled="Checking GitHub…">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/>
+              <path d="M21 3v5h-5"/>
+            </svg>
+            <span class="topbar-update-dot" aria-hidden="true"></span>
+          </button>
           <button class="topbar-btn" id="toggle-devtools" aria-label="Developer console" data-advanced data-tooltip-pos="bottom" data-tooltip="Developer console, for troubleshooting">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <polyline points="4 17 10 11 4 5"/>
@@ -536,7 +543,7 @@
             <div class="buy-drawer-head">
               <div>
                 <h3 id="source-cart-title">Your carts</h3>
-                <p class="card-desc">What Track Lab put in your store carts. Nothing is bought until you check out.</p>
+                <p class="card-desc">What Track Lab put in your store carts, checked against the stores. Nothing is bought until you check out.</p>
               </div>
               <button type="button" class="btn-icon" id="source-cart-close" aria-label="Close your carts" data-tooltip="Close">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
@@ -547,9 +554,10 @@
                 <div class="buy-cart-store" id="source-cart-qobuz" style="display: none;">
                   <div class="buy-cart-store-head">
                     <h4><span class="buy-store-dot buy-store-dot--qobuz" aria-hidden="true"></span>Qobuz</h4>
-                    <span class="buy-cart-store-meta"><span id="source-cart-qobuz-count">0 tracks</span> · <strong id="source-cart-qobuz-total">$0.00</strong></span>
+                    <span class="buy-cart-store-meta" id="source-cart-qobuz-meta"></span>
                   </div>
                   <div class="buy-cart-lines" id="source-cart-qobuz-list"></div>
+                  <p class="buy-cart-gone" id="source-cart-qobuz-gone" hidden></p>
                   <div class="buy-cart-actions">
                     <button type="button" class="btn-primary" id="source-auto-checkout-qobuz" data-tooltip="Track Lab opens your Qobuz cart, fills in the checkout steps, then shows you the total and asks before placing the order.">Fill in checkout for me</button>
                     <button type="button" class="btn-secondary" id="source-open-qobuz-cart" data-tooltip="Open your Qobuz cart in a panel on the right and check out yourself.">Open Qobuz cart</button>
@@ -559,9 +567,10 @@
                 <div class="buy-cart-store" id="source-cart-beatport" style="display: none;">
                   <div class="buy-cart-store-head">
                     <h4><span class="buy-store-dot buy-store-dot--beatport" aria-hidden="true"></span>Beatport</h4>
-                    <span class="buy-cart-store-meta"><span id="source-cart-beatport-count">0 tracks</span> · <strong id="source-cart-beatport-total">$0.00</strong></span>
+                    <span class="buy-cart-store-meta" id="source-cart-beatport-meta"></span>
                   </div>
                   <div class="buy-cart-lines" id="source-cart-beatport-list"></div>
+                  <p class="buy-cart-gone" id="source-cart-beatport-gone" hidden></p>
                   <div class="buy-cart-actions">
                     <button type="button" class="btn-primary" id="source-auto-checkout-beatport" data-tooltip="Track Lab opens your Beatport cart, fills in the checkout steps, then shows you the total and asks before placing the order.">Fill in checkout for me</button>
                     <button type="button" class="btn-secondary" id="source-open-beatport-cart" data-tooltip="Open your Beatport cart in a panel on the right and check out yourself.">Open Beatport cart</button>
@@ -570,8 +579,8 @@
                 </div>
                 <div class="buy-cart-download" id="source-cart-download" style="display: none;">
                   <div>
-                    <strong>Checked out already?</strong>
-                    <p>Download what you bought into your new-music folder, ready to sort.</p>
+                    <strong id="source-cart-download-title">Checked out already?</strong>
+                    <p id="source-cart-download-text">Download what you bought into your new-music folder, ready to sort.</p>
                   </div>
                   <button type="button" class="btn-secondary" id="source-download-purchases" data-tooltip="Download the tracks you bought from these carts into your new-music folder.">Download my purchases</button>
                 </div>
@@ -1520,61 +1529,28 @@
         </div>
         <!-- ===== END SPLICE RECOVERY PAGE ===== -->
 
-        <!-- ===== ASK CLAUDE PAGE (src/renderer/claude.ts, styles/claude.css) ===== -->
+        <!-- ===== SOUNDCLOUD DOWNLOADS PAGE (src/renderer/claude.ts, styles/claude.css) =====
+             Ask Claude itself is the round button and its chat drawer, below the layout. -->
         <div class="page" id="page-claude">
           <header class="page-header">
             <div class="page-header-text">
               <p class="page-eyebrow">Assistant</p>
-              <h2>Ask Claude</h2>
-              <p>Ask about your music, or let Claude fetch your SoundCloud free downloads and tell you what needs you. It runs on your Claude subscription and can't buy or delete anything.</p>
+              <h2>SoundCloud downloads</h2>
+              <p>Let Track Lab fetch the free downloads from your SoundCloud likes or a set, then Claude tells you what landed and what needs you. It runs on your Claude subscription and can't buy or delete anything.</p>
             </div>
             <div class="page-header-actions">
-              <span class="status-pill" id="claude-status-pill" data-tooltip-pos="bottom">Checking Claude…</span>
+              <button type="button" class="btn-ghost btn-sm" data-claude-open="settings" data-tooltip="Claude's connection and model live in the Ask Claude chat" data-tooltip-pos="bottom">Claude settings</button>
             </div>
           </header>
 
           <ol class="how-steps" data-how="claude" aria-label="How it works">
-            <li><span class="how-step-num">1</span><div><strong>Connect Claude</strong><span>Sign in once with your Claude account. Jobs use that plan, not extra credits.</span></div></li>
-            <li><span class="how-step-num">2</span><div><strong>Ask, or start a job</strong><span>Ask a question, or fetch the free downloads from your SoundCloud likes.</span></div></li>
-            <li><span class="how-step-num">3</span><div><strong>Read what Claude found</strong><span>It says what it checked and what's left for you. You decide what changes.</span></div></li>
+            <li><span class="how-step-num">1</span><div><strong>Connect Claude</strong><span>Open Ask Claude (bottom right) and sign in once. Jobs use your plan, not extra credits.</span></div></li>
+            <li><span class="how-step-num">2</span><div><strong>Start the run</strong><span>From your likes, or paste a set's link.</span></div></li>
+            <li><span class="how-step-num">3</span><div><strong>Read what Claude found</strong><span>It says what landed and what's left for you. You decide what changes.</span></div></li>
             <button type="button" class="how-steps-close" aria-label="Hide these steps" data-tooltip="Hide these steps">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
             </button>
           </ol>
-
-          <div class="callout callout--warn" id="claude-setup-callout" role="status" hidden>
-            <svg class="callout-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
-            <div class="callout-body">
-              <strong id="claude-setup-title">Connect Claude first</strong>
-              <p id="claude-setup-detail">Sign in to Claude Code with your Claude account. Jobs run on that subscription.</p>
-            </div>
-            <div class="callout-actions">
-              <button type="button" class="btn-primary btn-sm" id="claude-setup-signin" data-tooltip="Opens Terminal to sign in to Claude Code with your browser">Sign in to Claude</button>
-              <button type="button" class="btn-ghost btn-sm" id="claude-setup-recheck">Check again</button>
-            </div>
-          </div>
-
-          <section class="card claude-ask" id="claude-ask-card">
-            <div class="card-header">
-              <div>
-                <h3>Ask about your music</h3>
-                <p class="card-desc">Claude can check what you already have in Rekordbox, look tracks up on Beatport and Qobuz, and read a file's track info.</p>
-              </div>
-              <button type="button" class="btn-ghost btn-sm" id="claude-ask-new" hidden data-tooltip="Clear this conversation and start again">New conversation</button>
-            </div>
-            <div class="claude-thread" id="claude-ask-thread" aria-live="polite" hidden></div>
-            <div class="field">
-              <label for="claude-ask-input">Your question</label>
-              <textarea id="claude-ask-input" rows="3" placeholder="Do I already have Drugs From Amsterdam by Mau P, and is there a full-quality copy on Beatport?"></textarea>
-            </div>
-            <div class="card-actions">
-              <span class="card-actions-note">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
-                Claude can look things up but can't change files, carts or accounts.
-              </span>
-              <button type="button" class="btn-primary" id="claude-ask-send" data-tooltip="Send your question (⌘ Enter)" data-tooltip-disabled="Connect Claude first">Ask Claude</button>
-            </div>
-          </section>
 
           <section class="card" id="claude-sc-card">
             <div class="card-header">
@@ -1607,7 +1583,7 @@
                   <div class="field">
                     <label for="claude-sc-email">Email for download gates</label>
                     <input type="email" id="claude-sc-email" placeholder="you@example.com" />
-                    <span class="field-help">Many gates ask for one. It's only typed into gates that ask, never sent anywhere else.</span>
+                    <span class="field-help">Many gates ask for one. It's only typed into gates that ask, never sent anywhere else. Starts with the one saved in Settings → SoundCloud; clear it to skip email gates this time.</span>
                   </div>
                   <label class="claude-check"><input type="checkbox" id="claude-sc-list-only" /><span><strong>Only list them</strong><span>See what's free without downloading anything.</span></span></label>
                   <label class="claude-check"><input type="checkbox" id="claude-sc-drop-lossy" /><span><strong>Delete compressed files right away</strong><span>MP3s aren't kept. Otherwise they're set aside in a "lossy" folder for you to decide.</span></span></label>
@@ -1633,13 +1609,78 @@
             </div>
           </section>
         </div>
-        <!-- ===== END ASK CLAUDE PAGE ===== -->
+        <!-- ===== END SOUNDCLOUD DOWNLOADS PAGE ===== -->
 
       </main>
       <!-- Sound wave while a track plays (src/renderer/visualizer.ts). Never takes clicks. -->
       <canvas class="player-visualizer" id="player-visualizer" aria-hidden="true"></canvas>
       </div>
     </div>
+
+    <!-- ===== ASK CLAUDE: round button + chat drawer (src/renderer/claude.ts, styles/claude.css) =====
+         The same slide-over as the carts (.buy-drawer). Three views share the body:
+         the first-run questions, the chat, and Claude's settings (the gear). -->
+    <button type="button" class="claude-fab" id="claude-fab" aria-label="Ask Claude" aria-controls="claude-chat-drawer" aria-expanded="false" data-tooltip="Ask Claude about your music" data-tooltip-pos="left">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/>
+      </svg>
+      <span class="claude-fab-badge" id="claude-fab-badge" hidden></span>
+    </button>
+    <div class="buy-drawer-scrim" id="claude-chat-scrim" style="display: none;"></div>
+    <aside class="buy-drawer claude-chat" id="claude-chat-drawer" style="display: none;" role="dialog" aria-labelledby="claude-chat-title">
+      <div class="buy-drawer-head">
+        <div class="claude-chat-heading">
+          <h3 id="claude-chat-title">Ask Claude</h3>
+          <button type="button" class="status-pill" id="claude-status-pill" data-claude-open="settings" data-tooltip-pos="bottom">Checking Claude…</button>
+        </div>
+        <div class="claude-chat-head-actions">
+          <button type="button" class="btn-icon" id="claude-ask-new" hidden aria-label="New conversation" data-tooltip="Clear this conversation and start again">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
+          </button>
+          <button type="button" class="btn-icon" id="claude-chat-settings" aria-label="Claude settings" aria-pressed="false" data-tooltip="Connection, model and what Claude knows about you">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+          </button>
+          <button type="button" class="btn-icon" id="claude-chat-close" aria-label="Close Ask Claude" data-tooltip="Close">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
+        </div>
+      </div>
+      <div class="buy-drawer-body claude-chat-body" id="claude-chat-body">
+        <section class="claude-chat-view" data-view="intro" id="claude-chat-intro" hidden></section>
+        <section class="claude-chat-view" data-view="chat" id="claude-chat-view">
+          <div class="callout callout--warn" id="claude-setup-callout" role="status" hidden>
+            <svg class="callout-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+            <div class="callout-body">
+              <strong id="claude-setup-title">Connect Claude first</strong>
+              <p id="claude-setup-detail">Sign in to Claude Code with your Claude account. Jobs run on that subscription.</p>
+            </div>
+            <div class="callout-actions">
+              <button type="button" class="btn-primary btn-sm" id="claude-setup-signin" data-tooltip="Opens Terminal to sign in to Claude Code with your browser">Sign in to Claude</button>
+              <button type="button" class="btn-ghost btn-sm" id="claude-setup-recheck">Check again</button>
+            </div>
+          </div>
+          <div class="claude-chat-empty" id="claude-chat-empty">
+            <p>Claude can check what you already have in Rekordbox, look tracks up on Beatport and Qobuz, and read a file's track info. Try:</p>
+            <button type="button" class="claude-chat-example" data-claude-example>Do I already have Drugs From Amsterdam by Mau P, and is there a full-quality copy on Beatport?</button>
+            <button type="button" class="claude-chat-example" data-claude-example>Which tracks in my intake folder won't play on CDJs, and why?</button>
+            <button type="button" class="claude-chat-example" data-claude-example>What did Track Lab do today?</button>
+          </div>
+          <div class="claude-thread" id="claude-ask-thread" aria-live="polite" hidden></div>
+        </section>
+        <section class="claude-chat-view" data-view="settings" id="claude-chat-settings-view" hidden></section>
+      </div>
+      <div class="claude-chat-compose" id="claude-chat-compose">
+        <label class="sr-only" for="claude-ask-input">Your question</label>
+        <textarea id="claude-ask-input" rows="2" placeholder="Ask about your music…"></textarea>
+        <div class="claude-chat-compose-row">
+          <span class="card-actions-note">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+            Looks things up; can't change files, carts or accounts.
+          </span>
+          <button type="button" class="btn-primary" id="claude-ask-send" data-tooltip="Send your question (⌘ Enter)" data-tooltip-disabled="Connect Claude first">Ask Claude</button>
+        </div>
+      </div>
+    </aside>
 
     <!-- Fix Track Modal -->
     <div class="modal-overlay" id="fix-modal" style="display: none;">
@@ -1807,7 +1848,7 @@
         <div class="modal-header">
           <div>
             <h3 id="settings-title">Settings</h3>
-            <p class="modal-subtitle">Folders, Rekordbox, Spotify and your store accounts. Folder and account changes save straight away; the rest when you press Save changes.</p>
+            <p class="modal-subtitle">Folders, Rekordbox, Spotify, SoundCloud and your store accounts. Folder and account changes save straight away; the rest when you press Save changes.</p>
           </div>
           <button class="btn-icon modal-close" id="close-settings" aria-label="Close settings" data-tooltip="Close">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -1823,6 +1864,7 @@
             <button type="button" class="settings-nav-item" data-target="spotify" role="tab" data-tooltip="Lets the app read Spotify playlists" data-tooltip-pos="right">Spotify</button>
             <button type="button" class="settings-nav-item" data-target="qobuz" role="tab" data-tooltip="Sign in to Qobuz to search, buy and re-download" data-tooltip-pos="right">Qobuz</button>
             <button type="button" class="settings-nav-item" data-target="beatport" role="tab" data-tooltip="Sign in to Beatport to search, buy and re-download" data-tooltip-pos="right">Beatport</button>
+            <button type="button" class="settings-nav-item" data-target="soundcloud" role="tab" data-tooltip="Sign in to SoundCloud, and the email download gates ask for" data-tooltip-pos="right">SoundCloud</button>
           </aside>
           <div class="settings-sections">
           <div class="settings-section is-active" data-section="library" role="tabpanel" aria-label="Folders and general">
@@ -2006,6 +2048,24 @@
               <span>Add Beatport account</span>
             </button>
           </div>
+
+          <div class="settings-section" data-section="soundcloud" role="tabpanel" aria-label="SoundCloud">
+            <h4>SoundCloud</h4>
+            <div class="setting-row">
+              <div class="setting-info">
+                <label for="setting-soundcloud-sign-in">Sign-in<span class="help-tip" tabindex="0" role="img" aria-label="Help" data-tooltip="One SoundCloud sign-in, kept in Track Lab's SoundCloud Chrome window. Private sets, your likes, free downloads and Claude's SoundCloud runs all use it."></span></label>
+                <p class="setting-desc" id="setting-soundcloud-status">Checking…</p>
+              </div>
+              <button type="button" class="btn-secondary btn-sm" id="setting-soundcloud-sign-in" data-tooltip="Sign in, or check who's signed in. A Chrome window opens only if you need to sign in.">Sign in</button>
+            </div>
+            <div class="setting-row">
+              <div class="setting-info">
+                <label for="setting-gate-email">Email for download gates<span class="help-tip" tabindex="0" role="img" aria-label="Help" data-tooltip="Some free-download pages (Hypeddit and the like) won't hand over the file without an email address. It's only typed into those pages, never sent anywhere else."></span></label>
+                <p class="setting-desc">Saving one lets every SoundCloud run use it: the Claude page, Upgrade quality's free downloads and Claude's own runs. Leave it empty to skip gates that ask.</p>
+              </div>
+              <input type="email" id="setting-gate-email" placeholder="you@example.com" title="Given to download gates that ask for an email" spellcheck="false" />
+            </div>
+          </div>
           </div>
         </div>
         <div class="modal-actions">
@@ -2121,8 +2181,8 @@
          (injected by src/renderer/storePanel.ts so each store binds its own
          session partition), so it's clipped/rounded/bordered by this container —
          a genuine UX panel, not a native overlay. -->
-    <aside class="store-panel" id="store-panel" aria-label="Store cart" hidden>
-      <div class="store-panel-resize" id="store-panel-resize" title="Drag to resize the cart panel" role="separator" aria-orientation="vertical" aria-label="Resize cart panel"></div>
+    <aside class="store-panel" id="store-panel" aria-label="Store" hidden>
+      <div class="store-panel-resize" id="store-panel-resize" title="Drag to resize the store panel" role="separator" aria-orientation="vertical" aria-label="Resize the store panel"></div>
       <header class="store-panel-header">
         <div class="store-panel-nav">
           <button class="store-panel-btn" id="store-panel-back" data-tooltip="Back" aria-label="Back">
@@ -2130,6 +2190,9 @@
           </button>
           <button class="store-panel-btn" id="store-panel-forward" data-tooltip="Forward" aria-label="Forward">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
+          </button>
+          <button class="store-panel-btn" id="store-panel-reload" data-tooltip="Reload this page" aria-label="Reload">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
           </button>
         </div>
         <span class="store-panel-title" id="store-panel-title">Store</span>
@@ -2142,12 +2205,19 @@
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><line x1="16.5" y1="16.5" x2="21" y2="21"/><line x1="8" y1="11" x2="14" y2="11"/><line x1="11" y1="8" x2="11" y2="14"/></svg>
           </button>
         </div>
-        <button class="store-panel-btn store-panel-close" id="store-panel-close" data-tooltip="Close cart" aria-label="Close cart">
+        <button class="store-panel-btn store-panel-close" id="store-panel-close" data-tooltip="Close the store panel" aria-label="Close the store panel">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
         </button>
       </header>
+      <div class="store-panel-progress" id="store-panel-progress" hidden></div>
+      <p class="store-panel-notice" id="store-panel-notice" role="status" hidden></p>
       <div class="store-panel-webview-wrap" id="store-panel-webview-wrap">
         <!-- <webview> is injected here by storePanel.ts on open -->
+        <div class="store-panel-error" id="store-panel-error" role="alert" hidden>
+          <strong id="store-panel-error-title">This page didn't load</strong>
+          <p id="store-panel-error-text"></p>
+          <button type="button" class="btn-secondary btn-sm" id="store-panel-retry">Try again</button>
+        </div>
       </div>
     </aside>
 

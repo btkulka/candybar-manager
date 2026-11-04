@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import {
   isStorePartition, isAllowedWebviewSrc, isAllowedGuestNavigation, isAllowedExternalUrl,
-  isStoreCheckoutUrl, PLACE_ORDER_RE, ADVANCE_RE, scrapeItemCount, resyncRefusal,
+  isStoreCheckoutUrl, isStoreCheckoutStep, isStoreSignInUrl, plainChromeUserAgent,
+  PLACE_ORDER_RE, ADVANCE_RE, scrapeItemCount, resyncRefusal,
   persistentCookieCopy, KEPT_SESSION_COOKIE_SECONDS, type JarCookie,
 } from '../mainGuards';
 
@@ -77,6 +78,34 @@ describe('store <webview> guards', () => {
     expect(isAllowedGuestNavigation('http://www.qobuz.com/')).toBe(false);
     expect(isAllowedGuestNavigation('file:///etc/passwd')).toBe(false);
     expect(isAllowedGuestNavigation('x-apple.systempreferences:')).toBe(false);
+  });
+});
+
+describe('store panel pages', () => {
+  it('tells checkout proper from the cart', () => {
+    expect(isStoreCheckoutStep('beatport', 'https://www.beatport.com/checkout?step=2')).toBe(true);
+    expect(isStoreCheckoutStep('qobuz', 'https://www.qobuz.com/us-en/checkout/payment')).toBe(true);
+    expect(isStoreCheckoutStep('beatport', 'https://www.beatport.com/cart')).toBe(false);
+    expect(isStoreCheckoutStep('qobuz', 'https://www.qobuz.com/shopping-cart')).toBe(false);
+    // Browsing your downloads is not a checkout.
+    expect(isStoreCheckoutStep('beatport', 'https://www.beatport.com/library/downloads')).toBe(false);
+    expect(isStoreCheckoutStep('qobuz', 'https://www.beatport.com/checkout')).toBe(false);
+  });
+
+  it('recognises the stores\' sign-in pages', () => {
+    expect(isStoreSignInUrl('https://www.qobuz.com/signin?url=aHR0cHM6')).toBe(true);
+    expect(isStoreSignInUrl('https://www.qobuz.com/us-en/login')).toBe(true);
+    expect(isStoreSignInUrl('https://account.beatport.com/o/authorize/?client_id=x')).toBe(true);
+    expect(isStoreSignInUrl('https://www.beatport.com/cart')).toBe(false);
+    expect(isStoreSignInUrl('https://www.qobuz.com/us-en/shop')).toBe(false);
+    expect(isStoreSignInUrl('https://accounts.google.com/signin')).toBe(false);
+  });
+
+  it('strips the app and Electron tokens from the user agent', () => {
+    const ua = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) candybar-manager/0.1.0 Chrome/142.0.7444.265 Electron/39.8.8 Safari/537.36';
+    expect(plainChromeUserAgent(ua, 'candybar-manager')).toBe(
+      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.7444.265 Safari/537.36');
+    expect(plainChromeUserAgent('Chrome/1 Safari/2', 'candybar-manager')).toBe('Chrome/1 Safari/2');
   });
 });
 

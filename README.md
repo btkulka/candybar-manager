@@ -2,16 +2,32 @@
 
 Tiny Electron + TypeScript app that organizes and audits your library, plus a few CLI tools for one-off recovery jobs.
 
-## Setup
+## Download (Mac)
+
+Get the `.dmg` for your Mac from the
+[latest release](https://github.com/btkulka/candybar-manager/releases/latest):
+**arm64** for Apple silicon, **x64** for Intel. Open it and drag Track Lab onto
+Applications. It isn't notarized by Apple yet, so the first time it opens macOS
+refuses: click **Done**, then **Open Anyway** in System Settings → Privacy &
+Security. After that it offers each new release itself, on launch or from the
+arrow in the top bar.
+
+### Releasing
+
+Bump `version` in `package.json`, commit, then push a matching tag
+(`git tag v0.2.0 && git push origin v0.2.0`).
+[.github/workflows/release.yml](.github/workflows/release.yml) builds both
+`.dmg`s with electron-builder ([electron-builder.yml](electron-builder.yml)) and
+publishes the release. `npm run dist` builds them locally into `release/`.
+
+## Setup from source
 
 ### Mac
 
-The repo is private, so you need collaborator access and the GitHub CLI signed in
-(`brew install gh && gh auth login`). The shared packages it links as
-`file:../packages/*` come from the public `btkulka/packages`. Then:
+The shared packages it links as `file:../packages/*` come from `btkulka/packages`.
 
 ```bash
-gh repo clone btkulka/candybar-manager ~/source/candybar-manager
+git clone https://github.com/btkulka/candybar-manager.git ~/source/candybar-manager
 ~/source/candybar-manager/scripts/install.sh
 ```
 
@@ -79,3 +95,52 @@ grep 'Artist - Title' ~/Library/Application\ Support/candybar-manager/write-jour
 
 The MCP server (`candybar-audio-tools`) writes to the same journal. Files are
 rotated monthly and never pruned automatically.
+
+## Logs
+
+Track Lab keeps a record of everything it does, where Claude can read it back
+to answer "what happened?" and pick up work. All of it is under the app's data
+folder:
+
+```text
+~/Library/Application Support/candybar-manager/logs/
+  main.log            the app's log, debug and up; 10 MB per file, last 5 kept
+  mcp.log             the same for the MCP server
+  ops/YYYY-MM-DD.jsonl       every operation the app ran
+  ops/YYYY-MM-DD.mcp.jsonl   every MCP tool call
+  results/            MCP results too big to return inline
+```
+
+An **operation** is one piece of work: a window action (source `ui`), an MCP
+tool call and the app work it caused (`claude`), a script over the app's socket
+(`cli`), a queue job (`job:<type>`), or an app event (`app:start`, `app:quit`,
+`window:crashed`). Each is a run of JSON lines sharing an `op` id: `start`
+(name, who asked, arguments, parent operation), `label`, `progress` (at most one
+a second per channel, the last always kept), `output` (the log panel's lines),
+`log` (every logger line written while it ran), and `end` (outcome, duration,
+result summary or error). Arguments and results are summarized, and anything
+named like a secret is redacted. Every `main.log` line written during an
+operation starts with its id, so the two cross-reference. Operations are kept 30
+days. Quick reads the window makes constantly (album art, polling) are only
+kept when they fail or take longer than 3 seconds.
+
+The MCP tools `app_status`, `list_operations`, `get_operation`, `app_logs` and
+`write_journal` read all of this from disk, so they answer even while the app
+is closed or after a crash. To read the logs yourself:
+
+```bash
+jq -c 'select(.ev=="end" and .outcome=="error")' ~/Library/Application\ Support/candybar-manager/logs/ops/*.jsonl
+```
+
+## MCP parity
+
+Everything the app can do, Claude can do over MCP. Every IPC action is
+registered with `handleIpc` in `src/main.ts` (which logs it), and the app's
+socket runs any of them for the MCP server (`invoke` in `src/lib/storeBridge.ts`
+and `src/lib/ipcOps.ts`). [src/lib/mcpParity.ts](src/lib/mcpParity.ts) maps each
+action to the MCP tool(s) that do the same thing, or says why it is window-only
+(pickers, the store panel's checkout) or internal. `src/lib/__tests__/mcpParity.test.ts`
+fails when an action is unmapped, a mapped tool doesn't exist, or a handler is
+registered with `ipcMain.handle` directly. When you add an IPC action, add or
+extend an MCP tool in `src/mcp-server.ts` that runs it with `runApp`, then list
+it in the map.

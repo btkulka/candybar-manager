@@ -1,20 +1,49 @@
-import log, { createScopedLogger } from './lib/logger';
+import log, { createScopedLogger, enableFileLog } from './lib/logger';
 import { app, BrowserWindow, webContents, ipcMain, dialog, nativeImage, Tray, Menu, protocol, net, shell, session, type OpenDialogOptions } from 'electron';
 import fs from 'fs';
 import path from 'path';
 import { pathToFileURL } from 'url';
 import { spawn, execFile } from 'child_process';
+import { Readable, Transform } from 'stream';
+import { pipeline } from 'stream/promises';
+import { initOpLog, getOpLogDir, currentOp, withOp, startOp, runInOp, recordEvent, flushOpLog, flushOpLogSync, type Op, type OpSource } from './lib/opLog';
+import { createIpcRegistry } from './lib/ipcOps';
+import { windowOnlyReason } from './lib/mcpParity';
 
 const mainLog = createScopedLogger('Main');
+
+// Logs Claude can read back (and the MCP server's log tools serve):
+//   logs/main.log  everything logged, debug and up, each line tagged with its operation
+//   logs/ops/      every operation: what was asked, by whom, its progress, output and outcome
+// Set up first, so startup itself is on record.
+const LOGS_DIR = path.join(app.getPath('userData'), 'logs');
+enableFileLog(LOGS_DIR, 'main');
+initOpLog(app.getPath('userData'), { proc: 'app' });
 
 // Process-level error handlers
 process.on('uncaughtException', (error) => {
   log.error('Uncaught exception:', error);
+  flushOpLogSync();
 });
 
 process.on('unhandledRejection', (reason) => {
   log.error('Unhandled rejection:', reason);
 });
+
+/** Reads the window makes all the time (album art per row, polling): kept in
+ *  the operations log only when they fail or are slow. */
+const QUIET_CHANNELS: ReadonlySet<string> = new Set([
+  'get-track-album-art', 'get-track-info', 'list-volumes', 'store-panel-status', 'job-list', 'claude-status',
+  'get-config', 'get-config-path', 'get-library-root', 'get-cache-status', 'get-ignored-tracks', 'get-dismissed-issues',
+  'saved-sources:list', 'store-login-status', 'soundcloud-sign-in-status', 'splice-login-status',
+  'get-organize-state', 'update-organize-state', 'update-check-result', 'update-health-result',
+  'restore-list-volumes', 'diagnose-aiff-header',
+]);
+
+// Every IPC handler goes through here: recorded in the operations log, and
+// runnable by Claude's MCP tools over the app's socket (bridge `invoke`).
+const ipcOps = createIpcRegistry(ipcMain, { quiet: QUIET_CHANNELS });
+const handleIpc = ipcOps.handle;
 import { organizeTracks, OrganizeResult } from './lib/organizeByArtist';
 import { cartUrl } from './lib/storeUrls';
 import { spotifyTracksToTrackRecords, CheckResult, ProgressUpdate, previewCsv, CsvPreview, type TrackRecord } from './lib/musicLibraryCheck';
@@ -24,11 +53,14 @@ import {
 } from './lib/libraryOwnership';
 import {
   isStorePartition, isAllowedWebviewSrc, isAllowedGuestNavigation, isAllowedExternalUrl,
-  isStoreCheckoutUrl, PLACE_ORDER_RE, ADVANCE_RE, scrapeItemCount, resyncRefusal,
+  isStoreCheckoutUrl, isStoreSignInUrl, plainChromeUserAgent, PLACE_ORDER_RE, ADVANCE_RE, scrapeItemCount, resyncRefusal,
 } from './lib/mainGuards';
 import { readConfig, writeConfig, AppConfig, DEFAULT_LIBRARY_ROOT, getDefaultArchivePath, getDefaultRestoreStageDir, setSecretsPath, getConfigWarnings, resolveRekordboxBackupDir } from './lib/config';
 import { searchSpotify, testSpotifyConnection, SpotifySearchResult, getPlaylistTracks, getSpotifyTracksByIds } from './lib/spotify';
 import { fetchSoundCloudSet } from './lib/soundcloudSets';
+import { readSoundCloudSignIn, signInToSoundCloud } from './lib/soundcloudSession';
+import { startStoreBridge, type BridgeHandler, type BridgeMeta } from './lib/storeBridge';
+import { randomUUID } from 'crypto';
 import { listRekordboxPlaylists, readRekordboxPlaylist } from './lib/rekordboxPlaylists';
 import {
   toUpgradeRow, spotifyIdToResolve, applySpotifyTrack, buildLosslessIndex, findLosslessCopy, needsStoreSearch
@@ -38,19 +70,18 @@ import { preflightUpgradeSwap, planUpgradeSwap, applyUpgradeSwap } from './lib/r
 import {
   searchSoundCloud,
   searchSoundCloudPublicTracks,
-  testSoundCloudConnection,
-  pingSoundCloudPublic,
   SoundCloudSearchResult
 } from './lib/soundcloud';
-import { searchBeatport, BeatportSearchResult } from './lib/beatport';
-import { searchQobuz, QobuzSearchResult } from './lib/qobuz';
-import { batchSearchQobuz, QobuzCartTrackInput } from './lib/qobuzCart';
+import { searchBeatport, searchBeatportTracks, BeatportSearchResult } from './lib/beatport';
+import { searchQobuz, searchQobuzTracks, QobuzSearchResult } from './lib/qobuz';
+import { batchSearchQobuz, resolveQobuzHit, QobuzCartTrackInput, type QobuzCartMatch, type StoreCandidates } from './lib/qobuzCart';
+import { buildFinderTracks, applyFinderPicks, finderSummary, toFinderCandidate } from './lib/claude/storeFinder';
 import {
   loginQobuz, loginBeatport, logoutQobuz, logoutBeatport, isQobuzLoggedIn, isBeatportLoggedIn,
   fetchAllQobuzPurchases, fetchAllBeatportPurchases,
   downloadBeatportPurchases, downloadQobuzPurchases,
   setBeatportToken, getBeatportAccessToken, readBeatportSessionToken,
-  addToQobuzCart, addToBeatportCart,
+  addToQobuzCart, addToBeatportCart, checkQobuzCart, checkBeatportCart,
   probeQobuzLoginForPartition, invalidateQobuzAuthCache,
   qobuzPartition, beatportPartition,
   keepStoreSessionCookies, flushStoreCookies,
@@ -59,7 +90,7 @@ import {
 import { closeStoreBrowsers } from './lib/storeBrowser';
 import { restoreLibrary, type RestoreOptions, type RestoreReport, type RestoreProgress } from './lib/restoreLibrary';
 import { listExternalVolumes } from './lib/usbScan';
-import type { StoreMatch, StoreAccount } from './types';
+import type { StoreMatch, StoreAccount, StoreCartCheck, SoundCloudSignIn, UpdateState } from './types';
 import { scanTracks, updateTags, getAlbumArtFromFile, TrackInfo, UpdateTagsParams } from './lib/trackScanner';
 import { readDjTags } from './lib/djTags';
 import { diagnoseAiffHeader, repairAiffHeader, type AiffHeaderDiagnosis } from './lib/aiffRepair';
@@ -83,7 +114,7 @@ import {
 } from './lib/libraryStore';
 import { exportCatalog } from './lib/catalogExport';
 import { safeMove } from './lib/fileUtils';
-import { initWriteJournal, recordWrite, statBytes, flushWriteJournal } from './lib/writeJournal';
+import { initWriteJournal, getWriteJournalDir, recordWrite, statBytes, flushWriteJournal } from './lib/writeJournal';
 import { safeDelete, setTrashHandler } from './lib/safeDelete';
 import { listUsbVolumes } from './lib/usbHealthScan';
 import { normalizeForComparison, stringSimilarity } from './lib/stringUtils';
@@ -93,7 +124,8 @@ import { AUTOPOPULATE_CONCURRENCY, AUDIO_EXTENSIONS } from './lib/constants';
 import { initDatabase, closeDatabase, ignoreTrack, unignoreTrack, getIgnoredTracks, getIgnoredTrackKeys, dismissDuplicate, getDismissedDuplicateKeys, makeDuplicatePairKey, dismissHealthIssue, undismissHealthIssue, getDismissedIssues, markTrackAutopopulated, getAutopopulatedPaths, recordDeletedTrack, updateDownloadedTrackPath, getDatabase } from './lib/db';
 import { listSavedSources, saveSavedSource, renameSavedSource, removeSavedSource } from './lib/db';
 import { parseRekordboxXml, findMissingFiles, importRekordboxToLibrary, type MissingFile, type RekordboxImportSummary } from './lib/rekordbox';
-import { checkForUpdate, oneClickBlocker, UPDATE_BRANCH } from './lib/updateCheck';
+import { checkForUpdate, checkForRelease, oneClickBlocker, UPDATE_BRANCH, type ReleaseUpdate, type UpdateStatus } from './lib/updateCheck';
+import { ensureSharedVenv } from './lib/rbxPython';
 
 type ScriptStream = 'stdout' | 'stderr' | 'status';
 
@@ -188,6 +220,7 @@ let tray: Tray | null = null;
  *  closes (macOS keeps the app alive) or reloads, and a send to destroyed
  *  contents throws — which would abort the job mid-operation. */
 function safeSend(target: Electron.WebContents | BrowserWindow | null | undefined, channel: string, payload?: unknown): void {
+  recordSend(channel, payload);
   if (!target) return;
   try {
     const wc = target instanceof BrowserWindow
@@ -197,6 +230,19 @@ function safeSend(target: Electron.WebContents | BrowserWindow | null | undefine
     wc.send(channel, payload);
   } catch (err) {
     mainLog.debug(`safeSend(${channel}) dropped:`, err);
+  }
+}
+
+/** What the window is shown about the running operation goes in its record
+ *  too: log-panel lines as output, everything else as (throttled) progress. */
+function recordSend(channel: string, payload: unknown): void {
+  const op = currentOp();
+  if (!op) return;
+  if (channel === 'script-output' && payload && typeof payload === 'object') {
+    const p = payload as { text?: unknown; stream?: unknown };
+    op.output(String(p.text ?? ''), typeof p.stream === 'string' ? p.stream : 'stdout');
+  } else {
+    op.progress(channel, payload);
   }
 }
 
@@ -217,6 +263,7 @@ let nextOpId = 1;
 async function trackOp<T>(label: string, fn: () => Promise<T>): Promise<T> {
   const id = nextOpId++;
   activeOps.set(id, label);
+  currentOp()?.label(label);
   try {
     return await fn();
   } finally {
@@ -288,6 +335,59 @@ async function confirmInterruptWork(action: 'quit' | 'update'): Promise<boolean>
   return response === 0;
 }
 
+/** The renderer's warnings and errors, and crashes or hangs, go in the main log
+ *  (the renderer has no log file of its own). */
+function recordWindowTrouble(win: BrowserWindow): void {
+  const rendererLog = createScopedLogger('Renderer');
+  win.webContents.on('console-message', (event) => {
+    const { level, message, sourceId, lineNumber } = event as unknown as { level: string; message: string; sourceId: string; lineNumber: number };
+    if (level !== 'warning' && level !== 'error') return;
+    const where = sourceId ? ` (${sourceId.replace(/^.*\/(?=[^/]+$)/, '')}:${lineNumber})` : '';
+    if (level === 'error') rendererLog.error(`${message}${where}`);
+    else rendererLog.warn(`${message}${where}`);
+  });
+  win.webContents.on('render-process-gone', (_event, details) => {
+    rendererLog.error('Window process gone:', details);
+    recordEvent('window:crashed', { source: 'app', args: details, error: details.reason });
+  });
+  win.on('unresponsive', () => {
+    rendererLog.warn('Window stopped responding');
+    recordEvent('window:unresponsive', { source: 'app', outcome: 'error', error: 'Window stopped responding' });
+  });
+  win.on('responsive', () => rendererLog.info('Window responding again'));
+}
+
+/** Each queue job is an operation of its own (job:<type>), started by
+ *  whatever enqueued it; its progress, log lines and outcome go in it. */
+function recordJobOps(): void {
+  const manager = getJobManager();
+  const ops = new Map<string, Op>();
+  manager.on('job-queued', (info: import('./types').JobInfo) => {
+    const parent = currentOp();
+    ops.set(info.id, startOp(`job:${info.type}`, {
+      source: parent?.source ?? 'app',
+      parent: parent?.id,
+      meta: { jobId: info.id },
+    }));
+  });
+  manager.runWrapper = (info, run) => {
+    const op = ops.get(info.id);
+    return op ? runInOp(op, run) : run();
+  };
+  manager.on('job-started', (info: import('./types').JobInfo) => ops.get(info.id)?.state('running'));
+  manager.on('job-progress', (p: import('./types').JobProgress) => ops.get(p.jobId)?.progress('job-progress', p));
+  manager.on('job-log', (e: { jobId: string; text: string; stream: string }) => ops.get(e.jobId)?.output(e.text, e.stream));
+  const finish = (outcome: 'ok' | 'error') => (info: import('./types').JobInfo, result?: unknown) => {
+    const op = ops.get(info.id);
+    if (!op) return;
+    ops.delete(info.id);
+    op.end(outcome, outcome === 'ok' ? { result } : { error: info.status === 'cancelled' ? `Cancelled: ${info.error ?? ''}`.trim() : info.error });
+  };
+  manager.on('job-completed', finish('ok'));
+  manager.on('job-failed', finish('error'));
+  manager.on('job-cancelled', finish('error'));
+}
+
 function createWindow() {
   const iconPath = resolveIconPath();
   const win = new BrowserWindow({
@@ -313,6 +413,7 @@ function createWindow() {
   win.on('closed', () => {
     if (appWindow === win) appWindow = null;
   });
+  recordWindowTrouble(win);
 
   // Harden every <webview> guest before it attaches: strip any preload, force
   // an isolated, sandboxed no-node context, bind it only to a store session
@@ -426,7 +527,12 @@ function isStoreSession(ses: Electron.Session): boolean {
 }
 app.on('session-created', (ses) => {
   applyPermissionPolicy(ses);
-  if (isStoreSession(ses)) keepStoreSessionCookies(ses);
+  if (isStoreSession(ses)) {
+    keepStoreSessionCookies(ses);
+    // Plain Chrome to the stores: an agent naming the app and Electron gets
+    // Cloudflare's "Verify you are human" page on beatport.com far more often.
+    ses.setUserAgent(plainChromeUserAgent(app.userAgentFallback, app.getName()));
+  }
 });
 
 // One Track Lab at a time: opening it again (the Applications shortcut, the
@@ -585,12 +691,22 @@ app.whenReady().then(async () => {
           model: config.claudeModel ?? '',
           libraryRoot: config.libraryRoot || DEFAULT_LIBRARY_ROOT,
           organizeSourceDir: config.organizeSourceDir ?? '',
+          profile: config.claudeProfile ?? null,
         };
       },
+      storeBridgePath: path.join(app.getPath('userData'), 'store-bridge.sock'),
+      scratchDir: (() => {
+        const dir = path.join(app.getPath('userData'), 'claude-scratch');
+        fs.mkdirSync(dir, { recursive: true });
+        return dir;
+      })(),
     });
+    recordJobOps();
     mainLog.info('Job queue initialized');
   } catch (error) {
     mainLog.error('Startup failed:', error);
+    recordEvent('app:start', { source: 'app', args: { version: app.getVersion(), userData: app.getPath('userData') }, error });
+    flushOpLogSync();
     dialog.showErrorBox(
       'Track Lab couldn’t start',
       `${error instanceof Error ? error.message : String(error)}\n\n` +
@@ -605,20 +721,40 @@ app.whenReady().then(async () => {
   // (The old 10-minute background library-check refresh is gone: nothing reads
   // that cache any more, and it re-parsed every tag in the library each time.)
 
+  // Claude's store tools and the sourcing CLI reach the store accounts through
+  // here. Without it they can't, but the app itself is unaffected.
+  startStoreBridge(path.join(app.getPath('userData'), 'store-bridge.sock'), loggedBridgeHandlers(STORE_BRIDGE_HANDLERS))
+    .then((stop) => { stopStoreBridge = stop; mainLog.info('Store bridge listening'); })
+    .catch((err) => mainLog.warn('Store bridge not started:', err));
+
   createWindow();
   mainLog.info('App startup complete');
+  recordEvent('app:start', {
+    source: 'app',
+    args: { version: app.getVersion(), electron: process.versions.electron, platform: process.platform, userData: app.getPath('userData'), appPath: app.getAppPath() },
+  });
 
   // A corrupt config.json is backed up and replaced with defaults by readConfig;
   // say so once, or settings would just silently "reset".
   void showConfigWarnings();
 
   // Advisory: never awaited, never blocks startup.
-  void promptForUpdateIfBehind();
+  void promptForUpdate(false);
+
+  // The packaged app builds its Rekordbox helper's Python environment in
+  // userData (a checkout has .venv-rbx from install.sh). Background, best effort.
+  if (app.isPackaged && process.platform === 'darwin') void ensureSharedVenv(app.getAppPath());
 
   app.on('activate', () => {
     // A login window can outlive the app window, so look for the app window itself.
     if (!getMainWindow()) createWindow();
   });
+});
+
+app.on('child-process-gone', (_event, details) => {
+  if (details.reason === 'clean-exit') return;
+  mainLog.error('Child process gone:', details);
+  recordEvent('app:child-process-gone', { source: 'app', args: details, error: details.reason });
 });
 
 app.on('window-all-closed', () => {
@@ -651,8 +787,10 @@ app.on('will-quit', (event) => {
   if (quitting) return;
   quitting = true;
   mainLog.info('App will quit, cleaning up...');
+  recordEvent('app:quit', { source: 'app', args: { stillRunning: describeRunningWork() } });
   event.preventDefault();
   closeStorePanel();
+  void stopStoreBridge?.(); // no new store requests from Claude or the CLI
   closeStoreBrowsers(); // the hidden per-partition windows that read store sessions
   // Cancel and drain running work first, so no handler is left writing to a
   // closed database or cut off mid-copy; then make sure the write journal's
@@ -667,6 +805,7 @@ app.on('will-quit', (event) => {
     await flushStoreCookies(); // store sign-ins: app.exit doesn't wait for Chromium's cookie batch
     try {
       await flushWriteJournal();
+      await flushOpLog();
     } finally {
       app.exit(0);
     }
@@ -675,10 +814,11 @@ app.on('will-quit', (event) => {
 
 // ========== Startup update check ==========
 //
-// The app runs from a git checkout (`npm start`), so the repo dir is the app
-// path. If origin/main has commits we don't, offer to pull + rebuild +
-// relaunch via scripts/update.sh, which runs detached after we quit (the
-// rebuild replaces dist/ and native modules this process has loaded).
+// From a git checkout (`npm start`) the repo dir is the app path: if
+// origin/main has commits we don't, offer to pull + rebuild + relaunch via
+// scripts/update.sh, which runs detached after we quit (the rebuild replaces
+// dist/ and native modules this process has loaded). The packaged app (a .dmg
+// from GitHub Releases) instead offers the latest release's .dmg.
 
 async function showConfigWarnings(): Promise<void> {
   try {
@@ -700,8 +840,8 @@ async function showConfigWarnings(): Promise<void> {
   else await dialog.showMessageBox(opts);
 }
 
-// The origin/main commit the user last dismissed the prompt for. Kept in its own
-// file so it never rides along with config writes.
+// The origin/main commit (or, packaged, the release tag) the user last dismissed
+// the prompt for. Kept in its own file so it never rides along with config writes.
 const UPDATE_STATE_PATH = path.join(app.getPath('userData'), 'update-check.json');
 
 function readDismissedUpdateSha(): string | null {
@@ -730,20 +870,88 @@ function originHeadSha(repoDir: string): Promise<string | null> {
   });
 }
 
-async function promptForUpdateIfBehind(): Promise<void> {
-  if (process.env.NODE_ENV === 'development' || process.env.CANDYBAR_SKIP_UPDATE_CHECK) return;
+// What the top-bar update button shows: what the last successful check found,
+// or null when up to date. A failed check (offline) leaves it alone rather than
+// hiding a known update.
+let lastUpdateAvailable: string | null = null;
+let updateFetch: Promise<UpdateStatus | null> | null = null;
+let releaseFetch: Promise<ReleaseUpdate | null | Error> | null = null;
+let updatePromptOpen = false;
+
+function publishUpdateState(available: string | null): void {
+  lastUpdateAvailable = available;
+  safeSend(getMainWindow(), 'update-state', { available } satisfies UpdateState);
+}
+
+/** One fetch at a time: a top-bar click during the launch check shares it. */
+function refreshUpdateStatus(repoDir: string): Promise<UpdateStatus | null> {
+  updateFetch ??= checkForUpdate(repoDir)
+    .then((status) => {
+      if (status) publishUpdateState(status.behind > 0 ? `${status.behind} change${status.behind === 1 ? '' : 's'} on GitHub` : null);
+      return status;
+    })
+    .finally(() => { updateFetch = null; });
+  return updateFetch;
+}
+
+/** The packaged app's check, against GitHub Releases. An Error means GitHub couldn't be reached. */
+function refreshRelease(): Promise<ReleaseUpdate | null | Error> {
+  releaseFetch ??= checkForRelease(app.getVersion(), process.arch)
+    .then((release) => {
+      publishUpdateState(release ? `Track Lab ${release.version}` : null);
+      return release;
+    }, (err: unknown) => {
+      mainLog.warn('Release check failed:', err);
+      return err instanceof Error ? err : new Error(String(err));
+    })
+    .finally(() => { releaseFetch = null; });
+  return releaseFetch;
+}
+
+function showUpdateMessage(opts: Electron.MessageBoxOptions): Promise<Electron.MessageBoxReturnValue> {
+  const win = getMainWindow();
+  return win ? dialog.showMessageBox(win, opts) : dialog.showMessageBox(opts);
+}
+
+function showNoUpdate(reached: boolean): Promise<Electron.MessageBoxReturnValue> {
+  return showUpdateMessage(reached
+    ? { type: 'info', title: 'No updates', message: 'Track Lab is up to date.', detail: 'There’s nothing newer on GitHub.', buttons: ['OK'] }
+    : { type: 'warning', title: 'Couldn’t check for updates', message: 'Track Lab couldn’t reach GitHub.', detail: 'Check your internet connection and try again.', buttons: ['OK'] });
+}
+
+/**
+ * At launch (manual = false) this speaks up only when GitHub has something
+ * newer that wasn't dismissed before. From the top-bar button it always
+ * answers, "up to date" and "couldn't check" included.
+ */
+async function promptForUpdate(manual: boolean): Promise<void> {
+  if (!manual && (process.env.NODE_ENV === 'development' || process.env.CANDYBAR_SKIP_UPDATE_CHECK)) return;
   const repoDir = app.getAppPath();
-  const status = await checkForUpdate(repoDir);
-  if (!status || status.behind === 0) return;
+  const offer = app.isPackaged
+    ? await refreshRelease().then((release) => () => offerRelease(release, manual))
+    : await refreshUpdateStatus(repoDir).then((status) => () => offerUpdate(repoDir, status, manual));
+  if (updatePromptOpen) return;
+  updatePromptOpen = true;
+  try {
+    await offer();
+  } finally {
+    updatePromptOpen = false;
+  }
+}
+
+async function offerUpdate(repoDir: string, status: UpdateStatus | null, manual: boolean): Promise<void> {
+  if (!status || status.behind === 0) {
+    if (manual) await showNoUpdate(!!status);
+    return;
+  }
 
   // Dismissed this exact remote state before? Then stay quiet until new commits land.
   const originSha = await originHeadSha(repoDir);
-  if (originSha && originSha === readDismissedUpdateSha()) {
+  if (!manual && originSha && originSha === readDismissedUpdateSha()) {
     mainLog.info(`Update prompt skipped: ${originSha.slice(0, 7)} was already dismissed`);
     return;
   }
 
-  const win = getMainWindow();
   const n = status.behind;
   const changes = status.incoming.map((s) => `• ${s}`).join('\n')
     + (n > status.incoming.length ? `\n…and ${n - status.incoming.length} more` : '');
@@ -757,13 +965,14 @@ async function promptForUpdateIfBehind(): Promise<void> {
     title: 'Update available',
     message: `Track Lab is ${n} update${n === 1 ? '' : 's'} behind GitHub.`,
     detail: blocker
-      ? `${changes}\n\n${blocker} Update by hand:\n  cd "${repoDir}"\n  git pull origin ${UPDATE_BRANCH} && npm install && npm start\n\nYou won't be asked again until more changes arrive.`
+      ? `${changes}\n\n${blocker} Update by hand:\n  cd "${repoDir}"\n  git pull origin ${UPDATE_BRANCH} && npm install && npm start`
+        + (manual ? '' : `\n\nYou won't be asked again until more changes arrive.`)
       : `${changes}\n\nUpdating pulls the latest code, rebuilds, and restarts the app (about a minute).`,
     buttons: blocker ? ['OK'] : ['Update & Restart', 'Later'],
     defaultId: 0,
     cancelId: blocker ? 0 : 1,
   };
-  const { response } = win ? await dialog.showMessageBox(win, opts) : await dialog.showMessageBox(opts);
+  const { response } = await showUpdateMessage(opts);
   if (blocker || response !== 0) {
     if (originSha) rememberDismissedUpdate(originSha);
     return;
@@ -789,6 +998,103 @@ async function promptForUpdateIfBehind(): Promise<void> {
   }).unref();
   app.quit();
 }
+
+/** The packaged app's prompt: the new version's .dmg, downloaded and opened. */
+async function offerRelease(release: ReleaseUpdate | null | Error, manual: boolean): Promise<void> {
+  if (!release || release instanceof Error) {
+    if (manual) await showNoUpdate(!release);
+    return;
+  }
+  const tag = `v${release.version}`;
+  if (!manual && tag === readDismissedUpdateSha()) {
+    mainLog.info(`Update prompt skipped: ${tag} was already dismissed`);
+    return;
+  }
+  const buttons = release.dmg ? ['Download', 'What’s New', 'Later'] : ['Open GitHub', 'Later'];
+  const { response } = await showUpdateMessage({
+    type: 'info',
+    title: 'Update available',
+    message: `Track Lab ${release.version} is available. You have ${app.getVersion()}.`,
+    detail: release.dmg
+      ? 'Downloading opens the new version in Finder. Drag it onto Applications to replace this one.'
+      : 'Download it from its page on GitHub.',
+    buttons,
+    defaultId: 0,
+    cancelId: buttons.length - 1,
+  });
+  const choice = buttons[response];
+  if (choice === 'Later') {
+    rememberDismissedUpdate(tag);
+  } else if (choice === 'Download' && release.dmg) {
+    await downloadRelease(release.dmg, release.pageUrl);
+  } else {
+    void shell.openExternal(release.pageUrl);
+  }
+}
+
+/** Into Downloads with the Dock icon's progress bar, then opened in Finder, then
+ *  an offer to quit: Finder won't replace an app that's still running. */
+async function downloadRelease(dmg: NonNullable<ReleaseUpdate['dmg']>, pageUrl: string): Promise<void> {
+  const dest = path.join(app.getPath('downloads'), dmg.name);
+  const partial = `${dest}.download`;
+  const win = getMainWindow();
+  try {
+    const res = await net.fetch(dmg.url);
+    if (!res.ok || !res.body) throw new Error(`GitHub answered ${res.status} ${res.statusText}`);
+    let received = 0;
+    const progress = new Transform({
+      transform(chunk: Buffer, _enc, done) {
+        received += chunk.length;
+        win?.setProgressBar(dmg.size ? Math.min(received / dmg.size, 1) : 2);
+        done(null, chunk);
+      },
+    });
+    await pipeline(Readable.fromWeb(res.body as import('stream/web').ReadableStream), progress, fs.createWriteStream(partial));
+    fs.renameSync(partial, dest);
+  } catch (err) {
+    fs.rmSync(partial, { force: true });
+    mainLog.warn('Update download failed:', err);
+    const { response } = await showUpdateMessage({
+      type: 'warning',
+      title: 'Download failed',
+      message: 'Track Lab couldn’t download the update.',
+      detail: `${err instanceof Error ? err.message : String(err)}\n\nYou can download it from GitHub instead.`,
+      buttons: ['Open GitHub', 'Cancel'],
+      defaultId: 0,
+      cancelId: 1,
+    });
+    if (response === 0) void shell.openExternal(pageUrl);
+    return;
+  } finally {
+    win?.setProgressBar(-1);
+  }
+
+  const openError = await shell.openPath(dest);
+  if (openError) mainLog.warn(`Couldn't open ${dest}: ${openError}`);
+  const { response } = await showUpdateMessage({
+    type: 'info',
+    title: 'Update downloaded',
+    message: 'Drag Track Lab onto Applications to replace this version.',
+    detail: `${openError ? `Open ${dest} first. ` : 'It’s open in Finder. '}Track Lab has to quit before it can be replaced.`,
+    buttons: ['Quit Track Lab', 'Not Now'],
+    defaultId: 0,
+    cancelId: 1,
+  });
+  if (response !== 0 || !(await confirmInterruptWork('update'))) return;
+  quitConfirmed = true;
+  app.quit();
+}
+
+// Top-bar update button: what the last check found, and a check on demand.
+handleIpc('get-update-state', (): UpdateState => ({ available: lastUpdateAvailable }));
+handleIpc('check-for-updates', async () => {
+  try {
+    await promptForUpdate(true);
+  } catch (error) {
+    mainLog.error('IPC check-for-updates failed:', error);
+    throw error;
+  }
+});
 
 // ========== Store Panel (embedded <webview>) ==========
 //
@@ -874,16 +1180,12 @@ async function openStorePanel(store: 'qobuz' | 'beatport', url: string): Promise
   if (!win) return;
   storePanelWin = win; // canonical owner window for all subsequent state sends
 
-  // Pre-warm the account's session partition so the panel lands authed.
-  // loginQobuz/Beatport are no-ops when the partition already has valid
-  // cookies; otherwise they pop an interactive login window and wait.
+  // No sign-in window first: the panel is the store's own page, so a signed-out
+  // cart lands on its sign-in page right there (the renderer says so), and a
+  // lapsed Qobuz shop session renews itself on that first real page load —
+  // which the hidden login probe can't do, so it used to pop a window that
+  // wasn't needed. The auth polls below pick up a sign-in made in the panel.
   const accountId = await resolveStorePanelAccountId(store);
-  try {
-    if (store === 'qobuz') await loginQobuz(accountId);
-    else await loginBeatport(accountId);
-  } catch (err) {
-    mainLog.warn(`Failed to pre-warm ${store}[${accountId}] session before opening panel:`, err);
-  }
 
   // Switching stores rebinds the guest to a different session partition, so the
   // renderer rebuilds the <webview> and the old contents id is stale.
@@ -1039,19 +1341,19 @@ function stopStorePanelAuthPoll(): void {
 }
 
 // Store panel IPC handlers
-ipcMain.handle('store-panel-open', async (_event, { store, url }: { store: 'qobuz' | 'beatport'; url: string }) => {
+handleIpc('store-panel-open', async (_event, { store, url }: { store: 'qobuz' | 'beatport'; url: string }) => {
   await openStorePanel(store, url);
   return { success: true };
 });
 
-ipcMain.handle('store-panel-close', () => {
+handleIpc('store-panel-close', () => {
   closeStorePanel();
   return { success: true };
 });
 
 // The renderer registers the <webview> guest's webContents id once it attaches,
 // so the scripted-checkout injection below can reach the live cart page.
-ipcMain.handle('store-panel-attach', (_event, { contentsId }: { contentsId: number | null }) => {
+handleIpc('store-panel-attach', (_event, { contentsId }: { contentsId: number | null }) => {
   storePanelContentsId = typeof contentsId === 'number' ? contentsId : null;
   return { success: true };
 });
@@ -1059,13 +1361,13 @@ ipcMain.handle('store-panel-attach', (_event, { contentsId }: { contentsId: numb
 // The renderer reports each guest navigation. We remember the URL for status and
 // re-broadcast it as `store-panel-navigated` so the app's purchase-success watcher
 // (auto-download) keeps working now that nav events originate in the renderer.
-ipcMain.handle('store-panel-nav', (_event, { url }: { url: string }) => {
+handleIpc('store-panel-nav', (_event, { url }: { url: string }) => {
   if (typeof url === 'string' && url) storePanelUrl = url;
   safeSend(storePanelWin ?? getMainWindow(), 'store-panel-navigated', { url });
   return { success: true };
 });
 
-ipcMain.handle('store-panel-status', () => {
+handleIpc('store-panel-status', () => {
   return {
     open: storePanelOpen,
     store: storePanelStore,
@@ -1146,23 +1448,27 @@ type CheckoutAdvanceResult =
 /** The attached guest, if it's on this store's cart/checkout pages; otherwise
  *  an error the renderer shows. Nothing is clicked on any other page. */
 async function checkoutContents(store: 'qobuz' | 'beatport'): Promise<{ wc: Electron.WebContents } | { error: string }> {
+  const label = store === 'qobuz' ? 'Qobuz' : 'Beatport';
   if (!storePanelOpen || storePanelStore !== store) {
-    return { error: `${store} cart panel is not open.` };
+    return { error: `The ${label} panel isn't open.` };
   }
   // Tolerate the brief post-open window before the guest reports its id.
   const wc = await awaitStorePanelContents();
   if (!wc) {
-    return { error: `${store} cart panel is still loading — try again in a moment.` };
+    return { error: `The ${label} panel is still loading. Try again in a moment.` };
   }
   const url = wc.getURL();
+  if (isStoreSignInUrl(url)) {
+    return { error: `Sign in to ${label} in the panel first, then choose Fill in checkout for me again.` };
+  }
   if (!isStoreCheckoutUrl(store, url)) {
     mainLog.warn(`checkout[${store}] refused: guest is not on a cart/checkout page (${url})`);
-    return { error: `The ${store === 'qobuz' ? 'Qobuz' : 'Beatport'} panel isn't on the cart or checkout page, so nothing was clicked. Go back to the cart and try again.` };
+    return { error: `The ${label} panel isn't on the cart or checkout page, so nothing was clicked. Go back to the cart and try again.` };
   }
   return { wc };
 }
 
-ipcMain.handle('store-panel-checkout-advance', async (_event, { store }: { store: 'qobuz' | 'beatport' }) => {
+handleIpc('store-panel-checkout-advance', async (_event, { store }: { store: 'qobuz' | 'beatport' }) => {
   const target = await checkoutContents(store);
   if ('error' in target) return { success: false, error: target.error };
   const { wc } = target;
@@ -1175,7 +1481,7 @@ ipcMain.handle('store-panel-checkout-advance', async (_event, { store }: { store
   }
 });
 
-ipcMain.handle('store-panel-place-order', async (_event, { store }: { store: 'qobuz' | 'beatport' }) => {
+handleIpc('store-panel-place-order', async (_event, { store }: { store: 'qobuz' | 'beatport' }) => {
   const target = await checkoutContents(store);
   if ('error' in target) return { success: false, error: target.error };
   const { wc } = target;
@@ -1188,7 +1494,7 @@ ipcMain.handle('store-panel-place-order', async (_event, { store }: { store: 'qo
   }
 });
 
-ipcMain.handle('select-path', async (_event, { type }: { type: 'file' | 'dir' }) => {
+handleIpc('select-path', async (_event, { type }: { type: 'file' | 'dir' }) => {
   try {
     const options: OpenDialogOptions = {
       properties: type === 'file' ? ['openFile'] : ['openDirectory']
@@ -1206,7 +1512,7 @@ ipcMain.handle('select-path', async (_event, { type }: { type: 'file' | 'dir' })
   }
 });
 
-ipcMain.handle('get-config', async () => {
+handleIpc('get-config', async () => {
   try {
     return await readConfig(CONFIG_PATH, CONFIG_DEFAULTS_PATH);
   } catch (error) {
@@ -1215,9 +1521,9 @@ ipcMain.handle('get-config', async () => {
   }
 });
 
-ipcMain.handle('get-config-path', () => CONFIG_PATH);
+handleIpc('get-config-path', () => CONFIG_PATH);
 
-ipcMain.handle('get-library-root', async () => {
+handleIpc('get-library-root', async () => {
   try {
     return await getLibraryRoot();
   } catch (error) {
@@ -1241,7 +1547,7 @@ function mutateConfig(mutate: (current: AppConfig) => AppConfig): Promise<AppCon
   return run;
 }
 
-ipcMain.handle('set-config', async (_event, config: AppConfig) => {
+handleIpc('set-config', async (_event, config: AppConfig) => {
   try {
     return await mutateConfig(() => config);
   } catch (error) {
@@ -1252,7 +1558,7 @@ ipcMain.handle('set-config', async (_event, config: AppConfig) => {
 
 // Partial update: merge just these fields into the current config. Prefer this
 // over set-config, which replaces the whole thing with the renderer's copy.
-ipcMain.handle('update-config', async (_event, partial: Partial<AppConfig>) => {
+handleIpc('update-config', async (_event, partial: Partial<AppConfig>) => {
   try {
     if (!partial || typeof partial !== 'object') throw new Error('update-config needs an object of fields to change');
     return await mutateConfig((current) => ({ ...current, ...partial }));
@@ -1364,7 +1670,7 @@ async function isReferencedByRekordbox(filePath: string): Promise<boolean> {
   }
 }
 
-ipcMain.handle(
+handleIpc(
   'check-library',
   async (event, { csvPath, spotifyPlaylistUrl, cacheOnly = false }: { csvPath?: string; spotifyPlaylistUrl?: string; useCache?: boolean; cacheOnly?: boolean }) => {
     const runId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -1418,7 +1724,7 @@ ipcMain.handle(
 );
 
 // Ignored tracks handlers
-ipcMain.handle('ignore-track', async (_event, { key, artist, title }: { key: string; artist: string; title: string }) => {
+handleIpc('ignore-track', async (_event, { key, artist, title }: { key: string; artist: string; title: string }) => {
   try {
     ignoreTrack(key, artist, title);
     return { success: true };
@@ -1428,7 +1734,7 @@ ipcMain.handle('ignore-track', async (_event, { key, artist, title }: { key: str
   }
 });
 
-ipcMain.handle('unignore-track', async (_event, { key }: { key: string }) => {
+handleIpc('unignore-track', async (_event, { key }: { key: string }) => {
   try {
     unignoreTrack(key);
     return { success: true };
@@ -1438,7 +1744,7 @@ ipcMain.handle('unignore-track', async (_event, { key }: { key: string }) => {
   }
 });
 
-ipcMain.handle('get-ignored-tracks', async () => {
+handleIpc('get-ignored-tracks', async () => {
   try {
     return getIgnoredTracks();
   } catch (error) {
@@ -1448,7 +1754,7 @@ ipcMain.handle('get-ignored-tracks', async () => {
 });
 
 // Dismissed duplicates handler
-ipcMain.handle('dismiss-duplicate', async (_event, {
+handleIpc('dismiss-duplicate', async (_event, {
   track1Artist, track1Title, track2Artist, track2Title
 }: { track1Artist: string; track1Title: string; track2Artist: string; track2Title: string }) => {
   try {
@@ -1462,7 +1768,7 @@ ipcMain.handle('dismiss-duplicate', async (_event, {
 });
 
 // Dismissed health issues handlers
-ipcMain.handle('dismiss-health-issue', async (_event, {
+handleIpc('dismiss-health-issue', async (_event, {
   libraryRoot, filePath, issueCode
 }: { libraryRoot: string; filePath: string; issueCode: string }) => {
   try {
@@ -1474,7 +1780,7 @@ ipcMain.handle('dismiss-health-issue', async (_event, {
   }
 });
 
-ipcMain.handle('undismiss-health-issue', async (_event, {
+handleIpc('undismiss-health-issue', async (_event, {
   libraryRoot, filePath, issueCode
 }: { libraryRoot: string; filePath: string; issueCode: string }) => {
   try {
@@ -1486,7 +1792,7 @@ ipcMain.handle('undismiss-health-issue', async (_event, {
   }
 });
 
-ipcMain.handle('get-dismissed-issues', async (_event, { libraryRoot }: { libraryRoot: string }) => {
+handleIpc('get-dismissed-issues', async (_event, { libraryRoot }: { libraryRoot: string }) => {
   try {
     return getDismissedIssues(libraryRoot);
   } catch (error) {
@@ -1496,7 +1802,7 @@ ipcMain.handle('get-dismissed-issues', async (_event, { libraryRoot }: { library
 });
 
 // Rekordbox XML repair handlers
-ipcMain.handle('rekordbox-scan', async (): Promise<{ total: number; missing: MissingFile[]; libraryRoot: string; xmlPath: string }> => {
+handleIpc('rekordbox-scan', async (): Promise<{ total: number; missing: MissingFile[]; libraryRoot: string; xmlPath: string }> => {
   const config = await readConfig(CONFIG_PATH, CONFIG_DEFAULTS_PATH);
   const xmlPath = config.rekordboxXmlPath;
   const libraryRoot = config.libraryRoot || DEFAULT_LIBRARY_ROOT;
@@ -1511,7 +1817,7 @@ ipcMain.handle('rekordbox-scan', async (): Promise<{ total: number; missing: Mis
   }
 });
 
-ipcMain.handle('rekordbox-import', async (): Promise<RekordboxImportSummary> => {
+handleIpc('rekordbox-import', async (): Promise<RekordboxImportSummary> => {
   const config = await readConfig(CONFIG_PATH, CONFIG_DEFAULTS_PATH);
   const xmlPath = config.rekordboxXmlPath;
   const libraryRoot = config.libraryRoot || DEFAULT_LIBRARY_ROOT;
@@ -1525,7 +1831,7 @@ ipcMain.handle('rekordbox-import', async (): Promise<RekordboxImportSummary> => 
   }
 });
 
-ipcMain.handle('rekordbox-resync', async (): Promise<RekordboxImportSummary> => trackOp('Rekordbox resync', async () => {
+handleIpc('rekordbox-resync', async (): Promise<RekordboxImportSummary> => trackOp('Rekordbox resync', async () => {
   const config = await readConfig(CONFIG_PATH, CONFIG_DEFAULTS_PATH);
   const xmlPath = config.rekordboxXmlPath;
   const libraryRoot = config.libraryRoot || DEFAULT_LIBRARY_ROOT;
@@ -1562,7 +1868,7 @@ ipcMain.handle('rekordbox-resync', async (): Promise<RekordboxImportSummary> => 
 }));
 
 // CSV Preview handler
-ipcMain.handle('preview-csv', async (_event, { csvPath }: { csvPath: string }): Promise<CsvPreview> => {
+handleIpc('preview-csv', async (_event, { csvPath }: { csvPath: string }): Promise<CsvPreview> => {
   try {
     return previewCsv(csvPath);
   } catch (error) {
@@ -1572,7 +1878,7 @@ ipcMain.handle('preview-csv', async (_event, { csvPath }: { csvPath: string }): 
 });
 
 // Cache status handler
-ipcMain.handle('get-cache-status', async () => {
+handleIpc('get-cache-status', async () => {
   try {
     return getCacheStatus();
   } catch (error) {
@@ -1582,7 +1888,7 @@ ipcMain.handle('get-cache-status', async () => {
 });
 
 // Clear cache handler
-ipcMain.handle('clear-cache', async () => {
+handleIpc('clear-cache', async () => {
   try {
     await clearCache();
     return { success: true };
@@ -1593,7 +1899,7 @@ ipcMain.handle('clear-cache', async () => {
 });
 
 // Sync mutated state from renderer back to main process store
-ipcMain.handle('update-check-result', async (_event, { result }: { result: any }) => {
+handleIpc('update-check-result', async (_event, { result }: { result: any }) => {
   try {
     updateCachedCheckResult(result);
     return { success: true };
@@ -1603,7 +1909,7 @@ ipcMain.handle('update-check-result', async (_event, { result }: { result: any }
   }
 });
 
-ipcMain.handle('update-health-result', async (_event, { result }: { result: LibraryHealthResult }) => {
+handleIpc('update-health-result', async (_event, { result }: { result: LibraryHealthResult }) => {
   try {
     replaceLibraryFromResult(result);
     return { success: true };
@@ -1614,11 +1920,11 @@ ipcMain.handle('update-health-result', async (_event, { result }: { result: Libr
 });
 
 // Organize state persistence (survives renderer HMR)
-ipcMain.handle('get-organize-state', async () => {
+handleIpc('get-organize-state', async () => {
   return getOrganizeState();
 });
 
-ipcMain.handle('update-organize-state', async (_event, { state }: { state: any }) => {
+handleIpc('update-organize-state', async (_event, { state }: { state: any }) => {
   try {
     saveOrganizeState(state);
     return { success: true };
@@ -1629,7 +1935,7 @@ ipcMain.handle('update-organize-state', async (_event, { state }: { state: any }
 });
 
 // Storage stats handler
-ipcMain.handle('get-storage-stats', async () => {
+handleIpc('get-storage-stats', async () => {
   try {
     const config = await readConfig(CONFIG_PATH, CONFIG_DEFAULTS_PATH);
     const libraryRoot = config.libraryRoot || DEFAULT_LIBRARY_ROOT;
@@ -1691,7 +1997,7 @@ async function getDirSize(dirPath: string): Promise<number> {
 }
 
 // Export tracks to CSV
-ipcMain.handle(
+handleIpc(
   'export-tracks-csv',
   async (_event, { tracks, filePath }: { tracks: Array<{ artist: string; title: string; album?: string; genre?: string }>; filePath: string }) => {
     try {
@@ -1715,7 +2021,7 @@ ipcMain.handle(
 );
 
 // Export tracks as M3U8 playlist (organized by artist)
-ipcMain.handle(
+handleIpc(
   'export-playlist-m3u8',
   async (_event, { tracks, filePath }: { tracks: Array<{ artist: string; title: string; filePath?: string }>; filePath: string }) => {
     try {
@@ -1753,7 +2059,7 @@ ipcMain.handle(
 );
 
 // Export tracks as Rekordbox XML playlist
-ipcMain.handle(
+handleIpc(
   'export-playlist-rekordbox',
   async (_event, { tracks, filePath, playlistName }: { tracks: Array<{ artist: string; title: string; filePath?: string; duration?: number }>; filePath: string; playlistName: string }) => {
     try {
@@ -1805,7 +2111,7 @@ ${playlistEntries.join('\n')}
 );
 
 // Show save dialog for M3U8 export
-ipcMain.handle('show-save-dialog-m3u8', async (_event, { defaultName }: { defaultName: string }) => {
+handleIpc('show-save-dialog-m3u8', async (_event, { defaultName }: { defaultName: string }) => {
   try {
     const result = await dialog.showSaveDialog({
       defaultPath: defaultName,
@@ -1821,7 +2127,7 @@ ipcMain.handle('show-save-dialog-m3u8', async (_event, { defaultName }: { defaul
 });
 
 // Show save dialog for Rekordbox XML export
-ipcMain.handle('show-save-dialog-rekordbox', async (_event, { defaultName }: { defaultName: string }) => {
+handleIpc('show-save-dialog-rekordbox', async (_event, { defaultName }: { defaultName: string }) => {
   try {
     const result = await dialog.showSaveDialog({
       defaultPath: defaultName,
@@ -1837,7 +2143,7 @@ ipcMain.handle('show-save-dialog-rekordbox', async (_event, { defaultName }: { d
 });
 
 // Show save dialog for CSV export
-ipcMain.handle('show-save-dialog', async (_event, { defaultName }: { defaultName: string }) => {
+handleIpc('show-save-dialog', async (_event, { defaultName }: { defaultName: string }) => {
   try {
     const result = await dialog.showSaveDialog({
       defaultPath: defaultName,
@@ -1853,7 +2159,7 @@ ipcMain.handle('show-save-dialog', async (_event, { defaultName }: { defaultName
 });
 
 // Show save dialog for JSON export
-ipcMain.handle('show-save-dialog-json', async (_event, { defaultName }: { defaultName: string }) => {
+handleIpc('show-save-dialog-json', async (_event, { defaultName }: { defaultName: string }) => {
   try {
     const result = await dialog.showSaveDialog({
       defaultPath: defaultName,
@@ -1869,7 +2175,7 @@ ipcMain.handle('show-save-dialog-json', async (_event, { defaultName }: { defaul
 });
 
 // Export library catalog as JSON
-ipcMain.handle('export-catalog', async (event, { outputPath }: { outputPath: string }) => {
+handleIpc('export-catalog', async (event, { outputPath }: { outputPath: string }) => {
   const libraryRoot = await getLibraryRoot();
 
   // Use job queue for concurrent execution and shared library scan
@@ -1901,7 +2207,7 @@ type MusicSearchResult = {
   errors: { source: string; message: string }[];
 };
 
-ipcMain.handle(
+handleIpc(
   'search-music',
   async (
     _event,
@@ -2220,7 +2526,7 @@ async function processOneAutopopulateTrack(
   }
 }
 
-ipcMain.handle(
+handleIpc(
   'autopopulate-tracks',
   async (
     event,
@@ -2281,7 +2587,7 @@ ipcMain.handle(
   })
 );
 
-ipcMain.handle('check-spotify', async (): Promise<boolean> => {
+handleIpc('check-spotify', async (): Promise<boolean> => {
   try {
     const config = await readConfig(CONFIG_PATH, CONFIG_DEFAULTS_PATH);
     if (!config.spotifyClientId || !config.spotifyClientSecret) {
@@ -2297,26 +2603,29 @@ ipcMain.handle('check-spotify', async (): Promise<boolean> => {
   }
 });
 
-ipcMain.handle('check-soundcloud', async (): Promise<boolean> => {
+// SoundCloud's one sign-in: the 'soundcloud' Chrome profile that the set
+// reader, the downloader (Claude jobs, upgrade free downloads) and the MCP
+// tools all open. The status is the note the last check by any of them left.
+handleIpc('soundcloud-sign-in-status', async (): Promise<SoundCloudSignIn | null> => {
   try {
-    const config = await readConfig(CONFIG_PATH, CONFIG_DEFAULTS_PATH);
-    if (config.soundcloudClientId && config.soundcloudClientSecret) {
-      const ok = await testSoundCloudConnection({
-        clientId: config.soundcloudClientId,
-        clientSecret: config.soundcloudClientSecret
-      });
-      if (ok) return true;
-      mainLog.warn('SoundCloud OAuth check failed; falling back to public reachability ping');
-    }
-    return await pingSoundCloudPublic();
+    return await readSoundCloudSignIn();
   } catch (error) {
-    mainLog.error('IPC check-soundcloud failed:', error);
-    return false;
+    mainLog.error('IPC soundcloud-sign-in-status failed:', error);
+    return null;
+  }
+});
+
+handleIpc('soundcloud-sign-in', async (): Promise<{ success: boolean; status?: SoundCloudSignIn; error?: string }> => {
+  try {
+    return { success: true, status: await signInToSoundCloud() };
+  } catch (error) {
+    mainLog.error('IPC soundcloud-sign-in failed:', error);
+    return { success: false, error: error instanceof Error ? error.message : 'Sign-in failed' };
   }
 });
 
 // Source export: write source search results to CSV
-ipcMain.handle(
+handleIpc(
   'source-export-csv',
   async (_event, { content, filePath }: { content: string; filePath: string }) => {
     try {
@@ -2330,7 +2639,7 @@ ipcMain.handle(
 );
 
 // Source search: parse CSV or Spotify playlist and batch search for lossless purchase sources
-ipcMain.handle(
+handleIpc(
   'source-search',
   async (event, { csvPath, spotifyPlaylistUrl }: { csvPath?: string; spotifyPlaylistUrl?: string }) => {
     try {
@@ -2451,6 +2760,63 @@ ipcMain.handle(
   }
 );
 
+// ---------- Claude as the store matcher ----------
+//
+// After the plain search, small Claude Code sessions (the claude-store-finder
+// job; lib/claude/storeFinder.ts) pick each track's record from what that
+// search saw, searching again through the app when nothing fits. The plain
+// matches stand when Claude is switched off, isn't installed or signed in to
+// a subscription, or fails.
+async function findMatchesWithClaude(
+  matches: QobuzCartMatch[],
+  candidatesByKey: Map<string, StoreCandidates>,
+  config: AppConfig,
+  onProgress: (p: import('./types').SourcingFinderProgress) => void,
+): Promise<{ matches: QobuzCartMatch[]; finder: import('./types').SourcingFinderSummary }> {
+  const plain = (note: string) => ({
+    matches: matches.map(m => ({ ...m, finder: { by: 'search' as const } })),
+    finder: { by: 'search' as const, note },
+  });
+  if (matches.length === 0) return plain('');
+  if (config.claudeFindMatches === false) return plain("Claude matching is off in Settings → Claude, so these are the plain search's matches.");
+  onProgress({ done: 0, total: matches.length, message: 'Checking Claude Code…' });
+  const status = await getClaudeStatus(config.claudeOauthToken || undefined).catch(() => null);
+  if (!status?.installed) return plain("Claude Code isn't installed, so these are the plain search's matches.");
+  if (!status.subscription) return plain("Claude Code isn't signed in to a Claude subscription (Settings → Claude), so these are the plain search's matches.");
+
+  const jm = getJobManager();
+  const params: import('./types').ClaudeStoreFinderParams = { tracks: buildFinderTracks(matches, candidatesByKey) };
+  const { jobId, promise } = jm.enqueue<import('./types').ClaudeStoreFinderResult>('claude-store-finder', params, 'find-and-buy');
+  const onJobProgress = (p: { jobId: string; current: number; total: number; message: string }) => {
+    if (p.jobId === jobId) onProgress({ done: p.current, total: p.total || matches.length, message: p.message });
+  };
+  jm.on('job-progress', onJobProgress);
+  try {
+    const result = await promise;
+    const picked = await applyFinderPicks(matches, result.picks, resolveQobuzHit);
+    return { matches: picked, finder: { by: 'claude', note: finderSummary(picked, result.unchecked, result.firstError) } };
+  } catch (err) {
+    const why = err instanceof Error ? err.message : String(err);
+    mainLog.warn('Claude store finder failed:', err);
+    return plain(why === 'Job cancelled'
+      ? "Claude was stopped, so these are the plain search's matches."
+      : `Claude couldn't check the matches (${why.replace(/\.$/, '')}), so these are the plain search's matches.`);
+  } finally {
+    jm.off('job-progress', onJobProgress);
+  }
+}
+
+/** A catalog search for the finder's search_store_catalog tool: the first
+ *  results as the prompt lists them, each registered so a pick can name it. */
+async function catalogSearch(store: 'qobuz' | 'beatport', query: string) {
+  const q = query.trim().slice(0, 200);
+  if (!q) throw new Error('Search for something: an artist and a title, or a title alone.');
+  const results = store === 'beatport'
+    ? (await searchBeatportTracks(q)).slice(0, 10).map(track => toFinderCandidate({ store: 'beatport', track }))
+    : (await searchQobuzTracks(q)).slice(0, 10).map(track => toFinderCandidate({ store: 'qobuz', track }));
+  return { store, query: q, results, ...(results.length === 0 ? { note: 'Nothing came back for that query.' } : {}) };
+}
+
 // ---------- Library-Sourcing: combined Check + Source flow ----------
 //
 // Two-phase pipeline per the merge plan:
@@ -2465,7 +2831,7 @@ ipcMain.handle(
 //   `library-sourcing:phase2-progress` — per-track store search progress
 //   `library-sourcing:phase2-match`    — individual match objects as they
 //                                          resolve (streaming to results)
-ipcMain.handle(
+handleIpc(
   'library-sourcing:run',
   async (
     event,
@@ -2485,6 +2851,8 @@ ipcMain.handle(
       // QobuzCartTrackInput list keyed the same way so we can correlate
       // phase-2 matches back to phase-1 rows.
       let phase1Tracks: import('./lib/musicLibraryCheck').TrackRecord[] = [];
+      /** A SoundCloud set's own free downloads, by phase-1 track key. */
+      let setFree: Map<string, import('./lib/soundcloudSets').SetFreeTrack> = new Map();
 
       if (spotifyPlaylistUrl) {
         if (!config.spotifyClientId || !config.spotifyClientSecret) {
@@ -2520,6 +2888,10 @@ ipcMain.handle(
           safeSend(event.sender, 'library-sourcing:phase1-progress', {
             phase: 'parsing', current: loaded, total, message: `Fetching set: ${loaded}/${total}`
           });
+        }, () => {
+          safeSend(event.sender, 'library-sourcing:phase1-progress', {
+            phase: 'parsing', current: 0, total: 1, message: 'This set is private. Sign in to SoundCloud in the Chrome window that just opened…'
+          });
         });
         if (set.tracks.length === 0) {
           return { success: false, error: `Set "${set.name}" contains no playable tracks.` };
@@ -2533,6 +2905,7 @@ ipcMain.handle(
           source: 'soundcloud'
         } satisfies import('./types').SourcePlaylistInfo);
         phase1Tracks = set.tracks;
+        setFree = set.freeByKey;
       } else if (csvPath) {
         safeSend(event.sender, 'library-sourcing:phase1-progress', { phase: 'parsing', current: 0, total: 1, message: 'Reading CSV…' });
         phase1Tracks = await readCsvTracks(csvPath);
@@ -2586,7 +2959,10 @@ ipcMain.handle(
       // ---------- Phase 2 input: uncertain ∪ missing, minus ignored ----------
       // phase2Meta doubles as the de-dupe: a track listed twice (common in
       // sets and CSVs) is searched, and shown, once.
-      type PhaseKey = { key: string; status: 'probable' | 'missing'; matchPath?: string; matchConfidence?: number };
+      type PhaseKey = {
+        key: string; status: 'probable' | 'missing'; matchPath?: string; matchConfidence?: number;
+        free?: import('./lib/soundcloudSets').SetFreeTrack;
+      };
       const phase2Inputs: QobuzCartTrackInput[] = [];
       const phase2Meta = new Map<string, PhaseKey>();
 
@@ -2605,7 +2981,8 @@ ipcMain.handle(
           key,
           status: 'probable',
           matchPath: m.libraryTrack.filePath,
-          matchConfidence: m.confidence
+          matchConfidence: m.confidence,
+          free: setFree.get(m.csvTrack.key),
         });
       }
       for (const m of checkResult.missingTracks) {
@@ -2619,15 +2996,26 @@ ipcMain.handle(
           album: m.album,
           duration: m.duration
         });
-        phase2Meta.set(key, { key, status: 'missing' });
+        phase2Meta.set(key, { key, status: 'missing', free: setFree.get(m.key) });
       }
+
+      // A set's free downloads: the downloader rows stay in main, keyed like
+      // the matches, for "Get free downloads". The stores are still searched
+      // for these, since a free file can turn out compressed.
+      const freeRows: FreeFetchRow[] = [];
+      for (const meta of phase2Meta.values()) {
+        if (meta.free) freeRows.push({ ...meta.free.fetchRow, upgradeKey: meta.key, scId: meta.free.fetchRow.scId });
+      }
+      if (freeRows.length > 0) await saveSourcingFreeRows(freeRows);
 
       // ---------- Phase 2: store search ----------
       safeSend(event.sender, 'library-sourcing:phase2-progress', {
         current: 0, total: phase2Inputs.length, currentTrack: 'Preparing store search…'
       });
 
-      const storeMatches = phase2Inputs.length > 0
+      // Every result each track's search saw, for Claude to judge afterwards.
+      const candidatesByKey = new Map<string, StoreCandidates>();
+      const plainMatches = phase2Inputs.length > 0
         ? await batchSearchQobuz(
             phase2Inputs,
             (current, total, currentTrack) => {
@@ -2642,16 +3030,18 @@ ipcMain.handle(
                 match.libraryMatchPath = meta.matchPath;
                 match.libraryMatchConfidence = meta.matchConfidence;
                 if (meta.status === 'probable') match.inLibrary = true; // legacy field
+                if (meta.free) match.free = meta.free.free;
               }
               safeSend(event.sender, 'library-sourcing:phase2-match', match);
-            }
+            },
+            (key, candidates) => candidatesByKey.set(key, candidates)
           )
         : [];
 
       // Post-pass: make sure every match has libraryStatus tagged (the stream
       // callback only runs during search; this catches anything that
       // short-circuited).
-      for (const m of storeMatches) {
+      for (const m of plainMatches) {
         const meta = phase2Meta.get(m.trackInput.key);
         if (meta && !m.libraryStatus) {
           m.libraryStatus = meta.status;
@@ -2659,7 +3049,12 @@ ipcMain.handle(
           m.libraryMatchConfidence = meta.matchConfidence;
           if (meta.status === 'probable') m.inLibrary = true;
         }
+        if (meta?.free) m.free = meta.free.free;
       }
+
+      // ---------- Phase 3: Claude picks the records ----------
+      const { matches: storeMatches, finder } = await findMatchesWithClaude(plainMatches, candidatesByKey, config, (p) =>
+        safeSend(event.sender, 'library-sourcing:finder-progress', p));
 
       // Tracks that didn't match anywhere (both no library match *and* no
       // store match). The renderer still surfaces these so the user sees
@@ -2672,7 +3067,8 @@ ipcMain.handle(
         matched: matchedRows,
         probable: probableRows,
         storeMatches,
-        notFound
+        notFound,
+        finder,
       };
 
       return { success: true, result };
@@ -2689,7 +3085,7 @@ ipcMain.handle(
 // with its last counts, so it can be checked again in one click. The renderer
 // saves after a successful library-sourcing:run (it owns the to-buy / maybe /
 // owned / not-for-sale split); list marks a CSV whose file has gone.
-ipcMain.handle('saved-sources:list', async () => {
+handleIpc('saved-sources:list', async () => {
   try {
     const sources = listSavedSources().map(s =>
       s.kind === 'csv' ? { ...s, missing: !fs.existsSync(s.ref) } : s);
@@ -2700,7 +3096,7 @@ ipcMain.handle('saved-sources:list', async () => {
   }
 });
 
-ipcMain.handle('saved-sources:save', async (_event, input: import('./types').SavedSourceInput, opts?: { keepExisting?: boolean }) => {
+handleIpc('saved-sources:save', async (_event, input: import('./types').SavedSourceInput, opts?: { keepExisting?: boolean }) => {
   try {
     if (!input || typeof input !== 'object') throw new Error('Nothing to save.');
     const source = saveSavedSource(input, { keepExisting: opts?.keepExisting === true });
@@ -2711,7 +3107,7 @@ ipcMain.handle('saved-sources:save', async (_event, input: import('./types').Sav
   }
 });
 
-ipcMain.handle('saved-sources:update', async (_event, { id, name }: { id: number; name?: string | null }) => {
+handleIpc('saved-sources:update', async (_event, { id, name }: { id: number; name?: string | null }) => {
   try {
     if (typeof id !== 'number') throw new Error('Which saved playlist?');
     const source = renameSavedSource(id, typeof name === 'string' ? name : null);
@@ -2723,7 +3119,7 @@ ipcMain.handle('saved-sources:update', async (_event, { id, name }: { id: number
   }
 });
 
-ipcMain.handle('saved-sources:remove', async (_event, { id }: { id: number }) => {
+handleIpc('saved-sources:remove', async (_event, { id }: { id: number }) => {
   try {
     if (typeof id !== 'number') throw new Error('Which saved playlist?');
     return { success: removeSavedSource(id) };
@@ -2741,7 +3137,7 @@ ipcMain.handle('saved-sources:remove', async (_event, { id }: { id: number }) =>
 // collection as a lossless file is reported for relinking instead of searched.
 // Progress streams on `lossless-upgrade:progress`, apart from the Sources
 // channels so the two tabs never drive each other's progress UI.
-ipcMain.handle('lossless-upgrade:list-playlists', async () => {
+handleIpc('lossless-upgrade:list-playlists', async () => {
   try {
     return { success: true, playlists: await listRekordboxPlaylists() };
   } catch (error) {
@@ -2750,7 +3146,7 @@ ipcMain.handle('lossless-upgrade:list-playlists', async () => {
   }
 });
 
-ipcMain.handle('lossless-upgrade:run', async (event, { playlistId }: { playlistId: string }) => {
+handleIpc('lossless-upgrade:run', async (event, { playlistId }: { playlistId: string }) => {
   const send = (p: import('./types').LosslessUpgradeProgress) => safeSend(event.sender, 'lossless-upgrade:progress', p);
   try {
     send({ phase: 'reading', current: 0, total: 0, message: 'Reading the playlist from Rekordbox…' });
@@ -2871,7 +3267,7 @@ async function loadFreeFetchRows(): Promise<FreeFetchRow[]> {
   return freeFetchRows?.rows ?? [];
 }
 
-ipcMain.handle('lossless-upgrade:fetch-free', async (event, { rbIds, accountActions }: { rbIds: string[]; accountActions?: boolean }) => trackOp('Getting free downloads', async () => {
+handleIpc('lossless-upgrade:fetch-free', async (event, { rbIds, accountActions }: { rbIds: string[]; accountActions?: boolean }) => trackOp('Getting free downloads', async () => {
   const send = (message: string) => safeSend(event.sender, 'lossless-upgrade:progress', { phase: 'fetching', current: 0, total: 0, message });
   try {
     if (!Array.isArray(rbIds) || rbIds.length === 0) return { success: false, error: 'Tick at least one free download first.' };
@@ -2905,12 +3301,83 @@ ipcMain.handle('lossless-upgrade:fetch-free', async (event, { rbIds, accountActi
   }
 }));
 
-ipcMain.handle('lossless-upgrade:fetch-free-stop', () => {
+handleIpc('lossless-upgrade:fetch-free-stop', () => {
   freeFetchAbort?.abort();
 });
 
 // Gate walks run in their own process group; don't leave one behind.
 app.on('will-quit', () => freeFetchAbort?.abort());
+
+// ---------- Free downloads for Find & buy (a SoundCloud set's own) ----------
+//
+// A set's tracks with SoundCloud's download button or a free gate keep their
+// downloader rows here, by track key, as the upgrade rows above do; several
+// sets can be on the page at once, so rows from each check are added to the
+// last ones rather than replacing them. Same downloader, same rules (one run
+// at a time across both tabs, compressed files deleted on arrival).
+const sourcingFreeRowsPath = () => path.join(app.getPath('userData'), 'sourcing-free-rows.json');
+/** The newest rows kept; older checks' rows go first. */
+const SOURCING_FREE_ROWS_MAX = 2000;
+let sourcingFreeRows: Map<string, FreeFetchRow> | null = null;
+
+async function loadSourcingFreeRows(): Promise<Map<string, FreeFetchRow>> {
+  if (!sourcingFreeRows) {
+    try {
+      const rows = JSON.parse(await fs.promises.readFile(sourcingFreeRowsPath(), 'utf8')) as FreeFetchRow[];
+      sourcingFreeRows = new Map(rows.map(r => [r.upgradeKey, r]));
+    } catch {
+      sourcingFreeRows = new Map();
+    }
+  }
+  return sourcingFreeRows;
+}
+
+async function saveSourcingFreeRows(rows: FreeFetchRow[]): Promise<void> {
+  const all = await loadSourcingFreeRows();
+  for (const r of rows) {
+    all.delete(r.upgradeKey); // re-insert as newest
+    all.set(r.upgradeKey, r);
+  }
+  while (all.size > SOURCING_FREE_ROWS_MAX) all.delete(all.keys().next().value as string);
+  await fs.promises.writeFile(sourcingFreeRowsPath(), JSON.stringify([...all.values()])).catch(err =>
+    mainLog.warn('library-sourcing: could not save the free download list:', err));
+}
+
+handleIpc('library-sourcing:fetch-free', async (event, { keys, accountActions }: { keys: string[]; accountActions?: boolean }) => trackOp('Getting free downloads', async () => {
+  const send = (message: string) => safeSend(event.sender, 'library-sourcing:free-progress', { message });
+  try {
+    if (!Array.isArray(keys) || keys.length === 0) return { success: false, error: 'Tick at least one free download first.' };
+    if (freeFetchAbort) return { success: false, error: 'Free downloads are already running.' };
+    const wanted = new Set(keys.map(String));
+    const all = await loadSourcingFreeRows();
+    const rows = [...wanted].flatMap(k => (all.has(k) ? [all.get(k)!] : []));
+    if (rows.length === 0) return { success: false, error: 'Check the set again, then get the free downloads.' };
+
+    const listPath = path.join(app.getPath('userData'), 'sourcing-free', `tracks-${Date.now()}.json`);
+    writeFetchList(listPath, `Find & buy: ${rows.length} free download${rows.length === 1 ? '' : 's'}`, rows);
+    freeFetchAbort = new AbortController();
+    send('Starting the downloads…');
+    const sessionPath = await runFreeFetch({
+      appRoot: app.getAppPath(),
+      listPath,
+      accountActions: accountActions === true,
+      signal: freeFetchAbort.signal,
+      onLine: send,
+    });
+    const byKey = await readUpgradeOutcomes(sessionPath);
+    const outcomes = Object.fromEntries(Object.entries(byKey).filter(([key]) => wanted.has(key)));
+    return { success: true, outcomes };
+  } catch (error) {
+    mainLog.error('IPC library-sourcing:fetch-free failed:', error);
+    return { success: false, error: error instanceof Error ? error.message : 'The free downloads stopped' };
+  } finally {
+    freeFetchAbort = null;
+  }
+}));
+
+handleIpc('library-sourcing:fetch-free-stop', () => {
+  freeFetchAbort?.abort();
+});
 
 // ---------- Lossless swap: a downloaded lossless file replaces the entry's file ----------
 //
@@ -2930,12 +3397,12 @@ async function upgradeSwapDeps(sender: Electron.WebContents): Promise<import('./
   };
 }
 
-ipcMain.handle('upgrade-swap:preflight', async (event): Promise<import('./types').UpgradeSwapPreflight> => {
+handleIpc('upgrade-swap:preflight', async (event): Promise<import('./types').UpgradeSwapPreflight> => {
   const deps = await upgradeSwapDeps(event.sender);
   return preflightUpgradeSwap(deps);
 });
 
-ipcMain.handle('upgrade-swap:plan', async (event, { inputs }: { inputs: import('./types').UpgradeSwapInput[] }) => trackOp('Checking lossless swaps', async () => {
+handleIpc('upgrade-swap:plan', async (event, { inputs }: { inputs: import('./types').UpgradeSwapInput[] }) => trackOp('Checking lossless swaps', async () => {
   try {
     if (!Array.isArray(inputs)) return { success: false, error: 'Nothing to plan' };
     return { success: true, items: await planUpgradeSwap(inputs, await upgradeSwapDeps(event.sender)) };
@@ -2945,7 +3412,7 @@ ipcMain.handle('upgrade-swap:plan', async (event, { inputs }: { inputs: import('
   }
 }));
 
-ipcMain.handle('upgrade-swap:apply', async (event, { rbIds }: { rbIds: string[] }) => trackOp('Swapping in lossless files', async () => {
+handleIpc('upgrade-swap:apply', async (event, { rbIds }: { rbIds: string[] }) => trackOp('Swapping in lossless files', async () => {
   try {
     if (!Array.isArray(rbIds) || rbIds.length === 0) return { success: false, error: 'Nothing to swap' };
     const result = await applyUpgradeSwap(rbIds.map(String), await upgradeSwapDeps(event.sender));
@@ -2960,7 +3427,7 @@ ipcMain.handle('upgrade-swap:apply', async (event, { rbIds }: { rbIds: string[] 
 }));
 
 // Qobuz cart integration
-ipcMain.handle(
+handleIpc(
   'qobuz-cart-search',
   async (event, { tracks }: { tracks: QobuzCartTrackInput[] }) => {
     try {
@@ -2981,7 +3448,7 @@ ipcMain.handle(
 
 // ========== Store Purchase Handlers ==========
 
-ipcMain.handle('store-login', async (_event, { store }: { store: 'qobuz' | 'beatport' }) => {
+handleIpc('store-login', async (_event, { store }: { store: 'qobuz' | 'beatport' }) => {
   try {
     const config = await readConfig(CONFIG_PATH, CONFIG_DEFAULTS_PATH);
     const accounts = store === 'qobuz' ? config.qobuzAccounts : config.beatportAccounts;
@@ -3002,23 +3469,28 @@ ipcMain.handle('store-login', async (_event, { store }: { store: 'qobuz' | 'beat
   }
 });
 
-ipcMain.handle('store-login-status', async () => {
+/** Which store accounts are signed in, per account and per store. */
+async function storeLoginStatuses() {
+  const config = await readConfig(CONFIG_PATH, CONFIG_DEFAULTS_PATH);
+  const qobuzStatuses: Record<string, boolean> = {};
+  for (const a of config.qobuzAccounts) qobuzStatuses[a.id] = await isQobuzLoggedIn(a.id);
+  const beatportStatuses: Record<string, boolean> = {};
+  for (const a of config.beatportAccounts) beatportStatuses[a.id] = await isBeatportLoggedIn(a.id);
+  const qobuz = Object.values(qobuzStatuses).some(Boolean);
+  const beatport = Object.values(beatportStatuses).some(Boolean);
+  return { qobuz, beatport, qobuzAccounts: qobuzStatuses, beatportAccounts: beatportStatuses };
+}
+
+handleIpc('store-login-status', async () => {
   try {
-    const config = await readConfig(CONFIG_PATH, CONFIG_DEFAULTS_PATH);
-    const qobuzStatuses: Record<string, boolean> = {};
-    for (const a of config.qobuzAccounts) qobuzStatuses[a.id] = await isQobuzLoggedIn(a.id);
-    const beatportStatuses: Record<string, boolean> = {};
-    for (const a of config.beatportAccounts) beatportStatuses[a.id] = await isBeatportLoggedIn(a.id);
-    const qobuz = Object.values(qobuzStatuses).some(Boolean);
-    const beatport = Object.values(beatportStatuses).some(Boolean);
-    return { qobuz, beatport, qobuzAccounts: qobuzStatuses, beatportAccounts: beatportStatuses };
+    return await storeLoginStatuses();
   } catch (error) {
     mainLog.error('IPC store-login-status failed:', error);
     return { qobuz: false, beatport: false, qobuzAccounts: {}, beatportAccounts: {} };
   }
 });
 
-ipcMain.handle(
+handleIpc(
   'store-login-account',
   async (_event, { store, account }: { store: 'qobuz' | 'beatport'; account: StoreAccount }) => {
     try {
@@ -3045,7 +3517,7 @@ ipcMain.handle(
   }
 );
 
-ipcMain.handle(
+handleIpc(
   'store-logout-account',
   async (_event, { store, accountId }: { store: 'qobuz' | 'beatport'; accountId: string }) => {
     try {
@@ -3064,7 +3536,7 @@ ipcMain.handle(
 // them. Accounts connect through store-login-account; carts and downloads run
 // on the account's own session.)
 
-ipcMain.handle('download-beatport-matches', async (event, { matches, destDir }: { matches: StoreMatch[]; destDir: string }) => trackOp('Downloading Beatport purchases', async () => {
+handleIpc('download-beatport-matches', async (event, { matches, destDir }: { matches: StoreMatch[]; destDir: string }) => trackOp('Downloading Beatport purchases', async () => {
   try {
     const config = await readConfig(CONFIG_PATH, CONFIG_DEFAULTS_PATH);
     // Log in every account — each match may come from a different one (via sourceAccountId).
@@ -3080,7 +3552,7 @@ ipcMain.handle('download-beatport-matches', async (event, { matches, destDir }: 
   }
 }));
 
-ipcMain.handle('download-qobuz-matches-concurrent', async (event, { matches, destDir, concurrency }: { matches: StoreMatch[]; destDir: string; concurrency: number }) => trackOp('Downloading Qobuz purchases', async () => {
+handleIpc('download-qobuz-matches-concurrent', async (event, { matches, destDir, concurrency }: { matches: StoreMatch[]; destDir: string; concurrency: number }) => trackOp('Downloading Qobuz purchases', async () => {
   try {
     const config = await readConfig(CONFIG_PATH, CONFIG_DEFAULTS_PATH);
     for (const a of config.qobuzAccounts) await loginQobuz(a.id);
@@ -3096,7 +3568,7 @@ ipcMain.handle('download-qobuz-matches-concurrent', async (event, { matches, des
   }
 }));
 
-ipcMain.handle('download-beatport-matches-concurrent', async (event, { matches, destDir, concurrency }: { matches: StoreMatch[]; destDir: string; concurrency: number }) => trackOp('Downloading Beatport purchases', async () => {
+handleIpc('download-beatport-matches-concurrent', async (event, { matches, destDir, concurrency }: { matches: StoreMatch[]; destDir: string; concurrency: number }) => trackOp('Downloading Beatport purchases', async () => {
   try {
     const config = await readConfig(CONFIG_PATH, CONFIG_DEFAULTS_PATH);
     for (const a of config.beatportAccounts) await loginBeatport(a.id);
@@ -3111,19 +3583,22 @@ ipcMain.handle('download-beatport-matches-concurrent', async (event, { matches, 
   }
 }));
 
-ipcMain.handle('fetch-store-purchases', async (_event, { source }: { source: 'qobuz' | 'beatport' }) => {
+/** Every purchase on every account of one store. An account that couldn't be
+ *  read is named in `errors`: it isn't an account that owns nothing. */
+async function readStorePurchases(source: 'qobuz' | 'beatport') {
+  const config = await readConfig(CONFIG_PATH, CONFIG_DEFAULTS_PATH);
+  const accounts = source === 'beatport' ? config.beatportAccounts : config.qobuzAccounts;
+  const owned = source === 'beatport'
+    ? await fetchAllBeatportPurchases(accounts)
+    : await fetchAllQobuzPurchases(accounts);
+  const errors = owned.errors ?? [];
+  for (const e of errors) mainLog.warn(`purchases (${source}): ${e}`);
+  return { accounts: accounts.length, owned: [...owned], errors };
+}
+
+handleIpc('fetch-store-purchases', async (_event, { source }: { source: 'qobuz' | 'beatport' }) => {
   try {
-    const config = await readConfig(CONFIG_PATH, CONFIG_DEFAULTS_PATH);
-    let owned;
-    if (source === 'beatport') {
-      owned = await fetchAllBeatportPurchases(config.beatportAccounts);
-    } else {
-      owned = await fetchAllQobuzPurchases(config.qobuzAccounts);
-    }
-    // An account that couldn't be read is not an account that owns nothing:
-    // pass its errors along so the caller can say "couldn't check".
-    const errors = owned.errors ?? [];
-    for (const e of errors) mainLog.warn(`fetch-store-purchases (${source}): ${e}`);
+    const { owned, errors } = await readStorePurchases(source);
     const outPath = await writeScratchFile(`owned_${source}.json`, JSON.stringify([...owned], null, 2));
     mainLog.info(`Wrote ${owned.length} ${source} purchases to ${outPath}`);
     return { success: true, owned: [...owned], errors, complete: errors.length === 0, outPath, count: owned.length };
@@ -3137,12 +3612,18 @@ ipcMain.handle('fetch-store-purchases', async (_event, { source }: { source: 'qo
 // — store-load-results / store-clear-results — are gone: Sources searches through
 // library-sourcing:run, which checks ownership against Rekordbox first.)
 
-ipcMain.handle('store-cart-add', async (event, { matches, source }: { matches: StoreMatch[]; source: 'qobuz' | 'beatport' }) => {
-  try {
-    const onProgress = (p: import('./types').StoreCartProgress) => {
-      safeSend(event.sender, 'store-cart-progress', p);
-    };
+handleIpc('store-cart-add', async (event, { matches, source }: { matches: StoreMatch[]; source: 'qobuz' | 'beatport' }) => {
+  return addMatchesToCart(source, matches, (p) => safeSend(event.sender, 'store-cart-progress', p));
+});
 
+/** Add matches to the first account's cart. The app's UI and the store
+ *  bridge both come through here, so the lossless rule holds for both. */
+async function addMatchesToCart(
+  source: 'qobuz' | 'beatport',
+  matches: StoreMatch[],
+  onProgress: (p: import('./types').StoreCartProgress) => void
+): Promise<{ success: true; result: import('./types').StoreCartResult } | { success: false; error: string }> {
+  try {
     // Lossless only. Anything not positively marked lossless — lossy, unknown,
     // or a caller that didn't say — is excluded here, for both stores, and
     // reported back as a failure so the UI can say why it wasn't added.
@@ -3159,7 +3640,9 @@ ipcMain.handle('store-cart-add', async (event, { matches, source }: { matches: S
     // multiple carts open at once anyway.
     const config = await readConfig(CONFIG_PATH, CONFIG_DEFAULTS_PATH);
     const account = source === 'qobuz' ? config.qobuzAccounts[0] : config.beatportAccounts[0];
-    if (!account) return { success: false, error: `No ${source} account configured` };
+    if (!account) {
+      return { success: false, error: `No ${source === 'qobuz' ? 'Qobuz' : 'Beatport'} account in Track Lab yet. Sign in from Settings → ${source === 'qobuz' ? 'Qobuz' : 'Beatport'}, then try again.` };
+    }
     if (source === 'qobuz') {
       // Without a signed-in session every add would fail one by one; stop here.
       if (!(await loginQobuz(account.id))) {
@@ -3183,26 +3666,51 @@ ipcMain.handle('store-cart-add', async (event, { matches, source }: { matches: S
       : await addToBeatportCart(account.id, matches, onProgress);
     return { success: true, result: { ...result, failed: [...excluded, ...result.failed] } };
   } catch (error) {
-    mainLog.error('IPC store-cart-add failed:', error);
+    mainLog.error('store cart add failed:', error);
     return { success: false, error: error instanceof Error ? error.message : 'Cart add failed' };
   }
-});
+}
 
-ipcMain.handle('store-open-cart', async (_event, { store }: { store: 'qobuz' | 'beatport' }) => {
+handleIpc('store-open-cart', async (_event, { store }: { store: 'qobuz' | 'beatport' }) => {
   // Open cart in embedded panel instead of separate window
   await openStorePanel(store, cartUrl(store));
   return { success: true };
 });
 
-ipcMain.handle('store-download-purchases', async (event, { matches }: { matches: StoreMatch[] }) => trackOp('Downloading purchases', async () => {
+// Which of the tracks Track Lab added are still in the store's real cart, on
+// the account cart adds use. Read-only, and never opens a sign-in window: a
+// store it can't read comes back unknown, never empty.
+handleIpc('store-cart-check', async (_event, { store, items }: { store: 'qobuz' | 'beatport'; items: Array<{ trackId: string; articleId?: string }> }): Promise<StoreCartCheck> => {
   try {
     const config = await readConfig(CONFIG_PATH, CONFIG_DEFAULTS_PATH);
-    const destDir = config.organizeSourceDir;
-    if (!destDir) return { success: false, error: 'No organize source directory configured' };
+    const account = store === 'qobuz' ? config.qobuzAccounts[0] : config.beatportAccounts[0];
+    if (!account) return { known: false, reason: `No ${store === 'qobuz' ? 'Qobuz' : 'Beatport'} account in Track Lab` };
+    const list = Array.isArray(items) ? items.filter(i => i && typeof i.trackId === 'string') : [];
+    return store === 'qobuz'
+      ? await checkQobuzCart(account.id, list)
+      : await checkBeatportCart(account.id, list.map(i => i.trackId));
+  } catch (error) {
+    mainLog.warn(`store-cart-check[${store}] failed:`, error);
+    return { known: false, reason: error instanceof Error ? error.message : 'Cart check failed' };
+  }
+});
 
-    const onProgress = (p: import('./lib/storePurchase').DownloadProgress) => {
-      safeSend(event.sender, 'store-download-progress', p);
-    };
+handleIpc('store-download-purchases', async (event, { matches }: { matches: StoreMatch[] }) => trackOp('Downloading purchases', async () => {
+  const res = await downloadPurchasedMatches(matches, (p) => safeSend(event.sender, 'store-download-progress', p));
+  return res.success ? { ...res, downloaded: res.downloaded.length } : res;
+}));
+
+/** Download purchased matches into `destDir` (default: the intake folder),
+ *  each from the account that bought it. Shared by the UI and the bridge. */
+async function downloadPurchasedMatches(
+  matches: StoreMatch[],
+  onProgress: (p: import('./lib/storePurchase').DownloadProgress) => void,
+  destDirOverride?: string
+) {
+  try {
+    const config = await readConfig(CONFIG_PATH, CONFIG_DEFAULTS_PATH);
+    const destDir = destDirOverride || config.organizeSourceDir;
+    if (!destDir) return { success: false as const, error: 'No organize source directory configured' };
 
     const qobuzTracks = matches.filter(m => m.source === 'qobuz');
     const beatportTracks = matches.filter(m => m.source === 'beatport');
@@ -3235,15 +3743,179 @@ ipcMain.handle('store-download-purchases', async (event, { matches }: { matches:
       allSkipped.push(...(result.skipped ?? []));
     }
 
-    return { success: true, downloaded: allDownloaded.length, files: allFiles, failed: allFailed, skipped: allSkipped, destDir };
+    return { success: true as const, downloaded: allDownloaded, files: allFiles, failed: allFailed, skipped: allSkipped, destDir };
   } catch (error) {
-    mainLog.error('IPC store-download-purchases failed:', error);
-    return { success: false, error: error instanceof Error ? error.message : 'Download failed' };
+    mainLog.error('store download failed:', error);
+    return { success: false as const, error: error instanceof Error ? error.message : 'Download failed' };
   }
-}));
+}
+
+// ========== Store bridge ==========
+//
+// Claude's MCP tools and the sourcing CLI use these accounts through the
+// bridge (src/lib/storeBridge.ts), so there's one sign-in per store account:
+// the one in Settings. Each method is the same code the UI runs.
+
+function bridgeStore(value: unknown): 'qobuz' | 'beatport' {
+  if (value === 'qobuz' || value === 'beatport') return value;
+  throw new Error('store must be "qobuz" or "beatport"');
+}
+
+/** A match from outside the app, filled out to what the store code reads. */
+function bridgeMatch(raw: unknown): StoreMatch {
+  const m = (raw && typeof raw === 'object' ? raw : {}) as Partial<StoreMatch> & Record<string, unknown>;
+  const str = (v: unknown) => (v == null ? '' : String(v));
+  const source = bridgeStore(m.source);
+  const artist = str(m.artist);
+  const title = str(m.title);
+  return {
+    ...m,
+    input: { key: str(m.input?.key), artist: str(m.input?.artist) || artist, title: str(m.input?.title) || title },
+    trackId: str(m.trackId),
+    title, artist,
+    album: str(m.album), label: str(m.label), price: str(m.price), quality: str(m.quality), format: str(m.format),
+    lossless: m.lossless === true,
+    rx3Compatible: m.rx3Compatible !== false,
+    confidence: Number(m.confidence) || 0,
+    url: str(m.url),
+    source,
+  };
+}
+
+function bridgeMatches(value: unknown): StoreMatch[] {
+  if (!Array.isArray(value)) throw new Error('matches must be a list');
+  return value.map(bridgeMatch);
+}
+
+/** Sign in every account of a store, making the first account the way the
+ *  setup guide does when there isn't one yet. */
+async function signInToStore(store: 'qobuz' | 'beatport') {
+  const key = store === 'qobuz' ? 'qobuzAccounts' : 'beatportAccounts';
+  let accounts = (await readConfig(CONFIG_PATH, CONFIG_DEFAULTS_PATH))[key];
+  if (accounts.length === 0) {
+    const account: StoreAccount = { id: randomUUID(), label: 'Account 1' };
+    accounts = (await mutateConfig((c) => ({ ...c, [key]: [...c[key], account] })))[key];
+  }
+  const result: Array<{ id: string; label: string; signedIn: boolean }> = [];
+  for (const a of accounts) {
+    const signedIn = store === 'qobuz' ? await loginQobuz(a.id) : await loginBeatport(a.id);
+    result.push({ id: a.id, label: a.label || a.email || a.id, signedIn });
+  }
+  return { signedIn: result.some((a) => a.signedIn), accounts: result };
+}
+
+const STORE_BRIDGE_HANDLERS: Record<string, BridgeHandler> = {
+  status: async () => {
+    const config = await readConfig(CONFIG_PATH, CONFIG_DEFAULTS_PATH);
+    const s = await storeLoginStatuses();
+    const list = (accounts: StoreAccount[], statuses: Record<string, boolean>) =>
+      accounts.map((a) => ({ id: a.id, label: a.label || a.email || a.id, signedIn: !!statuses[a.id] }));
+    return { qobuz: list(config.qobuzAccounts, s.qobuzAccounts), beatport: list(config.beatportAccounts, s.beatportAccounts) };
+  },
+  login: (params) => {
+    const store = bridgeStore(params.store);
+    return trackOp(`Signing in to ${store === 'qobuz' ? 'Qobuz' : 'Beatport'} for Claude`, () => signInToStore(store));
+  },
+  purchases: (params) => {
+    const store = bridgeStore(params.store);
+    return trackOp(`Reading ${store === 'qobuz' ? 'Qobuz' : 'Beatport'} purchases for Claude`, () => readStorePurchases(store));
+  },
+  download: (params, progress) => trackOp('Downloading purchases for Claude', async () => {
+    const destDir = typeof params.destDir === 'string' && params.destDir ? params.destDir : undefined;
+    const res = await downloadPurchasedMatches(bridgeMatches(params.matches), (p) => progress(p.message), destDir);
+    if (!res.success) throw new Error(res.error);
+    return res;
+  }),
+  cartAdd: async (params, progress) => {
+    const res = await addMatchesToCart(bridgeStore(params.store), bridgeMatches(params.matches), (p) => progress(p.message));
+    if (!res.success) throw new Error(res.error);
+    return res.result;
+  },
+  /** A catalog search's results with refs, for the Claude finder (search_store_catalog). */
+  catalogSearch: (params) => catalogSearch(bridgeStore(params.store), typeof params.query === 'string' ? params.query : ''),
+  /** Anything the window can do (ipcOps.ts), for Claude's MCP tools. */
+  invoke: async (params, progress, meta) => {
+    const channel = typeof params.channel === 'string' ? params.channel : '';
+    const windowOnly = windowOnlyReason(channel);
+    if (windowOnly) throw new Error(`"${channel}" needs the Track Lab window (${windowOnly})`);
+    const args = Array.isArray(params.args) ? params.args : params.args === undefined ? [] : [params.args];
+    return ipcOps.invoke(channel, args, {
+      send: bridgeProgress(progress),
+      source: bridgeSource(meta),
+      parent: meta.parentOp,
+      meta: meta.tool ? { tool: meta.tool } : undefined,
+    });
+  },
+  /** What's running, where everything lives, and whether the window is open. */
+  appStatus: async () => {
+    const config = await readConfig(CONFIG_PATH, CONFIG_DEFAULTS_PATH);
+    const libraryRoot = config.libraryRoot || DEFAULT_LIBRARY_ROOT;
+    return {
+      version: app.getVersion(),
+      pid: process.pid,
+      startedAt: APP_STARTED_AT,
+      uptimeSec: Math.round(process.uptime()),
+      windowOpen: !!getMainWindow(),
+      runningWork: describeRunningWork(),
+      jobs: runningQueueJobs(),
+      actions: ipcOps.channels().length,
+      paths: {
+        userData: app.getPath('userData'),
+        config: CONFIG_PATH,
+        libraryRoot,
+        organizeSourceDir: config.organizeSourceDir || null,
+        archive: config.archivePath || getDefaultArchivePath(libraryRoot),
+        logs: LOGS_DIR,
+        operations: getOpLogDir(),
+        writeJournal: getWriteJournalDir(),
+      },
+    };
+  },
+};
+
+const APP_STARTED_AT = new Date().toISOString();
+
+function bridgeSource(meta: BridgeMeta): OpSource {
+  return meta.client === 'mcp' ? 'claude' : 'cli';
+}
+
+/** What a handler sends the window, as progress lines for the bridge client:
+ *  every log-panel line, other messages at most once a second per channel. */
+function bridgeProgress(progress: (message: string) => void): (channel: string, payload: unknown) => void {
+  const last = new Map<string, number>();
+  return (channel, payload) => {
+    if (channel === 'script-output') {
+      const text = (payload as { text?: unknown } | null)?.text;
+      if (text) progress(String(text).trimEnd());
+      return;
+    }
+    const now = Date.now();
+    if (now - (last.get(channel) ?? 0) < 1000) return;
+    last.set(channel, now);
+    const p = (payload ?? {}) as { message?: unknown; currentTrack?: unknown; current?: unknown; total?: unknown };
+    const text = typeof payload === 'string' ? payload
+      : p.message ?? p.currentTrack ?? (p.current != null && p.total != null ? `${p.current}/${p.total}` : null);
+    progress(text ? `${channel}: ${String(text)}` : channel);
+  };
+}
+
+/** Every bridge request is an operation; `invoke` records the action itself. */
+function loggedBridgeHandlers(handlers: Record<string, BridgeHandler>): Record<string, BridgeHandler> {
+  return Object.fromEntries(Object.entries(handlers).map(([method, fn]): [string, BridgeHandler] => [
+    method,
+    method === 'invoke' ? fn : (params, progress, meta) => withOp(
+      `bridge:${method}`,
+      { source: bridgeSource(meta), args: params, parent: meta.parentOp, meta: meta.tool ? { tool: meta.tool } : undefined },
+      (op) => fn(params, (message) => { op.progress('bridge', message); progress(message); }, meta),
+      { quiet: method === 'status' || method === 'appStatus' }
+    ),
+  ]));
+}
+
+let stopStoreBridge: (() => Promise<void>) | null = null;
 
 // Track scanning and organization handlers
-ipcMain.handle('scan-tracks', async (event, { sourceDir }: { sourceDir: string }): Promise<TrackInfo[]> => trackOp('Scanning tracks to organize', async () => {
+handleIpc('scan-tracks', async (event, { sourceDir }: { sourceDir: string }): Promise<TrackInfo[]> => trackOp('Scanning tracks to organize', async () => {
   try {
     // Scanning flattens sub-folders into the intake folder; the restore staging
     // folder (inside it by default) holds a restore's in-progress files and must
@@ -3258,7 +3930,7 @@ ipcMain.handle('scan-tracks', async (event, { sourceDir }: { sourceDir: string }
   }
 }));
 
-ipcMain.handle('scan-missing-album-art', async (event) => {
+handleIpc('scan-missing-album-art', async (event) => {
   try {
     const libraryRoot = await getLibraryRoot();
 
@@ -3276,7 +3948,7 @@ ipcMain.handle('scan-missing-album-art', async (event) => {
   }
 });
 
-ipcMain.handle('get-track-info', async (_event, { filePath }: { filePath: string }): Promise<TrackInfo | null> => {
+handleIpc('get-track-info', async (_event, { filePath }: { filePath: string }): Promise<TrackInfo | null> => {
   try {
     const mm = await import('music-metadata');
     const meta = await mm.parseFile(filePath, { duration: false });
@@ -3312,7 +3984,7 @@ ipcMain.handle('get-track-info', async (_event, { filePath }: { filePath: string
   }
 });
 
-ipcMain.handle('update-track-tags', async (event, params: UpdateTagsParams): Promise<TrackInfo> => trackOp('Writing tags', async () => {
+handleIpc('update-track-tags', async (event, params: UpdateTagsParams): Promise<TrackInfo> => trackOp('Writing tags', async () => {
   const runId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const log = createLogger(event.sender, runId);
   try {
@@ -3355,7 +4027,7 @@ async function resolveRenamedTrackPath(filePath: string): Promise<string> {
   return filePath;
 }
 
-ipcMain.handle('diagnose-aiff-header', async (_event, filePath: string): Promise<AiffHeaderDiagnosis> => {
+handleIpc('diagnose-aiff-header', async (_event, filePath: string): Promise<AiffHeaderDiagnosis> => {
   try {
     return await diagnoseAiffHeader(filePath);
   } catch (error) {
@@ -3364,7 +4036,7 @@ ipcMain.handle('diagnose-aiff-header', async (_event, filePath: string): Promise
   }
 });
 
-ipcMain.handle('repair-aiff-header', async (_event, filePath: string): Promise<boolean> => {
+handleIpc('repair-aiff-header', async (_event, filePath: string): Promise<boolean> => {
   try {
     return await repairAiffHeader(filePath);
   } catch (error) {
@@ -3373,7 +4045,7 @@ ipcMain.handle('repair-aiff-header', async (_event, filePath: string): Promise<b
   }
 });
 
-ipcMain.handle('select-image', async (): Promise<string | null> => {
+handleIpc('select-image', async (): Promise<string | null> => {
   try {
     const result = await dialog.showOpenDialog({
       properties: ['openFile'],
@@ -3387,7 +4059,7 @@ ipcMain.handle('select-image', async (): Promise<string | null> => {
   }
 });
 
-ipcMain.handle(
+handleIpc(
   'organize-tracks',
   async (
     event,
@@ -3450,7 +4122,7 @@ async function intakeTombstone(filePath: string): Promise<{ filePath: string; ar
 }
 
 // Resolve organize conflict: keep 'incoming' (replace existing) or 'existing' (discard incoming)
-ipcMain.handle(
+handleIpc(
   'organize-resolve-conflict',
   async (
     _event,
@@ -3493,7 +4165,7 @@ ipcMain.handle(
 );
 
 // Extract embedded album art from an audio file
-ipcMain.handle('get-track-album-art', async (_event, { filePath }: { filePath: string }): Promise<string | null> => {
+handleIpc('get-track-album-art', async (_event, { filePath }: { filePath: string }): Promise<string | null> => {
   try {
     const mm = await import('music-metadata');
     const metadata = await mm.parseFile(filePath, { duration: false });
@@ -3507,7 +4179,7 @@ ipcMain.handle('get-track-album-art', async (_event, { filePath }: { filePath: s
 });
 
 // DevTools toggle handler
-ipcMain.handle('toggle-devtools', (event) => {
+handleIpc('toggle-devtools', (event) => {
   try {
     const win = BrowserWindow.fromWebContents(event.sender);
     if (win) {
@@ -3525,7 +4197,7 @@ ipcMain.handle('toggle-devtools', (event) => {
 
 // Open external URL in default browser. Web and mail links only: a file:// or
 // custom-scheme URL would launch local apps.
-ipcMain.handle('open-external', async (_event, { url }: { url: string }) => {
+handleIpc('open-external', async (_event, { url }: { url: string }) => {
   if (typeof url !== 'string' || !isAllowedExternalUrl(url)) {
     mainLog.warn(`open-external refused: ${String(url)}`);
     throw new Error('Only http, https and mailto links can be opened.');
@@ -3534,12 +4206,12 @@ ipcMain.handle('open-external', async (_event, { url }: { url: string }) => {
 });
 
 // Show file in Finder / file manager
-ipcMain.handle('show-in-finder', async (_event, { filePath }: { filePath: string }) => {
+handleIpc('show-in-finder', async (_event, { filePath }: { filePath: string }) => {
   shell.showItemInFolder(filePath);
 });
 
 // Track conversion handler
-ipcMain.handle(
+handleIpc(
   'convert-track',
   async (event, { filePath }: { filePath: string }): Promise<ConversionResult> => trackOp('Converting to AIFF', async () => {
     try {
@@ -3570,7 +4242,7 @@ ipcMain.handle(
 );
 
 // Library health scan handler with streaming progress and caching
-ipcMain.handle(
+handleIpc(
   'scan-library-health',
   async (event, { useCache = true, cacheOnly = false }: { useCache?: boolean; cacheOnly?: boolean }): Promise<{ id: string; result?: LibraryHealthResult; fromCache: boolean; cacheOnly?: boolean }> => {
     const runId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -3603,7 +4275,7 @@ ipcMain.handle(
 );
 
 // Delete track file handler
-ipcMain.handle(
+handleIpc(
   'delete-track-file',
   async (event, { filePath }: { filePath: string }): Promise<{ success: boolean; trashPath?: string; error?: string }> => trackOp('Deleting a track', async () => {
     const runId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -3663,7 +4335,7 @@ async function trashOriginal(result: ConversionResult, filePath: string, context
 }
 
 // Fix track file handler (convert to compatible format)
-ipcMain.handle(
+handleIpc(
   'fix-track-file',
   async (event, { filePath, deleteOriginal }: { filePath: string; deleteOriginal: boolean }): Promise<ConvertIpcResult> => trackOp('Converting to AIFF', async () => {
     const runId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -3689,7 +4361,7 @@ ipcMain.handle(
 );
 
 // Re-encode track file handler (fix bitrate issues by re-encoding to 320kbps MP3)
-ipcMain.handle(
+handleIpc(
   'reencode-track-file',
   async (event, { filePath, deleteOriginal }: { filePath: string; deleteOriginal: boolean }): Promise<ConvertIpcResult> => trackOp('Re-encoding to MP3', async () => {
     const runId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -3722,7 +4394,7 @@ function assertEnqueueable(type: string): void {
   }
 }
 
-ipcMain.handle('job-enqueue', async (_event, { type, params, contextKey }: { type: string; params: unknown; contextKey: string }) => {
+handleIpc('job-enqueue', async (_event, { type, params, contextKey }: { type: string; params: unknown; contextKey: string }) => {
   try {
     assertEnqueueable(type);
     const { jobId, promise } = getJobManager().enqueue(type as any, params as any, contextKey);
@@ -3736,7 +4408,7 @@ ipcMain.handle('job-enqueue', async (_event, { type, params, contextKey }: { typ
   }
 });
 
-ipcMain.handle('job-enqueue-and-wait', async (_event, { type, params, contextKey }: { type: string; params: unknown; contextKey: string }) => {
+handleIpc('job-enqueue-and-wait', async (_event, { type, params, contextKey }: { type: string; params: unknown; contextKey: string }) => {
   try {
     assertEnqueueable(type);
     const { jobId, promise } = getJobManager().enqueue(type as any, params as any, contextKey);
@@ -3752,7 +4424,7 @@ ipcMain.handle('job-enqueue-and-wait', async (_event, { type, params, contextKey
   }
 });
 
-ipcMain.handle('job-cancel', async (_event, { jobId }: { jobId: string }) => {
+handleIpc('job-cancel', async (_event, { jobId }: { jobId: string }) => {
   try {
     return getJobManager().cancel(jobId);
   } catch (error) {
@@ -3761,7 +4433,7 @@ ipcMain.handle('job-cancel', async (_event, { jobId }: { jobId: string }) => {
   }
 });
 
-ipcMain.handle('job-list', async () => {
+handleIpc('job-list', async () => {
   try {
     return getJobManager().getAllJobs();
   } catch (error) {
@@ -3772,7 +4444,7 @@ ipcMain.handle('job-list', async () => {
 
 // Wait for a job enqueued with job-enqueue. The renderer enqueues first so it
 // holds the id (to cancel, and to match job-log lines), then waits here.
-ipcMain.handle('job-wait', async (_event, { jobId }: { jobId: string }) => {
+handleIpc('job-wait', async (_event, { jobId }: { jobId: string }) => {
   const promise = getJobManager().wait(jobId);
   if (!promise) return { success: false, error: 'That job is no longer known.' };
   try {
@@ -3785,7 +4457,7 @@ ipcMain.handle('job-wait', async (_event, { jobId }: { jobId: string }) => {
 
 // ---------- Claude Code (jobs bill the signed-in Claude subscription) ----------
 
-ipcMain.handle('claude-status', async () => {
+handleIpc('claude-status', async () => {
   try {
     const config = await readConfig(CONFIG_PATH, CONFIG_DEFAULTS_PATH);
     return await getClaudeStatus(config.claudeOauthToken || undefined);
@@ -3795,7 +4467,7 @@ ipcMain.handle('claude-status', async () => {
   }
 });
 
-ipcMain.handle('claude-open-login', async () => {
+handleIpc('claude-open-login', async () => {
   try {
     return await openClaudeLogin();
   } catch (error) {
@@ -3806,7 +4478,7 @@ ipcMain.handle('claude-open-login', async () => {
 
 // List available volumes, filtering excluded names from config.
 // The library volume is included but flagged with isLibrary = true.
-ipcMain.handle('list-volumes', async () => {
+handleIpc('list-volumes', async () => {
   try {
     const config = await readConfig(CONFIG_PATH, CONFIG_DEFAULTS_PATH);
     const libraryRoot = config.libraryRoot || DEFAULT_LIBRARY_ROOT;
@@ -3822,7 +4494,7 @@ ipcMain.handle('list-volumes', async () => {
 });
 
 // Add a volume name to the excluded list (hides it from the Devices panel)
-ipcMain.handle('exclude-volume', async (_event, { name }: { name: string }) => {
+handleIpc('exclude-volume', async (_event, { name }: { name: string }) => {
   try {
     const config = await readConfig(CONFIG_PATH, CONFIG_DEFAULTS_PATH);
     if (!(config.excludedVolumes ?? []).includes(name)) {
@@ -3839,7 +4511,7 @@ ipcMain.handle('exclude-volume', async (_event, { name }: { name: string }) => {
 });
 
 // Archive track file handler (move to .archive folder next to library)
-ipcMain.handle(
+handleIpc(
   'archive-track-file',
   async (event, { filePath }: { filePath: string }): Promise<ArchiveResult> => trackOp('Archiving a track', async () => {
     const runId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -3860,7 +4532,7 @@ ipcMain.handle(
 );
 
 // Migrate archive contents from old path to new path
-ipcMain.handle(
+handleIpc(
   'migrate-archive',
   async (event, { oldPath, newPath }: { oldPath: string; newPath: string }): Promise<{ success: boolean; error?: string }> => trackOp('Moving the archive', async () => {
     try {
@@ -3947,7 +4619,7 @@ ipcMain.handle(
 
 // ========== Restore Library ==========
 
-ipcMain.handle('restore-list-volumes', async () => {
+handleIpc('restore-list-volumes', async () => {
   try {
     const volumes = await listExternalVolumes();
     return { success: true, volumes };
@@ -3957,7 +4629,7 @@ ipcMain.handle('restore-list-volumes', async () => {
   }
 });
 
-ipcMain.handle('restore-pick-xml', async () => {
+handleIpc('restore-pick-xml', async () => {
   const result = await dialog.showOpenDialog({
     title: 'Choose Rekordbox XML',
     properties: ['openFile'],
@@ -3969,7 +4641,7 @@ ipcMain.handle('restore-pick-xml', async () => {
 
 let restoreAbortController: AbortController | null = null;
 
-ipcMain.handle('restore-run', async (event, { options }: { options: Omit<RestoreOptions, 'beatportAccounts' | 'qobuzAccounts'> }) => {
+handleIpc('restore-run', async (event, { options }: { options: Omit<RestoreOptions, 'beatportAccounts' | 'qobuzAccounts'> }) => {
   // One restore at a time: a second run would overwrite the abort controller
   // (leaving the first unabortable) and both would move files into the library.
   if (restoreAbortController) {
@@ -4009,14 +4681,14 @@ ipcMain.handle('restore-run', async (event, { options }: { options: Omit<Restore
   }
 });
 
-ipcMain.handle('restore-abort', () => {
+handleIpc('restore-abort', () => {
   restoreAbortController?.abort();
   return { success: true, aborting: restoreAbortController !== null };
 });
 
 // --- Splice recovery (Ableton .als sample re-download) -------------------
 
-ipcMain.handle('splice-login-status', async () => {
+handleIpc('splice-login-status', async () => {
   try {
     const { getLoginStatus } = await import('./lib/spliceRecovery');
     return { success: true, status: await getLoginStatus() };
@@ -4026,7 +4698,7 @@ ipcMain.handle('splice-login-status', async () => {
   }
 });
 
-ipcMain.handle('splice-start-login', async () => {
+handleIpc('splice-start-login', async () => {
   try {
     const { startLogin } = await import('./lib/spliceRecovery');
     return await startLogin();
@@ -4036,7 +4708,7 @@ ipcMain.handle('splice-start-login', async () => {
   }
 });
 
-ipcMain.handle('splice-pick-als', async () => {
+handleIpc('splice-pick-als', async () => {
   const result = await dialog.showOpenDialog({
     title: 'Choose Ableton project (.als)',
     properties: ['openFile'],
@@ -4046,7 +4718,7 @@ ipcMain.handle('splice-pick-als', async () => {
   return { success: true, path: result.filePaths[0] };
 });
 
-ipcMain.handle('splice-scan', async (_event, { alsPath }: { alsPath: string }) => {
+handleIpc('splice-scan', async (_event, { alsPath }: { alsPath: string }) => {
   try {
     const { scan } = await import('./lib/spliceRecovery');
     const result = await scan(alsPath);
@@ -4057,7 +4729,7 @@ ipcMain.handle('splice-scan', async (_event, { alsPath }: { alsPath: string }) =
   }
 });
 
-ipcMain.handle('splice-classify', async (event, { missing }: { missing: import('./lib/spliceRecovery').SpliceMissingSample[] }) => {
+handleIpc('splice-classify', async (event, { missing }: { missing: import('./lib/spliceRecovery').SpliceMissingSample[] }) => {
   try {
     const { classify, writeManifest } = await import('./lib/spliceRecovery');
     const buckets = await classify(missing, (p) => {
@@ -4078,7 +4750,7 @@ ipcMain.handle('splice-classify', async (event, { missing }: { missing: import('
   }
 });
 
-ipcMain.handle('splice-download-owned', async (event, { items }: { items: import('./lib/spliceRecovery').SpliceOwnedItem[] }) => trackOp('Downloading Splice samples', async () => {
+handleIpc('splice-download-owned', async (event, { items }: { items: import('./lib/spliceRecovery').SpliceOwnedItem[] }) => trackOp('Downloading Splice samples', async () => {
   try {
     const { downloadOwned } = await import('./lib/spliceRecovery');
     const report = await downloadOwned(items, (p) => {
@@ -4091,7 +4763,7 @@ ipcMain.handle('splice-download-owned', async (event, { items }: { items: import
   }
 }));
 
-ipcMain.handle('splice-credits-balance', async () => {
+handleIpc('splice-credits-balance', async () => {
   try {
     const { getCreditsBalance } = await import('./lib/spliceRecovery');
     const balance = await getCreditsBalance();
@@ -4102,7 +4774,7 @@ ipcMain.handle('splice-credits-balance', async () => {
   }
 });
 
-ipcMain.handle('splice-buy-credits', async (event, { items }: { items: import('./lib/spliceRecovery').SpliceCreditsItem[] }) => trackOp('Buying Splice samples', async () => {
+handleIpc('splice-buy-credits', async (event, { items }: { items: import('./lib/spliceRecovery').SpliceCreditsItem[] }) => trackOp('Buying Splice samples', async () => {
   try {
     const { buyCreditsBucket } = await import('./lib/spliceRecovery');
     const report = await buyCreditsBucket(items, (p) => {

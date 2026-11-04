@@ -145,7 +145,7 @@ async function main() {
     try {
       beatport = await openBeatport({ headless: !!args.headless });
       token = await getAccessToken(beatport.page);
-      log(`      Beatport session: ${token ? 'logged in (API path, fast)' : 'signed out (page scrape; cart-add unavailable)'}`);
+      log(`      Beatport session: ${token ? 'logged in (API path, fast)' : 'signed out (page scrape; cart adds go through Track Lab either way)'}`);
       search = makeSearcher({ page: beatport.page, token });
     } catch (err) {
       // No Chrome, or Chrome refused to start. That costs Beatport coverage,

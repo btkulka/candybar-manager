@@ -65,6 +65,11 @@ else
   fi
 fi
 
+# Every time, so installs from before pyrekordbox was part of setup get it.
+# Not fatal: the rest of the app works without it.
+candybar_python_env \
+  || echo "!! Couldn't install pyrekordbox into .venv-rbx, so Rekordbox features won't work. Run scripts/install.sh to retry."
+
 echo "==> Now at $(git log -1 --format='%h %s')"
 [ "$RELAUNCH" = 1 ] && candybar_launch
 echo "==> Done"

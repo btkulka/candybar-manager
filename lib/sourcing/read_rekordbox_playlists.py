@@ -165,8 +165,8 @@ def main(argv):
         from pyrekordbox import Rekordbox6Database
     except ImportError:
         raise RuntimeError(
-            "pyrekordbox isn't installed for %s. Install it into the repo's .venv-rbx "
-            "(.venv-rbx/bin/pip install pyrekordbox)." % sys.executable
+            "pyrekordbox isn't installed for %s. Run scripts/install.sh again "
+            "to set it up in the repo's .venv-rbx." % sys.executable
         )
     db = Rekordbox6Database()
     try:

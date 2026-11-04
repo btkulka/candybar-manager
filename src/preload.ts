@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import type {
   AppConfig,
+  SoundCloudSignIn,
   ScriptOutput,
   TrackInfo,
   AlbumArtMissingTrack,
@@ -24,6 +25,8 @@ import type {
   StoreMatch,
   StoreCartProgress,
   StoreCartResult,
+  StoreCartCheck,
+  UpdateState,
   VolumeInfo
 } from './types';
 
@@ -65,7 +68,9 @@ contextBridge.exposeInMainWorld('candybar', {
   searchMusic: (query: string, sources: ('spotify' | 'soundcloud' | 'beatport' | 'qobuz')[]) =>
     ipcRenderer.invoke('search-music', { query, sources }),
   checkSpotify: () => ipcRenderer.invoke('check-spotify'),
-  checkSoundCloud: () => ipcRenderer.invoke('check-soundcloud'),
+  soundcloudSignInStatus: (): Promise<SoundCloudSignIn | null> => ipcRenderer.invoke('soundcloud-sign-in-status'),
+  soundcloudSignIn: (): Promise<{ success: boolean; status?: SoundCloudSignIn; error?: string }> =>
+    ipcRenderer.invoke('soundcloud-sign-in'),
   onOutput: (callback: (payload: ScriptOutput) => void): (() => void) =>
     subscribe('script-output', callback),
   onCheckProgress: (callback: (payload: CheckProgress) => void): (() => void) =>
@@ -111,6 +116,13 @@ contextBridge.exposeInMainWorld('candybar', {
 
   // DevTools toggle
   toggleDevTools: (): Promise<void> => ipcRenderer.invoke('toggle-devtools'),
+
+  // Update check (top-bar button)
+  getUpdateState: (): Promise<UpdateState> => ipcRenderer.invoke('get-update-state'),
+  checkForUpdates: (): Promise<void> => ipcRenderer.invoke('check-for-updates'),
+  onUpdateState: (callback: (payload: UpdateState) => void): (() => void) =>
+    subscribe('update-state', callback),
+
   openExternal: (url: string): Promise<void> => ipcRenderer.invoke('open-external', { url }),
   showInFinder: (filePath: string): Promise<void> => ipcRenderer.invoke('show-in-finder', { filePath }),
 
@@ -255,6 +267,16 @@ contextBridge.exposeInMainWorld('candybar', {
     subscribe('library-sourcing:phase2-match', callback),
   onLibrarySourcingPlaylistInfo: (callback: (info: import('./types').SourcePlaylistInfo) => void): (() => void) =>
     subscribe('library-sourcing:playlist-info', callback),
+  /** Phase 3: Claude picking each track's store record. */
+  onLibrarySourcingFinderProgress: (callback: (p: import('./types').SourcingFinderProgress) => void): (() => void) =>
+    subscribe('library-sourcing:finder-progress', callback),
+  // A SoundCloud set's own free downloads, by track key; each downloader
+  // line arrives on onLibrarySourcingFreeProgress.
+  librarySourcingFetchFree: (keys: string[], opts: { accountActions: boolean }): Promise<{ success: boolean; outcomes?: Record<string, import('./lib/freeSources').FreeUpgradeOutcome>; error?: string }> =>
+    ipcRenderer.invoke('library-sourcing:fetch-free', { keys, accountActions: opts.accountActions }),
+  librarySourcingFetchFreeStop: (): Promise<void> => ipcRenderer.invoke('library-sourcing:fetch-free-stop'),
+  onLibrarySourcingFreeProgress: (callback: (p: { message: string }) => void): (() => void) =>
+    subscribe('library-sourcing:free-progress', callback),
 
   // Saved playlists ("Your playlists" on Find and buy), kept in candybar.db
   savedSourcesList: (): Promise<{ success: boolean; sources?: import('./types').SavedSource[]; error?: string }> =>
@@ -338,6 +360,10 @@ contextBridge.exposeInMainWorld('candybar', {
     subscribe('store-cart-progress', callback),
   storeOpenCart: (store: 'qobuz' | 'beatport'): Promise<{ success: boolean }> =>
     ipcRenderer.invoke('store-open-cart', { store }),
+  // Which of these tracks are still in the store's real cart. Read-only; unknown
+  // (signed out, unreachable) is never reported as empty.
+  storeCartCheck: (store: 'qobuz' | 'beatport', items: Array<{ trackId: string; articleId?: string }>): Promise<StoreCartCheck> =>
+    ipcRenderer.invoke('store-cart-check', { store, items }),
   // `skipped` are tracks you deleted earlier, left out on purpose (deleted stays deleted).
   // `files` maps each downloaded match's input key (`rb:<id>` on Lossless
   // Upgrades) to the file it became — what upgradeSwapPlan takes.

@@ -75,7 +75,7 @@ if ($Full -or $Rbx) {
     }
 
     $venvPip = Join-Path $repoRoot '.venv-rbx\Scripts\pip.exe'
-    & $venvPip install --upgrade pip pyrekordbox
+    & $venvPip install --upgrade pip -r (Join-Path $repoRoot 'requirements-rbx.txt')
     if ($LASTEXITCODE -ne 0) { throw "pip install pyrekordbox failed" }
     Write-Done "pyrekordbox installed in .venv-rbx"
 }

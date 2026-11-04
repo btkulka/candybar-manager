@@ -7,7 +7,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { parseQobuzAlbumPage, parseQobuzPopin } from '../qobuz';
+import { parseQobuzAlbumPage, parseQobuzPopin, readQobuzCartPage } from '../qobuz';
 import { pickReleaseTrack, pickQobuzLosslessTier } from '../storeMatching';
 import { sniffAudio, extFromUrlOrType } from '../audioSniff';
 
@@ -86,5 +86,25 @@ describe('downloaded file format', () => {
     expect(extFromUrlOrType('https://dl.example.com/a/track.aif?sig=1')).toBe('aiff');
     expect(extFromUrlOrType('https://dl.example.com/a/download?id=9', 'audio/flac; charset=binary')).toBe('flac');
     expect(extFromUrlOrType('https://dl.example.com/a/download', null)).toBeNull();
+  });
+});
+
+describe('readQobuzCartPage', () => {
+  const items = [{ trackId: '111', articleId: 'a-9' }, { trackId: '222' }];
+
+  it('reads an empty cart from the redirect to the shop', () => {
+    expect(readQobuzCartPage('https://www.qobuz.com/us-en/shop', '<p>Your basket is empty</p>', items))
+      .toEqual({ signedOut: false, empty: true, present: [] });
+  });
+  it('reads a signed-out session from the redirect to /signin', () => {
+    expect(readQobuzCartPage('https://www.qobuz.com/signin?url=x', '', items)).toEqual({ signedOut: true });
+  });
+  it('finds the tracks still in the cart by track or article id', () => {
+    expect(readQobuzCartPage('https://www.qobuz.com/shopping-cart', '<a data-id="a-9">x</a>', items))
+      .toEqual({ signedOut: false, empty: false, present: ['111'] });
+  });
+  it("won't call tracks gone when the page names none of them", () => {
+    expect(readQobuzCartPage('https://www.qobuz.com/shopping-cart', '<div class="cart">3 items</div>', items))
+      .toEqual({ signedOut: false, empty: false, present: null });
   });
 });

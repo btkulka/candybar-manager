@@ -1,13 +1,15 @@
 // ============================================================
 // Startup update check.
 //
-// The app runs from a git checkout of a private repo, so "is there
-// a newer version" is answered with git itself (`git fetch` uses
-// the credentials the checkout was cloned with) rather than the
-// GitHub API, which would need a token.
+// Two kinds of install, two answers to "is there a newer version":
+//   - a git checkout (scripts/install.sh) asks git itself: fetch
+//     origin and count the commits HEAD doesn't have, then
+//     scripts/update.sh pulls and rebuilds.
+//   - the packaged app (a .dmg from GitHub Releases) asks the
+//     Releases API for the latest version and downloads its .dmg.
 //
-// Electron-free so it can be unit tested; main.ts owns the dialog
-// and hands the actual update off to scripts/update.sh.
+// Electron-free so it can be unit tested; main.ts owns the dialogs,
+// the download and the hand-off to scripts/update.sh.
 // ============================================================
 
 import { execFile } from 'child_process';
@@ -103,4 +105,68 @@ export function oneClickBlocker(s: UpdateStatus): string | null {
   }
   if (s.ahead > 0) return `This checkout has ${s.ahead} local commit${s.ahead === 1 ? '' : 's'} not on GitHub.`;
   return null;
+}
+
+// ---------- Packaged app: GitHub Releases ----------
+
+export const RELEASES_REPO = 'btkulka/candybar-manager';
+
+export type ReleaseUpdate = {
+  /** "0.2.0", without the tag's "v". */
+  version: string;
+  /** The release's page on GitHub. */
+  pageUrl: string;
+  /** This Mac's .dmg (Track-Lab-<version>-<arch>.dmg), or null if the release has none. */
+  dmg: { name: string; url: string; size: number } | null;
+};
+
+function versionParts(v: string): number[] {
+  return v.replace(/^v/, '').split(/[-+]/)[0].split('.').map((n) => Number.parseInt(n, 10) || 0);
+}
+
+/** Whether `latest` is a higher dotted version than `current` ("v" and pre-release suffixes ignored). */
+export function isNewerVersion(latest: string, current: string): boolean {
+  const a = versionParts(latest);
+  const b = versionParts(current);
+  for (let i = 0; i < Math.max(a.length, b.length); i++) {
+    const d = (a[i] ?? 0) - (b[i] ?? 0);
+    if (d !== 0) return d > 0;
+  }
+  return false;
+}
+
+type GithubRelease = {
+  tag_name: string;
+  html_url: string;
+  draft?: boolean;
+  prerelease?: boolean;
+  assets: Array<{ name: string; browser_download_url: string; size: number }>;
+};
+
+/**
+ * The latest GitHub Release if it's newer than `current`, else null (a repo
+ * with no releases yet counts as up to date). Throws when GitHub can't be
+ * reached, so a failed check isn't mistaken for "up to date". The repo is
+ * public, so this needs no token; unauthenticated calls get 60 an hour.
+ */
+export async function checkForRelease(
+  current: string,
+  arch: string,
+  fetchFn: typeof fetch = fetch,
+): Promise<ReleaseUpdate | null> {
+  const res = await fetchFn(`https://api.github.com/repos/${RELEASES_REPO}/releases/latest`, {
+    headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'Track-Lab-update-check' },
+    signal: AbortSignal.timeout(20_000),
+  });
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(`GitHub answered ${res.status} ${res.statusText}`);
+  const rel = (await res.json()) as GithubRelease;
+  if (rel.draft || rel.prerelease || !isNewerVersion(rel.tag_name, current)) return null;
+  const asset = rel.assets.find((a) => a.name.endsWith(`-${arch}.dmg`));
+  log.info(`Release check: latest=${rel.tag_name} current=${current} dmg=${asset?.name ?? 'none'}`);
+  return {
+    version: rel.tag_name.replace(/^v/, ''),
+    pageUrl: rel.html_url,
+    dmg: asset ? { name: asset.name, url: asset.browser_download_url, size: asset.size } : null,
+  };
 }

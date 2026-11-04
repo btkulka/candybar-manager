@@ -1,0 +1,5 @@
+# Python packages for .venv-rbx, the interpreter the app runs its Rekordbox
+# scripts with (lib/rekordbox, lib/sourcing). scripts/install.sh and update.sh
+# install these; numpy and psutil come with pyrekordbox.
+pyrekordbox>=0.4.4,<0.5
+mutagen>=1.47

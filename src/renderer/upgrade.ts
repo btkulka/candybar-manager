@@ -12,6 +12,7 @@ import {
   type Store, STORE_LABEL, autoSelectable, isOtherVersion, parsePriceDollars, toStoreMatch,
   uniqueByTrack, addToStoreCarts, isAddingToCart, toastCartOutcome, mergeAdded,
   matchPillHtml, qualityHtml, AUTO_SELECT_CONFIDENCE, revealInContent,
+  reconcileWithCart, type CartReconcile,
 } from './storeCart';
 
 // Upgrade track quality: one guided flow in four step cards.
@@ -348,7 +349,7 @@ function renderSteps() {
     ? 'Add tracks to your carts first.'
     : lastDownload
       ? `${plural(lastDownload.downloaded, 'track')} downloaded`
-      : `${plural(lastAdded.length, 'track')} in your carts. Check out, then download them.`;
+      : `${plural(lastAdded.length, 'track')} added to your carts. Check out, then download them.`;
 
   // Step 4
   swapBody.style.display = current === 'swap' ? '' : 'none';
@@ -1039,13 +1040,50 @@ function updateBuyRow() {
 
 // ========== Step 3: buy ==========
 
+/** The stores' real carts, read when step 3 shows: a track leaves the cart
+ *  when it's bought or taken out, so the summary says what's actually there. */
+let cartChecks: Record<Store, CartReconcile | null> = { qobuz: null, beatport: null };
+let cartCheckedAt = 0;
+let cartChecking = false;
+
+function refreshCartChecks(): void {
+  if (cartChecking || lastAdded.length === 0 || Date.now() - cartCheckedAt < 30_000) return;
+  cartChecking = true;
+  const stores = (['qobuz', 'beatport'] as const).filter(s => lastAdded.some(m => m.source === s));
+  void Promise.all(stores.map(async s => [s, await reconcileWithCart(s, lastAdded.filter(m => m.source === s))] as const))
+    .then((results) => {
+      cartChecks = { qobuz: null, beatport: null };
+      for (const [s, check] of results) cartChecks[s] = check;
+      cartCheckedAt = Date.now();
+    })
+    .finally(() => {
+      cartChecking = false;
+      if (currentStep() === 'buy') renderBuy();
+    });
+}
+
+/** One store's added tracks, split by its cart when that's been read. */
+function cartView(store: Store): { inCart: StoreMatch[]; gone: StoreMatch[] } {
+  const list = lastAdded.filter(m => m.source === store);
+  const gone = new Set((cartChecks[store]?.gone ?? []).map(m => m.trackId));
+  return { inCart: list.filter(m => !gone.has(m.trackId)), gone: list.filter(m => gone.has(m.trackId)) };
+}
+
 function renderBuy() {
-  const q = lastAdded.filter(m => m.source === 'qobuz');
-  const b = lastAdded.filter(m => m.source === 'beatport');
-  const parts = [q.length ? `${plural(q.length, 'track')} on Qobuz (${total(q)})` : '', b.length ? `${plural(b.length, 'track')} on Beatport (${total(b)})` : ''].filter(Boolean);
-  cartSummary.textContent = `In your carts: ${parts.join(' and ')}. Nothing is bought until you check out.`;
-  openQobuzBtn.style.display = q.length ? '' : 'none';
-  openBeatportBtn.style.display = b.length ? '' : 'none';
+  refreshCartChecks();
+  const q = cartView('qobuz');
+  const b = cartView('beatport');
+  const parts = [
+    q.inCart.length ? `${plural(q.inCart.length, 'track')} on Qobuz (${total(q.inCart)})` : '',
+    b.inCart.length ? `${plural(b.inCart.length, 'track')} on Beatport (${total(b.inCart)})` : '',
+  ].filter(Boolean);
+  const gone = q.gone.length + b.gone.length;
+  const goneNote = gone > 0 ? ` ${plural(gone, 'other track')} Track Lab added ${gone === 1 ? 'has' : 'have'} left your carts: bought, or taken out.` : '';
+  cartSummary.textContent = parts.length > 0
+    ? `In your carts: ${parts.join(' and ')}. Nothing is bought until you check out.${goneNote}`
+    : `The ${plural(gone, 'track')} Track Lab added ${gone === 1 ? 'has' : 'have'} left your carts: bought, or taken out. If you checked out, download them.`;
+  openQobuzBtn.style.display = lastAdded.some(m => m.source === 'qobuz') ? '' : 'none';
+  openBeatportBtn.style.display = lastAdded.some(m => m.source === 'beatport') ? '' : 'none';
   if (lastDownload) {
     downloadResult.hidden = false;
     downloadResult.className = `field-help ${lastDownload.downloaded === lastDownload.total ? 'is-ok' : 'is-warn'}`;
@@ -1078,6 +1116,7 @@ async function addSelectedToCarts() {
   toastCartOutcome(outcome);
   const added = [...outcome.added.qobuz, ...outcome.added.beatport];
   lastAdded = mergeAdded(lastAdded, added);
+  if (added.length > 0) cartCheckedAt = 0;
   saveState();
   if (added.length > 0) openStep('buy');
   else renderSteps();

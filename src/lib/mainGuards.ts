@@ -100,6 +100,36 @@ export function isStoreCheckoutUrl(store: 'qobuz' | 'beatport', url: string): bo
   return parsed.pathname.split('/').some(seg => CHECKOUT_SEGMENT_RE.test(seg));
 }
 
+/** Checkout proper, past the cart: the step every real order goes through
+ *  before its confirmation page. */
+const CHECKOUT_STEP_SEGMENT_RE = /^(?:checkout|payment|paiement|commande)$/i;
+
+export function isStoreCheckoutStep(store: 'qobuz' | 'beatport', url: string): boolean {
+  const parsed = parseUrl(url);
+  if (!parsed || parsed.protocol !== 'https:') return false;
+  if (!STORE_HOST_RE[store].test(parsed.hostname)) return false;
+  return parsed.pathname.split('/').some(seg => CHECKOUT_STEP_SEGMENT_RE.test(seg));
+}
+
+/** A store's sign-in page: Qobuz's /signin, Beatport's account.beatport.com
+ *  or a /login path. A signed-out cart redirects here. */
+export function isStoreSignInUrl(url: string): boolean {
+  const parsed = parseUrl(url);
+  if (!parsed) return false;
+  if (!/(^|\.)(qobuz|beatport)\.com$/i.test(parsed.hostname)) return false;
+  if (/^account\.beatport\.com$/i.test(parsed.hostname)) return true;
+  return /\/(?:signin|sign-in|login|log-in)(?:\/|$)/i.test(parsed.pathname);
+}
+
+/** Electron's user agent without the tokens that name the app and Electron
+ *  ("candybar-manager/0.1.0", "Electron/39.8.8"): what Chrome itself sends.
+ *  Stores behind Cloudflare challenge a browser that announces itself as an
+ *  embedded shell far more often. */
+export function plainChromeUserAgent(ua: string, appName: string): string {
+  const name = appName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return ua.replace(new RegExp(`\\s(?:${name}|Electron)/\\S+`, 'g'), '');
+}
+
 /** The final commit button. Seeing one means "stop and ask the user"; only the
  *  separate place-order IPC (after an in-app confirm) clicks it. */
 export const PLACE_ORDER_RE = /^(?:place order|place your order|confirm (?:order|purchase|and pay)|pay now|commander|valider la commande)$/i;

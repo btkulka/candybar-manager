@@ -11,16 +11,17 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 import { checkTrackHealth, TrackHealth } from './lib/trackHealthCheck';
-import { convertToAiff, reencodeToMp3, deleteOriginalAfterConversion } from './lib/trackConverter';
+import { convertToAiff, reencodeToMp3 } from './lib/trackConverter';
 import * as mm from 'music-metadata';
 import path from 'path';
 import fs from 'fs/promises';
-import fsSync from 'fs';
 import os from 'os';
-import { readConfig, setSecretsPath } from './lib/config';
 import url from 'url';
 
-import { initWriteJournal, recordWrite } from './lib/writeJournal';
+import { initWriteJournal, getWriteJournalDir } from './lib/writeJournal';
+import { consoleToStderr, enableFileLog } from './lib/logger';
+import { initOpLog, withOp, currentOp, summarize, flushOpLogSync } from './lib/opLog';
+import { listOps, getOp, readTextLog, textLogFiles, queryWriteJournal, type OpStatus } from './lib/logQuery';
 
 /** The Electron app's userData directory, worked out without Electron: the
  *  platform's app-data folder plus the app name ('candybar-manager'), exactly
@@ -34,6 +35,14 @@ function appUserDataDir(): string {
 }
 
 const USER_DATA_DIR = appUserDataDir();
+const LOGS_DIR = path.join(USER_DATA_DIR, 'logs');
+
+// stdout carries the MCP protocol; log lines go to stderr and logs/mcp.log.
+consoleToStderr();
+enableFileLog(LOGS_DIR, 'mcp');
+// Every tool call is an operation in logs/ops (YYYY-MM-DD.mcp.jsonl); the app
+// records the work it does for a call there too, linked by `parent`.
+const OPS_DIR = initOpLog(USER_DATA_DIR, { proc: 'mcp' });
 
 // Share the Electron app's write journal so conversions/deletes driven via MCP
 // land in the same recovery log.
@@ -44,10 +53,29 @@ const server = new McpServer({
   version: '0.1.0',
 });
 
+/** A tool's reply carrying `"error"` (or flagged isError) failed. */
+function toolFailure(r: { content?: Array<{ text?: string }>; isError?: boolean }): string | null {
+  const text = r?.content?.[0]?.text ?? '';
+  if (r?.isError) return text.slice(0, 500) || 'error';
+  try {
+    const body = JSON.parse(text);
+    return body && typeof body === 'object' && typeof body.error === 'string' ? body.error : null;
+  } catch {
+    return null;
+  }
+}
+
+/** server.tool, with each call recorded as an operation (source "claude"). */
+const tool = ((name: string, ...rest: unknown[]) => {
+  const handler = rest.pop() as (...a: unknown[]) => Promise<any>;
+  return (server.tool as (...a: unknown[]) => unknown).call(server, name, ...rest, (...a: unknown[]) =>
+    withOp(name, { source: 'claude', args: a[0] }, () => handler(...a), { failure: toolFailure }));
+}) as typeof server.tool;
+
 // ---------------------------------------------------------------------------
 // Tool 1: check_health
 // ---------------------------------------------------------------------------
-server.tool(
+tool(
   'check_health',
   'Run a health check on an audio file. Reports format details (container, codec, sample rate, bit depth, bitrate, channels, duration), compatibility issues for DJ equipment (XDJ-RX3/CDJ), and suggested actions.',
   { filePath: z.string().describe('Absolute path to the audio file') },
@@ -62,7 +90,7 @@ server.tool(
 // ---------------------------------------------------------------------------
 // Tool 2: convert_to_aiff
 // ---------------------------------------------------------------------------
-server.tool(
+tool(
   'convert_to_aiff',
   'Convert an audio file to AIFF (PCM 24-bit, 44.1kHz stereo) using bundled ffmpeg. Output is written alongside the original as <name>.aif; an AIFF-family input is converted in place under the same name. Refuses to overwrite a different existing file.',
   { filePath: z.string().describe('Absolute path to the audio file to convert') },
@@ -77,7 +105,7 @@ server.tool(
 // ---------------------------------------------------------------------------
 // Tool 3: reencode_mp3
 // ---------------------------------------------------------------------------
-server.tool(
+tool(
   'reencode_mp3',
   'Re-encode an audio file to 320kbps MP3 with preserved metadata using bundled ffmpeg. Output is written alongside the original as <name>.mp3; an .mp3 input is re-encoded in place. Refuses to overwrite a different existing file.',
   { filePath: z.string().describe('Absolute path to the audio file to re-encode') },
@@ -135,7 +163,7 @@ function deriveVerdict(a: TrackHealth, b: TrackHealth): string {
   return parts.join('. ');
 }
 
-server.tool(
+tool(
   'compare_quality',
   'Compare two audio files side-by-side. Shows format details, quality differences, and a verdict on which file is higher quality. Useful for before/after conversion comparison.',
   {
@@ -192,7 +220,7 @@ server.tool(
 // ---------------------------------------------------------------------------
 // Tool 5: get_metadata
 // ---------------------------------------------------------------------------
-server.tool(
+tool(
   'get_metadata',
   'Get detailed metadata for an audio file: title, artist, album, year, genre, track number, album art presence, and full format details.',
   { filePath: z.string().describe('Absolute path to the audio file') },
@@ -230,22 +258,6 @@ server.tool(
 // ---------------------------------------------------------------------------
 // Store helpers (standalone, no Electron dependency)
 // ---------------------------------------------------------------------------
-
-function getConfigPaths(): { primary: string; fallback: string } {
-  return {
-    primary: path.join(USER_DATA_DIR, 'config.json'),
-    fallback: path.join(__dirname, '..', '..', 'config.json')
-  };
-}
-
-// Secrets live in userData beside config.json (the app moves them there on its
-// first launch after the change). Until that has happened, the old repo-root
-// copy is still the one with the credentials, so fall back to it.
-const USER_SECRETS_PATH = path.join(USER_DATA_DIR, 'secrets.json');
-const REPO_SECRETS_PATH = path.join(__dirname, '..', '..', 'secrets.json');
-setSecretsPath(
-  fsSync.existsSync(USER_SECRETS_PATH) || !fsSync.existsSync(REPO_SECRETS_PATH) ? USER_SECRETS_PATH : REPO_SECRETS_PATH
-);
 
 // The sourcing engine lives in `lib/sourcing/*.mjs` (plain ESM, no build step)
 // so the Electron app, this server, and the playlist-sourcing skill all share
@@ -297,77 +309,45 @@ async function releaseSharedBrowsers(): Promise<void> {
   await (await launcherModule()).closeSharedBrowsers();
 }
 
-// Store accounts are reached by driving the user's real logged-in Chrome — see
-// lib/sourcing/storeSession.mjs. There are deliberately no stored credentials
-// here: the previous email/password paths died silently (Qobuz changed its auth,
-// Beatport now 403s every non-browser client) and reported "0 purchases" rather
-// than "signed out", which is worse than failing.
-async function withStore<T>(
-  open: 'qobuz' | 'beatport',
-  fn: (page: any, mod: any) => Promise<T>
-): Promise<T> {
-  const mod = await sourcingModule('storeSession');
-  const session = open === 'qobuz' ? await mod.openQobuz() : await mod.openBeatportSession();
-  try {
-    return await fn(session.page, mod);
-  } finally {
-    await session.close();
-  }
+// Store accounts live in the app (Settings → Qobuz / Beatport): its own
+// per-account sessions, read without a window. These tools ask the running
+// app over its socket (lib/storeBridge.mjs → src/lib/storeBridge.ts), starting
+// it when it's closed, so a sign-in in the app counts here and one made here
+// shows up in the app. There are no store logins in this server.
+const storeBridgeModule = () =>
+  esmImport(url.pathToFileURL(path.join(SOURCING_ROOT, 'lib', 'storeBridge.mjs')).href) as Promise<{
+    callApp: (method: string, params?: Record<string, unknown>, opts?: {
+      timeoutMs?: number;
+      launch?: boolean;
+      onProgress?: (message: string) => void;
+      meta?: Record<string, unknown>;
+    }) => Promise<any>;
+  }>;
+
+/** Who's asking, so the app's record of the work links to this tool call. */
+function bridgeMeta() {
+  const op = currentOp();
+  return { client: 'mcp', tool: op?.name, parentOp: op?.id };
 }
 
-const SIGN_IN_HINT = (store: string) =>
-  `Not signed in to ${store}. Run the store_login tool for "${store}" — a Chrome window opens, you sign in once, and the session persists for future calls.`;
-
-function sanitizeFilename(name: string): string {
-  return name.replace(/[<>:"/\\|?*]/g, '-').replace(/\s+/g, ' ').trim();
+async function askApp<T>(method: string, params: Record<string, unknown>, timeoutMs?: number): Promise<T> {
+  return (await storeBridgeModule()).callApp(method, params, { timeoutMs, meta: bridgeMeta() });
 }
 
-/** The container a downloaded file really is, from its first bytes. Store
- *  download URLs often carry no extension, and the old guess ("Qobuz means
- *  FLAC") would have named an MP3 `.flac`. */
-async function sniffAudioExtension(filePath: string): Promise<string | null> {
-  const fh = await fs.open(filePath, 'r');
-  try {
-    const buf = Buffer.alloc(12);
-    await fh.read(buf, 0, 12, 0);
-    const ascii = (start: number, end: number) => buf.toString('latin1', start, end);
-    if (ascii(0, 4) === 'fLaC') return 'flac';
-    if (ascii(0, 4) === 'RIFF' && ascii(8, 12) === 'WAVE') return 'wav';
-    if (ascii(0, 4) === 'FORM' && (ascii(8, 12) === 'AIFF' || ascii(8, 12) === 'AIFC')) return 'aiff';
-    if (ascii(4, 8) === 'ftyp') return 'm4a';
-    if (ascii(0, 3) === 'ID3' || (buf[0] === 0xff && (buf[1] & 0xe0) === 0xe0)) return 'mp3';
-    if (ascii(0, 4) === 'OggS') return 'ogg';
-    return null;
-  } finally {
-    await fh.close();
-  }
-}
-
-/** Move `src` to `dest` without ever replacing an existing file (link + unlink
- *  fails with EEXIST instead of clobbering), and journal it. */
-async function moveNoClobber(src: string, dest: string, context: string, detail?: Record<string, unknown>): Promise<void> {
-  const bytes = (await fs.stat(src).catch(() => null))?.size;
-  try {
-    await fs.link(src, dest);
-    await fs.unlink(src);
-    recordWrite({ op: 'move', src, dest, bytes, context, outcome: 'ok', detail });
-  } catch (err) {
-    recordWrite({ op: 'move', src, dest, bytes, context, outcome: 'error', error: (err as Error).message, detail });
-    throw err;
-  }
-}
-
-const AUDIO_EXTS_FOR_NAME = ['aif', 'aiff', 'wav', 'flac', 'mp3', 'm4a'];
+const STORE_NAME = { qobuz: 'Qobuz', beatport: 'Beatport' } as const;
+const SIGN_IN_HINT = (store: 'qobuz' | 'beatport') =>
+  `Sign in to ${STORE_NAME[store]} in Track Lab (Settings → ${STORE_NAME[store]}), or run store_login for "${store}", which opens Track Lab's own sign-in window.`;
 
 // ---------------------------------------------------------------------------
 // Tools 6-10: the stores
 //
-// Qobuz search is public, so it runs over plain HTTP. Everything that needs the
-// user's account — Beatport search included, since Cloudflare 403s any
-// non-browser client — runs through their real Chrome profile.
+// Qobuz search is public, so it runs over plain HTTP. Beatport search needs no
+// account but does need real Chrome, since Cloudflare 403s any other client.
+// Everything that needs the user's account (purchases, downloads, sign-in)
+// runs in Track Lab on the accounts in its Settings, through askApp().
 // ---------------------------------------------------------------------------
 
-server.tool(
+tool(
   'search_qobuz',
   'Search Qobuz for a track and resolve a lossless add-to-cart link. Needs no login: Qobuz search is public. The returned cart URL is the article id carrier, not a clickable link — Qobuz only accepts it as an XHR from its own site, so opening it in a tab 404s; lib/sourcing/cart.mjs adds it from the signed-in profile. Returns the best match with its quality tier, price, and cart link.',
   {
@@ -399,7 +379,7 @@ server.tool(
   }
 );
 
-server.tool(
+tool(
   'search_beatport',
   'Search Beatport for a track. Opens the user\'s real Chrome (Beatport returns 403 to plain HTTP and to headless Chrome alike — Cloudflare fingerprints both), so a browser window will appear. Returns the best match with price and track URL. No login needed for search.',
   {
@@ -431,33 +411,47 @@ server.tool(
   })
 );
 
-server.tool(
+tool(
+  'search_store_catalog',
+  'List what a Beatport or Qobuz catalog search returns (up to 10 results), each with a ref, artists, the title with its mix, label, release date and price, for picking the exact record yourself rather than taking a best-match score. Runs in Track Lab on its own store sessions, starting it if it is closed; no browser window. Qobuz results are releases (singles, EPs, albums), not tracks.',
+  {
+    store: z.enum(['beatport', 'qobuz']).describe('Which catalog to search'),
+    query: z.string().describe('What to search for, e.g. "Fred again.. Jungle" or a title alone'),
+  },
+  async ({ store, query }) => {
+    const result = await askApp<unknown>('catalogSearch', { store, query }, 60_000);
+    return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 1) }] };
+  }
+);
+
+tool(
   'list_purchases',
-  'List tracks already purchased on Qobuz and/or Beatport, read from the user\'s signed-in browser session (no stored credentials). Opens a Chrome window. If a store is signed out this says so explicitly rather than returning an empty list — an empty result and a signed-out session are very different answers.',
+  'List tracks already purchased on Qobuz and/or Beatport, across every account signed in to Track Lab (Settings → Qobuz / Beatport). Runs in the Track Lab app, which is started if it is closed; no browser window. An account that couldn\'t be read is reported as such rather than counted as owning nothing — an empty result and a signed-out account are very different answers.',
   {
     source: z.enum(['qobuz', 'beatport', 'both']).default('both').describe('Which store(s) to read'),
-    hoursAgo: z.number().optional().describe('Only return purchases from the last N hours'),
+    hoursAgo: z.number().optional().describe('Only return purchases from the last N hours (purchases without a date are kept)'),
   },
-  async ({ source, hoursAgo }) => oneAtATime(async () => {
+  async ({ source, hoursAgo }) => {
     const cutoff = hoursAgo ? Date.now() - hoursAgo * 3600 * 1000 : 0;
     const out: Record<string, unknown> = {};
     const all: any[] = [];
 
     for (const store of (source === 'both' ? ['qobuz', 'beatport'] : [source]) as Array<'qobuz' | 'beatport'>) {
       try {
-        const result = await withStore<{ tracks: any[]; signedIn: boolean; diagnostic: string }>(
-          store,
-          (page, mod) => (store === 'qobuz' ? mod.qobuzPurchases(page) : mod.beatportPurchases(page))
-        );
+        const result = await askApp<{ accounts: number; owned: any[]; errors: string[] }>('purchases', { store }, 30 * 60_000);
+        if (result.accounts === 0) {
+          out[store] = { signedIn: false, error: `No ${STORE_NAME[store]} account in Track Lab. ${SIGN_IN_HINT(store)}` };
+          continue;
+        }
         const tracks = cutoff
-          ? result.tracks.filter((t: any) => !t.purchasedAt || new Date(t.purchasedAt).getTime() >= cutoff)
-          : result.tracks;
-        out[store] = result.signedIn
-          ? { signedIn: true, count: tracks.length, note: result.diagnostic }
-          : { signedIn: false, error: SIGN_IN_HINT(store), detail: result.diagnostic };
+          ? result.owned.filter((t: any) => !t.purchasedAt || new Date(t.purchasedAt).getTime() >= cutoff)
+          : result.owned;
+        out[store] = result.errors.length
+          ? { complete: false, count: tracks.length, errors: result.errors, hint: SIGN_IN_HINT(store) }
+          : { complete: true, accounts: result.accounts, count: tracks.length };
         all.push(...tracks);
       } catch (err) {
-        out[store] = { signedIn: false, error: (err as Error).message };
+        out[store] = { error: (err as Error).message };
       }
     }
 
@@ -466,52 +460,52 @@ server.tool(
     history.recordEvents(all.map((t: any) => history.eventFromPurchase(t)));
 
     return { content: [{ type: 'text' as const, text: JSON.stringify({ stores: out, totalFound: all.length, purchases: all }, null, 2) }] };
-  })
+  }
 );
 
-server.tool(
+tool(
   'store_login',
-  'Open a store (Qobuz, Beatport or SoundCloud) in the user\'s real Chrome so they can sign in once. The session is saved to a persistent profile and reused by every later call, so this is normally needed only the first time (or after a sign-out). Blocks until sign-in is detected or the timeout passes.',
+  'Sign the user in to a store once. Qobuz and Beatport sign in through Track Lab (started if closed), which opens its own sign-in window for each of its accounts — making the first account if there is none — and every later call, the app and the cart fill use that sign-in. SoundCloud opens its saved Chrome profile, which every SoundCloud run uses. Blocks until sign-in is detected, the window closes, or the timeout passes.',
   {
     store: z.enum(['qobuz', 'beatport', 'soundcloud']).describe('Which store to sign in to'),
     timeoutSeconds: z.number().optional().describe('How long to wait for sign-in (default 300)'),
   },
-  async ({ store, timeoutSeconds }) => oneAtATime(async () => {
+  async ({ store, timeoutSeconds }) => {
     const timeoutMs = (timeoutSeconds || 300) * 1000;
-    if (store === 'soundcloud') {
+    if (store !== 'soundcloud') {
+      const reply = (body: unknown) => ({ content: [{ type: 'text' as const, text: JSON.stringify(body) }] });
+      try {
+        const r = await askApp<{ signedIn: boolean; accounts: Array<{ label: string; signedIn: boolean }> }>('login', { store }, timeoutMs + 60_000);
+        return reply({
+          store, signedIn: r.signedIn, accounts: r.accounts,
+          note: r.signedIn
+            ? `Signed in to ${STORE_NAME[store]} in Track Lab; the app, these tools and the cart fill all use it.`
+            : 'Track Lab\'s sign-in window closed before sign-in finished.',
+        });
+      } catch (err) {
+        return reply({ store, signedIn: false, error: (err as Error).message });
+      }
+    }
+    return oneAtATime(async () => {
       const sc = await sourcingModule('soundcloud');
       const session = await sc.openSoundCloud();
       try {
         const ok = await sc.waitForSoundCloudLogin(session.page, { timeoutMs });
-        return { content: [{ type: 'text' as const, text: JSON.stringify({ store, signedIn: ok, note: ok ? 'SoundCloud session saved.' : 'No sign-in detected before the timeout.' }) }] };
+        // Capturing confirms the session answers /me and records whose it is,
+        // which is what the app's SoundCloud status shows.
+        const sess = ok ? await sc.captureSession(session.page) : null;
+        const signedIn = !!sess?.signedIn;
+        return { content: [{ type: 'text' as const, text: JSON.stringify({ store, signedIn, account: sess?.me?.username ?? null, note: signedIn ? 'SoundCloud session saved; the app and every SoundCloud run use it.' : ok ? `Signed in, but the session didn't verify (${sess?.diagnostic ?? 'unknown'}).` : 'No sign-in detected before the timeout.' }) }] };
       } finally {
         await session.close();
       }
-    }
-    if (store === 'beatport') {
-      const bp = await sourcingModule('beatport');
-      const session = await bp.openBeatport();
-      try {
-        const token = await bp.waitForLogin(session.page, { timeoutMs });
-        return { content: [{ type: 'text' as const, text: JSON.stringify({ store, signedIn: Boolean(token), note: token ? 'Beatport session saved.' : 'No sign-in detected before the timeout.' }) }] };
-      } finally {
-        await session.close();
-      }
-    }
-    const mod = await sourcingModule('storeSession');
-    const session = await mod.openQobuz();
-    try {
-      const ok = await mod.waitForQobuzLogin(session.page, { timeoutMs });
-      return { content: [{ type: 'text' as const, text: JSON.stringify({ store, signedIn: ok, note: ok ? 'Qobuz session saved.' : 'No sign-in detected before the timeout.' }) }] };
-    } finally {
-      await session.close();
-    }
-  })
+    });
+  }
 );
 
-server.tool(
+tool(
   'download_track',
-  'Download an already-purchased track through the user\'s signed-in browser session and save it to the organize source directory, converted to AIFF when it is lossless. A lossy file (e.g. MP3) is never converted: it is kept under lossy/ and flagged. Never overwrites an existing file. Requires a signed-in store profile (use store_login first) — this reads the download from the store\'s own page rather than replaying a private API with stored credentials.',
+  'Download an already-purchased track into the organize source directory, through the Track Lab account that bought it (the app is started if closed; no browser window). Converted to AIFF when it is lossless. A lossy file (e.g. MP3) is never converted: it is kept under lossy/ and reported. Never overwrites an existing file, re-uses a file it already downloaded, and never fetches a track the user deleted.',
   {
     source: z.enum(['qobuz', 'beatport']).describe('Which store the track was bought from'),
     trackId: z.string().describe('Track ID from the store'),
@@ -519,109 +513,27 @@ server.tool(
     title: z.string().describe('Track title (for the filename)'),
     destDir: z.string().optional().describe('Destination directory (defaults to organizeSourceDir from config)'),
   },
-  async ({ source, trackId, artist, title, destDir }) => oneAtATime(async () => {
+  async ({ source, trackId, artist, title, destDir }) => {
     const reply = (body: unknown) => ({ content: [{ type: 'text' as const, text: JSON.stringify(body) }] });
-    const { primary, fallback } = getConfigPaths();
-    const config = await readConfig(primary, fallback);
-    const outputDir = destDir || config.organizeSourceDir;
-    if (!outputDir) {
-      return reply({ error: 'No destination directory. Set organizeSourceDir in settings or pass destDir.' });
-    }
-    await fs.mkdir(outputDir, { recursive: true });
-
-    // Refuse up front if this track is already sitting there under any audio extension.
-    const base = sanitizeFilename(`${artist} - ${title}`);
-    const lossyDir = path.join(outputDir, 'lossy');
-    for (const dir of [outputDir, lossyDir]) {
-      for (const ext of AUDIO_EXTS_FOR_NAME) {
-        const existing = path.join(dir, `${base}.${ext}`);
-        if (fsSync.existsSync(existing)) return reply({ error: `Already there, not overwritten: ${existing}` });
-      }
-    }
-    // Download under a hidden temp name (scans skip it), then move into place.
-    const partialPath = path.join(outputDir, `.${base}.${Date.now()}.partial`);
-
     try {
-      const result = await withStore<{ downloaded?: true; error?: string }>(source, async (page, mod) => {
-        // Ask the store for this track's download URL from inside its own
-        // origin, so the request carries the live session and a real browser
-        // fingerprint — no token handling on our side.
-        const resolved = await (source === 'beatport'
-          ? page.evaluate(async (id: string) => {
-              for (const endpoint of [
-                `/api/v4/catalog/tracks/${id}/download/?audio_format_id=14`,
-                `/api/v4/my/downloads/${id}?audio_format_id=14`,
-              ]) {
-                try {
-                  const r = await fetch(endpoint, { credentials: 'include', headers: { Accept: 'application/json' } });
-                  if (!r.ok) continue;
-                  const j = await r.json();
-                  const u = j.download_url || j.url;
-                  if (u) return { url: u as string };
-                } catch { /* try the next endpoint */ }
-              }
-              return null;
-            }, trackId)
-          : page.evaluate(async (id: string) => {
-              try {
-                const r = await fetch(`/api.json/0.2/track/getFileUrl?track_id=${id}&format_id=27&intent=download`, { credentials: 'include' });
-                if (!r.ok) return null;
-                const j = await r.json();
-                return j.url ? { url: j.url as string } : null;
-              } catch {
-                return null;
-              }
-            }, trackId));
-
-        if (!resolved?.url) return { error: `${SIGN_IN_HINT(source)} (No download URL came back for track ${trackId} — it may also not be in this account's purchases.)` };
-
-        await mod.downloadViaBrowser(page, resolved.url, partialPath);
-        return { downloaded: true };
-      });
-
-      if (result.error) return reply({ error: result.error });
-
-      // What actually arrived — by its bytes, not the URL — and whether it's
-      // lossless. Only a confirmed-lossless file goes into the intake folder
-      // and gets converted; anything else is kept aside, never made into an AIFF.
-      const ext = (await sniffAudioExtension(partialPath)) ?? 'bin';
-      const typedPartial = `${partialPath}.${ext}`;
-      await fs.rename(partialPath, typedPartial);
-      const health = await checkTrackHealth(typedPartial).catch(() => null);
-      const lossless = health?.format.lossless === true;
-      const finalDir = lossless ? outputDir : lossyDir;
-      await fs.mkdir(finalDir, { recursive: true });
-      const rawPath = path.join(finalDir, `${base}.${ext}`);
-      try {
-        await moveNoClobber(typedPartial, rawPath, 'mcp-download', { source, trackId, lossless });
-      } catch (err) {
-        return reply({ error: `Downloaded, but ${rawPath} already exists, so nothing was overwritten. The download is at ${typedPartial}. (${(err as Error).message})` });
+      const r = await askApp<{
+        downloaded: string[];
+        failed: Array<{ error: string }>;
+        skipped: Array<{ reason: string }>;
+        destDir: string;
+      }>('download', { matches: [{ source, trackId, artist, title }], destDir }, 60 * 60_000);
+      if (r.downloaded.length) {
+        const file = r.downloaded[0];
+        return reply({ success: true, path: file, format: path.extname(file).slice(1).toUpperCase() });
       }
-
-      if (!lossless) {
-        return reply({
-          success: true, lossy: true, path: rawPath, format: ext.toUpperCase(),
-          codec: health?.format.codec ?? null,
-          note: health
-            ? 'The store sent a lossy file. It was kept under lossy/ and not converted — lossless only for the library.'
-            : 'Couldn’t confirm the file is lossless, so it was kept under lossy/ and not converted.',
-        });
-      }
-      if (ext !== 'aiff') {
-        const conv = await convertToAiff(rawPath);
-        if (conv.success && conv.outputPath) {
-          await deleteOriginalAfterConversion(rawPath, conv.outputPath);
-          return reply({ success: true, path: conv.outputPath, format: 'AIFF' });
-        }
-        return reply({ success: true, path: rawPath, format: ext.toUpperCase(), note: `AIFF conversion failed; original kept. ${conv.errorMessage ?? ''}`.trim() });
-      }
-      return reply({ success: true, path: rawPath, format: 'AIFF' });
+      if (r.skipped.length) return reply({ skipped: true, reason: r.skipped[0].reason });
+      const error = r.failed[0]?.error ?? 'Nothing was downloaded';
+      // A lossy arrival is kept under lossy/ and named in the error.
+      return reply(/lossy|unrecognised format/i.test(error) ? { success: true, lossy: true, note: error } : { error, hint: SIGN_IN_HINT(source) });
     } catch (err) {
-      // A half-finished download is our own temp file, not the user's audio.
-      await fs.unlink(partialPath).catch(() => {});
       return reply({ error: (err as Error).message });
     }
-  })
+  }
 );
 
 // ---------------------------------------------------------------------------
@@ -634,7 +546,7 @@ server.tool(
 // literal `await import()` would be downleveled to require() — which cannot
 // load ESM — so the import goes through a Function constructor that TypeScript
 // leaves alone.
-server.tool(
+tool(
   'check_library_for_tracks',
   'Check a list of artist/title pairs against the Rekordbox collection (plus candybar-manager\'s scan reflection) and bucket them into owned / probable / missing. Fast — no network, no browser. Ownership means present in Rekordbox; a file that exists on disk but was never imported is reported as probable with the reason "file on disk, not in Rekordbox".',
   {
@@ -656,7 +568,7 @@ server.tool(
   }
 );
 
-server.tool(
+tool(
   'source_playlist',
   'Run the full sourcing pipeline over a Spotify playlist or CSV: fetch the tracklist, check it against Rekordbox, then search Beatport and Qobuz for whatever is missing and resolve lossless purchase links. Beatport takes precedence over Qobuz; lossy matches are excluded from the buy list. Opens a real Chrome window (Cloudflare blocks headless Beatport). Takes roughly 2 seconds per missing track — use limit for a quick sample. Returns the session summary and the path to the full session JSON.',
   {
@@ -715,7 +627,7 @@ server.tool(
   })
 );
 
-server.tool(
+tool(
   'render_sourcing_review',
   'Render a sourcing session JSON into a self-contained review page. A playlist session gets the buy list (cover art, prices, store chips, cart links) plus the owned/probable/flagged sections; a SoundCloud-likes session gets the downloaded / needs-your-call / queued / not-free sections. Returns the HTML file path, ready to publish as an artifact.',
   {
@@ -732,7 +644,7 @@ server.tool(
   }
 );
 
-server.tool(
+tool(
   'sourcing_history',
   'The lasting record of what playlist sourcing acquired: free downloads, lossy files deleted or kept, store cart adds and purchases, across every run. Purchases are recorded when list_purchases sees them. Newest first.',
   {
@@ -748,7 +660,7 @@ server.tool(
   }
 );
 
-server.tool(
+tool(
   'source_soundcloud_likes',
   'Walk the user\'s SoundCloud likes — or a SoundCloud set (playlist) given with `set` — and fetch every free download that is not already in the Rekordbox collection. Reads likes through the signed-in Chrome profile (or a public profile with `user`); reads a set publicly, falling back to the signed-in session when it is one of the user\'s own private sets. Checks ownership against Rekordbox, classifies each track as a native SoundCloud download, a gate (Hypeddit etc.), or not free, then downloads: native files through the session, gates by walking them in the same Chrome (Hypeddit is automated; other hosts need `assistSeconds` so the user can finish the gate by hand). Lossless files land in the intake folder; lossy ones are kept under lossy/ and flagged, never mixed in. A ledger makes re-runs incremental. Returns the session summary and the session JSON path — render it with render_sourcing_review.',
   {
@@ -761,7 +673,7 @@ server.tool(
     dropLossy: z.boolean().optional().describe('Delete lossy files (MP3 etc.) the moment they arrive instead of keeping them under lossy/; the ledger still remembers them so the gate is not walked again'),
     dest: z.string().optional().describe('Folder for downloaded files (default: <organizeSourceDir>)'),
     assistSeconds: z.number().optional().describe('When a gate stalls, wait this long for the user to finish it in the Chrome window (default 0 = record it and move on)'),
-    email: z.string().optional().describe('Email address to give gates that demand one (never sent unless provided)'),
+    email: z.string().optional().describe('Email address to give gates that demand one. Defaults to the one the user saved in Track Lab\'s Settings → SoundCloud (saving it is their go-ahead for every run); with none saved and none given, email gates are skipped'),
     scActions: z.string().optional().describe('Account actions a gate may perform for real: "follow,like,comment" (default), add "repost" to allow reposts, or "none"'),
     comment: z.string().optional().describe('Comment text for gates that ask for one (default "dis shit nasty" — the user\'s standing choice)'),
     resume: z.string().optional().describe('Path of an earlier session JSON; its pending rows are fetched and gates that stalled are retried'),
@@ -820,6 +732,669 @@ server.tool(
 );
 
 // ---------------------------------------------------------------------------
+// The logs: what the app and these tools did (no app needed)
+// ---------------------------------------------------------------------------
+//
+// logs/main.log and logs/mcp.log are the text logs; logs/ops holds every
+// operation (a window action, a tool call, a queue job, a socket request) with
+// who asked, its arguments, progress, output, log lines and outcome. They are
+// read straight from disk, so they answer even while Track Lab is closed or
+// after it crashed.
+
+const OP_STATUSES = ['ok', 'error', 'running', 'interrupted'] as const;
+const OP_SOURCES = ['ui', 'claude', 'cli', 'job', 'app'] as const;
+
+tool(
+  'app_status',
+  'Is Track Lab running, what is it doing right now (work in progress, queue jobs), where does everything live (config, library, intake, archive, logs, write journal), and what failed lately. Never starts the app. Start here when asked what the app is doing or why something went wrong.',
+  {},
+  async () => {
+    let app: unknown;
+    try {
+      const bridge = await storeBridgeModule();
+      const opts = { launch: false, timeoutMs: 15_000, meta: bridgeMeta() };
+      const status = await bridge.callApp('appStatus', {}, opts);
+      // Whether origin/main has commits this checkout doesn't.
+      const update = await bridge.callApp('invoke', { channel: 'get-update-state', args: [] }, opts).catch(() => null);
+      app = { running: true, ...status, update };
+    } catch (err) {
+      app = { running: false, note: (err as Error).message };
+    }
+    const since = new Date(Date.now() - 24 * 3600_000);
+    const lastStart = listOps(OPS_DIR, { name: 'app:start', since: new Date(Date.now() - 30 * 86_400_000), limit: 1 })[0];
+    return reply({
+      app,
+      lastAppStart: lastStart?.startedAt ?? null,
+      runningOperations: listOps(OPS_DIR, { status: 'running', since, limit: 20 }),
+      failedLast24h: listOps(OPS_DIR, { status: 'error', since, limit: 10 }),
+      interruptedLast24h: listOps(OPS_DIR, { status: 'interrupted', since, limit: 10 }),
+      logs: { dir: LOGS_DIR, appLog: path.join(LOGS_DIR, 'main.log'), mcpLog: path.join(LOGS_DIR, 'mcp.log'), operations: OPS_DIR, writeJournal: getWriteJournalDir() },
+    });
+  }
+);
+
+tool(
+  'app_logs',
+  'The text log of Track Lab (process "app", the default) or of these MCP tools ("mcp"): every logged line, debug and up, newest last. Each line logged during an operation starts with its id ([app-…]), which get_operation expands. Filter by level, text or time.',
+  {
+    process: z.enum(['app', 'mcp']).optional().describe('Whose log (default app)'),
+    level: z.enum(['error', 'warn', 'info', 'debug']).optional().describe('This level or more severe (default: all)'),
+    search: z.string().optional().describe('Only entries containing this text (case-insensitive)'),
+    since: z.string().optional().describe('Only entries at or after this ISO time'),
+    lines: z.number().optional().describe('How many entries (default 100)'),
+  },
+  async ({ process: which, level, search, since, lines }) => {
+    const files = textLogFiles(LOGS_DIR, which === 'mcp' ? 'mcp' : 'main');
+    const entries = readTextLog(files, { level, search, since, lines });
+    return reply({ files, count: entries.length, entries });
+  }
+);
+
+tool(
+  'list_operations',
+  'Operations Track Lab and these tools ran, newest first: every action Ben took in the window (source "ui"), every tool call and the app work it caused ("claude"), scripts over the app\'s socket ("cli"), queue jobs, and app events (app:start, window:crashed). Each has its name, label, status (ok, error, running, interrupted = the process died mid-way), timing, arguments, result summary and counts of its progress/output/log lines. Defaults to the last 7 days, 50 operations.',
+  {
+    since: z.string().optional().describe('Started at or after this ISO time (default 7 days ago)'),
+    until: z.string().optional().describe('Started at or before this ISO time'),
+    name: z.string().optional().describe('Name or label contains this, e.g. "organize", "upgrade-swap", "job:", "search_beatport"'),
+    source: z.enum(OP_SOURCES).optional().describe('Who asked'),
+    status: z.enum(OP_STATUSES).optional(),
+    search: z.string().optional().describe('Text anywhere in the operation: arguments, output, log lines, error (a file name, a track title)'),
+    parent: z.string().optional().describe('Only operations started by this one'),
+    limit: z.number().optional().describe('Default 50'),
+  },
+  async (q) => reply({ dir: OPS_DIR, operations: listOps(OPS_DIR, { ...q, status: q.status as OpStatus | undefined }) })
+);
+
+tool(
+  'get_operation',
+  'One operation in full: its summary, every event in order (start, label, state, progress, output, log, end), and the operations it started (a tool call\'s work in the app, a job\'s steps). Very long operations keep their first and last events.',
+  {
+    id: z.string().describe('Operation id from list_operations or a log line, e.g. app-mf3k2x1-1a'),
+    events: z.array(z.enum(['start', 'label', 'state', 'progress', 'output', 'log', 'end'])).optional().describe('Only these kinds of event'),
+    limit: z.number().optional().describe('Most events to return (default 500)'),
+  },
+  async ({ id, events, limit }) => {
+    const op = getOp(OPS_DIR, id, { events, limit });
+    return reply(op ?? { error: `No operation ${id} in ${OPS_DIR} (they are kept 30 days)` });
+  }
+);
+
+tool(
+  'write_journal',
+  'The write journal: every file Track Lab moved, deleted (to the Trash), converted, re-tagged, header-repaired, or every Rekordbox XML it rewrote, with before/after paths, sizes, which feature did it and whether it worked. Newest first. Use it to trace where a file went.',
+  {
+    since: z.string().optional().describe('At or after this ISO time'),
+    op: z.enum(['move', 'delete', 'convert', 'tag-write', 'header-repair', 'xml-rewrite']).optional(),
+    outcome: z.enum(['ok', 'error']).optional(),
+    search: z.string().optional().describe('Text in the entry: a path, artist or title'),
+    limit: z.number().optional().describe('Default 100'),
+  },
+  async (q) => {
+    const dir = getWriteJournalDir();
+    return reply(dir ? { dir, entries: queryWriteJournal(dir, q) } : { error: 'The write journal is not set up' });
+  }
+);
+
+// ---------------------------------------------------------------------------
+// Everything else the app does (src/lib/mcpParity.ts maps each action)
+// ---------------------------------------------------------------------------
+//
+// These run the window's own IPC actions inside Track Lab, over its socket
+// (bridge `invoke`): one implementation, one set of rules (lossless only,
+// deleted stays deleted, never overwrite, Trash not unlink) and one operations
+// log for Ben and for Claude. Track Lab is started when it's closed. Actions
+// that need the window (pickers, the store panel's checkout) aren't here.
+
+const RESULTS_DIR = path.join(LOGS_DIR, 'results');
+const MAX_INLINE_CHARS = 60_000;
+
+type ToolReply = { content: Array<{ type: 'text'; text: string }> };
+
+/** JSON for Claude. A result too big to read inline is saved whole under
+ *  logs/results and summarized, with the path to read or jq. */
+async function reply(body: unknown): Promise<ToolReply> {
+  const text = JSON.stringify(body, null, 2) ?? 'null';
+  if (text.length <= MAX_INLINE_CHARS) return { content: [{ type: 'text', text }] };
+  await fs.mkdir(RESULTS_DIR, { recursive: true });
+  const file = path.join(RESULTS_DIR, `${currentOp()?.id ?? Date.now()}.json`);
+  await fs.writeFile(file, text, 'utf8');
+  return {
+    content: [{ type: 'text', text: JSON.stringify({
+      note: `The full result is ${Math.round(text.length / 1024)} KB, saved to resultPath; this is a summary. Read or jq the file for the rest.`,
+      resultPath: file,
+      summary: summarize(body, { maxItems: 12, maxString: 300, maxDepth: 5 }),
+    }, null, 2) }],
+  };
+}
+
+/** Run one of the window's actions in Track Lab; resolves with its result and
+ *  the progress it reported. */
+async function invokeApp(channel: string, args: unknown[] = [], timeoutMs = 60 * 60_000): Promise<{ result: unknown; progress: string[] }> {
+  const progress: string[] = [];
+  const result = await (await storeBridgeModule()).callApp('invoke', { channel, args }, {
+    timeoutMs,
+    meta: bridgeMeta(),
+    onProgress: (m) => {
+      progress.push(m);
+      if (progress.length > 300) progress.shift();
+    },
+  });
+  return { result, progress };
+}
+
+/** A tool's whole job: run an action and reply with its result (plus the last
+ *  progress lines, when it reported any). */
+async function runApp(channel: string, args: unknown[] = [], opts: { timeoutMs?: number; tail?: number } = {}): Promise<ToolReply> {
+  try {
+    const { result, progress } = await invokeApp(channel, args, opts.timeoutMs);
+    const tail = opts.tail ?? 20;
+    return reply(progress.length && tail > 0 ? { result, progressLog: progress.slice(-tail) } : result);
+  } catch (err) {
+    return reply({ error: (err as Error).message, hint: 'list_operations and app_logs show what Track Lab did' });
+  }
+}
+
+/** Secrets stay "[redacted]" in anything that echoes the settings back. */
+const redactAll = (v: unknown) => summarize(v, { maxString: 100_000, maxItems: 100_000, maxDepth: 20, maxKeys: 1000 });
+
+function need<T>(value: T | undefined, what: string): T {
+  if (value === undefined || value === null || value === '') throw new Error(`${what} is required for this action`);
+  return value;
+}
+
+/** For actions whose arguments are checked per action. */
+async function guarded(fn: () => Promise<ToolReply>): Promise<ToolReply> {
+  try {
+    return await fn();
+  } catch (err) {
+    return reply({ error: (err as Error).message });
+  }
+}
+
+const anyRows = z.array(z.record(z.string(), z.unknown()));
+
+// ---------- Settings and connections ----------
+
+tool(
+  'get_settings',
+  'Track Lab\'s settings (Settings page): library root, intake folder (organizeSourceDir), archive, store accounts, Claude model, and the rest, plus the config file path. Secrets show as "[redacted]".',
+  {},
+  async () => guarded(async () => {
+    const [config, configPath, libraryRoot] = await Promise.all([
+      invokeApp('get-config'), invokeApp('get-config-path'), invokeApp('get-library-root'),
+    ]);
+    return reply({ configPath: configPath.result, libraryRoot: libraryRoot.result, config: redactAll(config.result) });
+  })
+);
+
+tool(
+  'update_settings',
+  'Change Track Lab settings, as saving the Settings page does: only the keys given change (names as get_settings shows them). Confirm with Ben before changing folders or accounts.',
+  { changes: z.record(z.string(), z.unknown()).describe('Settings to change, e.g. {"organizeSourceDir": "/Volumes/…"}') },
+  async ({ changes }) => guarded(async () => reply({ config: redactAll((await invokeApp('update-config', [changes])).result) }))
+);
+
+tool(
+  'connections',
+  'Accounts and connections: Qobuz and Beatport accounts (each signed in or not), SoundCloud, Spotify credentials, Claude Code and Splice ("status"); sign one store account in (opens its sign-in window) or out. store_login signs in every account of a store at once.',
+  {
+    action: z.enum(['status', 'sign_in_account', 'sign_out_account']),
+    store: z.enum(['qobuz', 'beatport']).optional().describe('For sign_in_account / sign_out_account'),
+    accountId: z.string().optional().describe('The account\'s id, from status'),
+  },
+  async ({ action, store, accountId }) => guarded(async () => {
+    if (action === 'status') {
+      const settle = async (p: Promise<{ result: unknown }>) => p.then((r) => r.result, (e: Error) => ({ error: e.message }));
+      const [stores, soundcloud, spotify, claude, splice] = await Promise.all([
+        askApp('status', {}).catch((e: Error) => ({ error: e.message })),
+        settle(invokeApp('soundcloud-sign-in-status')),
+        settle(invokeApp('check-spotify')),
+        settle(invokeApp('claude-status')),
+        settle(invokeApp('splice-login-status')),
+      ]);
+      return reply({ stores, soundcloud, spotifyCredentialsWork: spotify, claude, splice });
+    }
+    const s = need(store, 'store');
+    const id = need(accountId, 'accountId');
+    if (action === 'sign_out_account') return runApp('store-logout-account', [{ store: s, accountId: id }]);
+    const status = await askApp<Record<string, Array<{ id: string; label: string }>>>('status', {});
+    const account = status[s]?.find((a) => a.id === id);
+    if (!account) throw new Error(`No ${s} account ${id}; connections status lists them`);
+    return runApp('store-login-account', [{ store: s, account: { id: account.id, label: account.label } }], { timeoutMs: 15 * 60_000 });
+  })
+);
+
+tool(
+  'scan_cache',
+  'The library scan cache: how fresh it is ("status"), or clear it so the next scan reads every file again ("clear").',
+  { action: z.enum(['status', 'clear']) },
+  async ({ action }) => runApp(action === 'status' ? 'get-cache-status' : 'clear-cache')
+);
+
+tool(
+  'storage_stats',
+  'How much space the library, intake folder, archive and app data take, and what\'s free on their drives.',
+  {},
+  async () => runApp('get-storage-stats', [], { timeoutMs: 10 * 60_000 })
+);
+
+// ---------- What's in the library ----------
+
+tool(
+  'check_playlist_ownership',
+  'Check a Spotify playlist or a CSV against the Rekordbox collection: which tracks Ben owns, which might match (uncertain), which are missing, with ignored tracks marked. No store search; find_sources adds that.',
+  {
+    spotifyPlaylistUrl: z.string().optional(),
+    csvPath: z.string().optional().describe('Absolute path to a CSV (Exportify or any artist/title list)'),
+  },
+  async ({ spotifyPlaylistUrl, csvPath }) => runApp('check-library', [{ spotifyPlaylistUrl, csvPath }])
+);
+
+tool(
+  'preview_csv',
+  'Read a CSV the way Track Lab will: which columns it takes as artist/title/album, the row count and the first rows.',
+  { csvPath: z.string() },
+  async ({ csvPath }) => runApp('preview-csv', [{ csvPath }])
+);
+
+tool(
+  'ignored_tracks',
+  'Tracks Ben chose to ignore in checks and sourcing: list them, ignore one, or un-ignore one. `key` is the track key in check_playlist_ownership / find_sources results.',
+  {
+    action: z.enum(['list', 'ignore', 'unignore']),
+    key: z.string().optional(),
+    artist: z.string().optional().describe('For ignore'),
+    title: z.string().optional().describe('For ignore'),
+  },
+  async ({ action, key, artist, title }) => guarded(async () => {
+    if (action === 'list') return runApp('get-ignored-tracks');
+    if (action === 'unignore') return runApp('unignore-track', [{ key: need(key, 'key') }]);
+    return runApp('ignore-track', [{ key: need(key, 'key'), artist: need(artist, 'artist'), title: need(title, 'title') }]);
+  })
+);
+
+tool(
+  'dismissed_issues',
+  'Library health issues and duplicate pairs Ben dismissed ("not a problem"): list the dismissed issues, dismiss or restore one, or dismiss a duplicate pair.',
+  {
+    action: z.enum(['list', 'dismiss_issue', 'undismiss_issue', 'dismiss_duplicate']),
+    filePath: z.string().optional().describe('For dismiss_issue / undismiss_issue'),
+    issueCode: z.string().optional().describe('The issue code from library_health, for dismiss_issue / undismiss_issue'),
+    libraryRoot: z.string().optional().describe('Default: the library root in settings'),
+    track1Artist: z.string().optional(), track1Title: z.string().optional(),
+    track2Artist: z.string().optional(), track2Title: z.string().optional(),
+  },
+  async (a) => guarded(async () => {
+    if (a.action === 'dismiss_duplicate') {
+      return runApp('dismiss-duplicate', [{
+        track1Artist: need(a.track1Artist, 'track1Artist'), track1Title: need(a.track1Title, 'track1Title'),
+        track2Artist: need(a.track2Artist, 'track2Artist'), track2Title: need(a.track2Title, 'track2Title'),
+      }]);
+    }
+    const libraryRoot = a.libraryRoot || String((await invokeApp('get-library-root')).result);
+    if (a.action === 'list') return runApp('get-dismissed-issues', [{ libraryRoot }]);
+    const args = { libraryRoot, filePath: need(a.filePath, 'filePath'), issueCode: need(a.issueCode, 'issueCode') };
+    return runApp(a.action === 'dismiss_issue' ? 'dismiss-health-issue' : 'undismiss-health-issue', [args]);
+  })
+);
+
+tool(
+  'rekordbox_collection',
+  'The Rekordbox collection: "find_missing" lists collection tracks whose files are gone; "import" reads the collection into Track Lab\'s library; "resync" re-reads it after changes in Rekordbox.',
+  { action: z.enum(['find_missing', 'import', 'resync']) },
+  async ({ action }) => runApp({ find_missing: 'rekordbox-scan', import: 'rekordbox-import', resync: 'rekordbox-resync' }[action], [], { timeoutMs: 30 * 60_000 })
+);
+
+tool(
+  'library_health',
+  'The Library page\'s health scan: every track in the library root checked for problems DJ gear chokes on (format, sample rate, broken headers, missing tags or art, duplicates) with an issue code per problem. Uses the cache unless useCache is false. Large; the full result is saved to a file.',
+  { useCache: z.boolean().optional().describe('Default true') },
+  async ({ useCache }) => runApp('scan-library-health', [{ useCache: useCache ?? true, cacheOnly: false }], { timeoutMs: 60 * 60_000 })
+);
+
+tool(
+  'album_art_scan',
+  'Find library tracks without embedded album art.',
+  {},
+  async () => runApp('scan-missing-album-art', [], { timeoutMs: 30 * 60_000 })
+);
+
+// ---------- Exports ----------
+
+tool(
+  'export_tracks',
+  'Write tracks to a file: "csv" (artist, title, album, genre), "m3u8" playlist (grouped by artist; rows need filePath), "rekordbox_xml" playlist Rekordbox can import (rows need filePath; give playlistName), or "text" (write `content` as-is, e.g. a sourcing CSV).',
+  {
+    format: z.enum(['csv', 'm3u8', 'rekordbox_xml', 'text']),
+    filePath: z.string().describe('Absolute path to write'),
+    tracks: z.array(z.object({
+      artist: z.string(), title: z.string(),
+      album: z.string().optional(), genre: z.string().optional(),
+      filePath: z.string().optional(), duration: z.number().optional(),
+    })).optional(),
+    playlistName: z.string().optional().describe('For rekordbox_xml'),
+    content: z.string().optional().describe('For text'),
+  },
+  async ({ format, filePath, tracks, playlistName, content }) => guarded(async () => {
+    if (format === 'text') return runApp('source-export-csv', [{ content: need(content, 'content'), filePath }]);
+    const rows = need(tracks, 'tracks');
+    if (format === 'csv') return runApp('export-tracks-csv', [{ tracks: rows, filePath }]);
+    if (format === 'm3u8') return runApp('export-playlist-m3u8', [{ tracks: rows, filePath }]);
+    return runApp('export-playlist-rekordbox', [{ tracks: rows, filePath, playlistName: playlistName || path.basename(filePath, path.extname(filePath)) }]);
+  })
+);
+
+tool(
+  'export_catalog',
+  'Export the whole library catalog (every track with its tags and file details) to a JSON file.',
+  { outputPath: z.string().describe('Absolute path of the JSON to write') },
+  async ({ outputPath }) => runApp('export-catalog', [{ outputPath }], { timeoutMs: 30 * 60_000 })
+);
+
+// ---------- Searching and sourcing ----------
+
+tool(
+  'search_music',
+  'The Search page: look a track up on Spotify, SoundCloud, Beatport and Qobuz at once.',
+  {
+    query: z.string(),
+    sources: z.array(z.enum(['spotify', 'soundcloud', 'beatport', 'qobuz'])).optional().describe('Default: all four'),
+  },
+  async ({ query, sources }) => runApp('search-music', [{ query, sources: sources ?? ['spotify', 'soundcloud', 'beatport', 'qobuz'] }])
+);
+
+tool(
+  'find_sources',
+  'Find & buy, as the Sources tab runs it inside Track Lab: read a Spotify playlist, CSV or SoundCloud set, check it against Rekordbox, and find lossless store copies of what\'s missing (Beatport before Qobuz; lossy matches excluded). Returns owned / probable / store matches / not found. source_playlist is the script version of the same search.',
+  {
+    spotifyPlaylistUrl: z.string().optional(),
+    csvPath: z.string().optional(),
+    soundcloudSetUrl: z.string().optional(),
+  },
+  async ({ spotifyPlaylistUrl, csvPath, soundcloudSetUrl }) => runApp('library-sourcing:run', [{ spotifyPlaylistUrl, csvPath, soundcloudSetUrl }], { timeoutMs: 60 * 60_000 })
+);
+
+tool(
+  'saved_sources',
+  'Playlists and sets saved on the Sources tab with what their last check found: list them, save one (as find_sources results describe it), rename or remove one.',
+  {
+    action: z.enum(['list', 'save', 'rename', 'remove']),
+    id: z.number().optional().describe('For rename / remove'),
+    name: z.string().optional().describe('For rename'),
+    source: z.object({
+      kind: z.enum(['spotify', 'soundcloud', 'csv']),
+      ref: z.string().describe('Playlist URL or CSV path'),
+      name: z.string(),
+      imageUrl: z.string().nullable().optional(),
+      owner: z.string().optional(),
+      trackCount: z.number(),
+      counts: z.record(z.string(), z.number()).describe('{toBuy, maybeOwned, owned, …} from the check'),
+      checkedAt: z.number().optional(),
+    }).optional().describe('For save'),
+    keepExisting: z.boolean().optional().describe('For save: keep an existing entry\'s name'),
+  },
+  async ({ action, id, name, source, keepExisting }) => guarded(async () => {
+    if (action === 'list') return runApp('saved-sources:list');
+    if (action === 'save') return runApp('saved-sources:save', [need(source, 'source'), { keepExisting }]);
+    if (action === 'rename') return runApp('saved-sources:update', [{ id: need(id, 'id'), name }]);
+    return runApp('saved-sources:remove', [{ id: need(id, 'id') }]);
+  })
+);
+
+// ---------- Lossless upgrades ----------
+
+tool(
+  'lossless_upgrade',
+  'The Lossless Upgrades page: list Rekordbox playlists; check one ("check_playlist") for lossy tracks with a lossless copy on disk, free (SoundCloud / Bandcamp) or in a store; fetch the free downloads for chosen tracks ("fetch_free", by Rekordbox id); or stop a fetch. Swapping the new files in is upgrade_swap.',
+  {
+    action: z.enum(['list_playlists', 'check_playlist', 'fetch_free', 'stop_fetch']),
+    playlistId: z.string().optional().describe('For check_playlist, from list_playlists'),
+    rbIds: z.array(z.string()).optional().describe('For fetch_free: Rekordbox track ids from check_playlist'),
+    accountActions: z.boolean().optional().describe('For fetch_free: let gates follow/like/comment with the SoundCloud account'),
+  },
+  async ({ action, playlistId, rbIds, accountActions }) => guarded(async () => {
+    if (action === 'list_playlists') return runApp('lossless-upgrade:list-playlists');
+    if (action === 'stop_fetch') return runApp('lossless-upgrade:fetch-free-stop');
+    if (action === 'check_playlist') return runApp('lossless-upgrade:run', [{ playlistId: need(playlistId, 'playlistId') }], { timeoutMs: 60 * 60_000 });
+    return runApp('lossless-upgrade:fetch-free', [{ rbIds: need(rbIds, 'rbIds'), accountActions }], { timeoutMs: 2 * 60 * 60_000 });
+  })
+);
+
+tool(
+  'upgrade_swap',
+  'Replace in Rekordbox: swap lossless files in for lossy ones while keeping each track\'s row (cues, grid, playlists, play count, date added). "preflight" checks Rekordbox is closed and backups work; "plan" shows what each swap keeps and how the audio lines up; "apply" writes master.db (after a backup). Only apply what Ben approved from a plan.',
+  {
+    action: z.enum(['preflight', 'plan', 'apply']),
+    inputs: z.array(z.object({ rbId: z.string(), newFilePath: z.string() })).optional().describe('For plan'),
+    rbIds: z.array(z.string()).optional().describe('For apply: ids from the plan whose action is "swap"'),
+  },
+  async ({ action, inputs, rbIds }) => guarded(async () => {
+    if (action === 'preflight') return runApp('upgrade-swap:preflight');
+    if (action === 'plan') return runApp('upgrade-swap:plan', [{ inputs: need(inputs, 'inputs') }], { timeoutMs: 30 * 60_000 });
+    return runApp('upgrade-swap:apply', [{ rbIds: need(rbIds, 'rbIds') }], { timeoutMs: 30 * 60_000 });
+  })
+);
+
+// ---------- Stores ----------
+
+tool(
+  'store_cart_add',
+  'Add store matches (from find_sources) to the real Qobuz or Beatport cart of the signed-in Track Lab account. Lossy matches are refused. Nothing is bought; Ben checks out himself.',
+  {
+    store: z.enum(['qobuz', 'beatport']),
+    matches: anyRows.describe('Store matches as find_sources returns them'),
+  },
+  async ({ store, matches }) => runApp('store-cart-add', [{ matches, source: store }], { timeoutMs: 30 * 60_000 })
+);
+
+tool(
+  'store_cart_check',
+  'Which of these tracks are already in the Qobuz or Beatport cart of the first Track Lab account. `known: false` means the cart couldn\'t be read (and why).',
+  {
+    store: z.enum(['qobuz', 'beatport']),
+    items: z.array(z.object({ trackId: z.string(), articleId: z.string().optional() })).describe('Track ids (and Qobuz article ids) from store matches'),
+  },
+  async ({ store, items }) => runApp('store-cart-check', [{ store, items }])
+);
+
+tool(
+  'download_purchases',
+  'Download purchased tracks (store matches Ben owns, from find_sources or list_purchases) into the intake folder through the accounts that bought them: lossless converted to AIFF, lossy kept apart, never overwriting, never re-fetching something Ben deleted. download_track does a single track.',
+  { matches: anyRows.describe('Store matches with source and trackId') },
+  async ({ matches }) => runApp('store-download-purchases', [{ matches }], { timeoutMs: 2 * 60 * 60_000 })
+);
+
+// ---------- Tracks and files ----------
+
+tool(
+  'scan_intake',
+  'Sort new music: scan the intake folder (or another folder) and read every track\'s tags, format and health, ready for organize_tracks and autopopulate_tags.',
+  { sourceDir: z.string().optional().describe('Default: the intake folder (organizeSourceDir) in settings') },
+  async ({ sourceDir }) => guarded(async () => {
+    const dir = sourceDir || ((await invokeApp('get-config')).result as { organizeSourceDir?: string })?.organizeSourceDir;
+    return runApp('scan-tracks', [{ sourceDir: need(dir, 'sourceDir (no intake folder is set)') }], { timeoutMs: 30 * 60_000 });
+  })
+);
+
+tool(
+  'track_info',
+  'One file\'s tags, format, DJ data and health as the track info editor shows it. With includeArt, its album art is saved to a file and the path returned.',
+  { filePath: z.string(), includeArt: z.boolean().optional() },
+  async ({ filePath, includeArt }) => guarded(async () => {
+    const info = (await invokeApp('get-track-info', [{ filePath }])).result;
+    if (!includeArt) return reply(info);
+    const art = (await invokeApp('get-track-album-art', [{ filePath }])).result as string | null;
+    let artPath: string | null = null;
+    const m = art && /^data:image\/(\w+);base64,(.*)$/s.exec(art);
+    if (m) {
+      await fs.mkdir(RESULTS_DIR, { recursive: true });
+      artPath = path.join(RESULTS_DIR, `art-${Date.now()}.${m[1] === 'jpeg' ? 'jpg' : m[1]}`);
+      await fs.writeFile(artPath, Buffer.from(m[2], 'base64'));
+    }
+    return reply({ info, artPath });
+  })
+);
+
+tool(
+  'update_track_tags',
+  'Write tags to a file, as saving the track info editor does (journaled; may rewrite the file). Only the tags given change.',
+  {
+    filePath: z.string(),
+    title: z.string().optional(), artist: z.string().optional(), album: z.string().optional(),
+    year: z.string().optional(), genre: z.string().optional(), label: z.string().optional(),
+    key: z.string().optional(), bpm: z.string().optional(), remixer: z.string().optional(),
+    comment: z.string().optional(),
+    albumArt: z.string().optional().describe('Path to an image to embed'),
+  },
+  async (params) => runApp('update-track-tags', [params])
+);
+
+tool(
+  'autopopulate_tags',
+  'Fill in missing tags (album, year, genre, label, key, BPM, art) from Spotify and the stores for tracks from scan_intake. Already-filled tracks are skipped unless force.',
+  { tracks: anyRows.describe('Rows from scan_intake'), force: z.boolean().optional() },
+  async ({ tracks, force }) => runApp('autopopulate-tracks', [{ tracks, force }], { timeoutMs: 60 * 60_000 })
+);
+
+tool(
+  'aiff_header',
+  'AIFF files whose header says "compressed" when they aren\'t (CDJs refuse them): "diagnose" one, or "repair" it in place (journaled).',
+  { action: z.enum(['diagnose', 'repair']), filePath: z.string() },
+  async ({ action, filePath }) => runApp(action === 'diagnose' ? 'diagnose-aiff-header' : 'repair-aiff-header', [filePath])
+);
+
+tool(
+  'track_file',
+  'Act on one audio file as the Library page does: "convert_to_aiff" (new AIFF beside it), "fix" (convert to AIFF for DJ gear; deleteOriginal moves the old file to the Trash), "reencode_mp3" (320 kbps), "archive" (move into the archive), "delete" (to the Trash). All journaled; confirm deletes with Ben.',
+  {
+    action: z.enum(['convert_to_aiff', 'fix', 'reencode_mp3', 'archive', 'delete']),
+    filePath: z.string(),
+    deleteOriginal: z.boolean().optional().describe('For fix / reencode_mp3 (default false)'),
+  },
+  async ({ action, filePath, deleteOriginal }) => {
+    const channel = { convert_to_aiff: 'convert-track', fix: 'fix-track-file', reencode_mp3: 'reencode-track-file', archive: 'archive-track-file', delete: 'delete-track-file' }[action];
+    const args = action === 'fix' || action === 'reencode_mp3' ? { filePath, deleteOriginal: deleteOriginal ?? false } : { filePath };
+    return runApp(channel, [args], { timeoutMs: 15 * 60_000 });
+  }
+);
+
+tool(
+  'organize_tracks',
+  'Organize by artist: move scanned intake tracks into the library (Artist/Title), skipping ignored ones and reporting conflicts with files already there; then settle a conflict by keeping the incoming or the existing file. Moves are journaled.',
+  {
+    action: z.enum(['organize', 'resolve_conflict']),
+    tracks: z.array(z.object({ filePath: z.string(), ignored: z.boolean().optional(), isHealthy: z.boolean().optional() })).optional().describe('For organize: rows from scan_intake'),
+    incomingPath: z.string().optional(), existingPath: z.string().optional(), targetPath: z.string().optional(),
+    keep: z.enum(['incoming', 'existing']).optional(),
+  },
+  async (a) => guarded(async () => {
+    if (a.action === 'organize') {
+      const tracks = need(a.tracks, 'tracks').map((t) => ({ ...t, ignored: t.ignored ?? false }));
+      return runApp('organize-tracks', [{ tracks }], { timeoutMs: 60 * 60_000 });
+    }
+    return runApp('organize-resolve-conflict', [{
+      incomingPath: need(a.incomingPath, 'incomingPath'), existingPath: need(a.existingPath, 'existingPath'),
+      targetPath: need(a.targetPath, 'targetPath'), keep: need(a.keep, 'keep'),
+    }]);
+  })
+);
+
+tool(
+  'migrate_archive',
+  'Move the archive folder somewhere else (every archived file, journaled) and point settings at the new place.',
+  { oldPath: z.string(), newPath: z.string() },
+  async ({ oldPath, newPath }) => runApp('migrate-archive', [{ oldPath, newPath }], { timeoutMs: 2 * 60 * 60_000 })
+);
+
+tool(
+  'reveal',
+  'Show a file in Finder, or open a web page in Ben\'s browser.',
+  { filePath: z.string().optional(), url: z.string().optional() },
+  async ({ filePath, url: link }) => guarded(async () => (filePath
+    ? runApp('show-in-finder', [{ filePath }])
+    : runApp('open-external', [{ url: need(link, 'filePath or url') }])))
+);
+
+// ---------- Jobs, drives, restore, Splice ----------
+
+tool(
+  'jobs',
+  'Track Lab\'s job queue (library scans, USB health scans, catalog exports, Claude jobs): list jobs, enqueue one (optionally waiting for its result), wait for one, or cancel one. The window\'s Activity panel shows the same queue.',
+  {
+    action: z.enum(['list', 'enqueue', 'wait', 'cancel']),
+    type: z.string().optional().describe('For enqueue: library-scan, library-health, album-art-scan, catalog-export, usb-health-scan, claude-ask, claude-track-tags, claude-soundcloud, …'),
+    params: z.record(z.string(), z.unknown()).optional().describe('For enqueue: the job\'s parameters'),
+    contextKey: z.string().optional().describe('For enqueue: groups shared results (default "claude")'),
+    wait: z.boolean().optional().describe('For enqueue: wait for the result'),
+    jobId: z.string().optional().describe('For wait / cancel'),
+  },
+  async ({ action, type, params, contextKey, wait, jobId }) => guarded(async () => {
+    if (action === 'list') return runApp('job-list');
+    if (action === 'wait') return runApp('job-wait', [{ jobId: need(jobId, 'jobId') }], { timeoutMs: 3 * 60 * 60_000 });
+    if (action === 'cancel') return runApp('job-cancel', [{ jobId: need(jobId, 'jobId') }]);
+    const job = { type: need(type, 'type'), params: params ?? {}, contextKey: contextKey || 'claude' };
+    return wait ? runApp('job-enqueue-and-wait', [job], { timeoutMs: 3 * 60 * 60_000 }) : runApp('job-enqueue', [job]);
+  })
+);
+
+tool(
+  'volumes',
+  'Drives: the mounted volumes Track Lab sees (the library drive flagged), hide one from the list ("exclude"), or the volumes a restore can pull from.',
+  { action: z.enum(['list', 'exclude', 'list_for_restore']), name: z.string().optional().describe('For exclude: the volume name') },
+  async ({ action, name }) => guarded(async () => {
+    if (action === 'list') return runApp('list-volumes');
+    if (action === 'list_for_restore') return runApp('restore-list-volumes');
+    return runApp('exclude-volume', [{ name: need(name, 'name') }]);
+  })
+);
+
+tool(
+  'restore_library',
+  'Restore missing tracks listed in a Rekordbox XML: copy them back from USB drives and re-download them from Beatport/Qobuz purchases into a staging folder, optionally rewriting the XML to point at them; or abort a running restore.',
+  {
+    action: z.enum(['run', 'abort']),
+    options: z.object({
+      xmlPath: z.string(),
+      libraryRoot: z.string(),
+      stageDir: z.string(),
+      sources: z.object({ usb: z.boolean(), beatport: z.boolean(), qobuz: z.boolean(), soundcloud: z.boolean().optional() }),
+      concurrency: z.number().optional(),
+      usbVolumesAllowlist: z.array(z.string()).optional(),
+      usbTagMatching: z.boolean().optional(),
+      rewriteXml: z.boolean().optional(),
+    }).optional().describe('For run'),
+  },
+  async ({ action, options }) => guarded(async () => {
+    if (action === 'abort') return runApp('restore-abort');
+    const o = need(options, 'options');
+    return runApp('restore-run', [{ options: { ...o, concurrency: o.concurrency ?? 2, sources: { soundcloud: false, ...o.sources } } }], { timeoutMs: 6 * 60 * 60_000 });
+  })
+);
+
+tool(
+  'splice',
+  'Splice recovery for an Ableton project: "status" / "sign_in"; "scan" an .als for missing samples; "classify" them into owned / buyable with credits / not found; "download_owned"; "credits_balance"; "buy_with_credits" (spends Ben\'s Splice credits; only with his go-ahead).',
+  {
+    action: z.enum(['status', 'sign_in', 'scan', 'classify', 'download_owned', 'credits_balance', 'buy_with_credits']),
+    alsPath: z.string().optional().describe('For scan'),
+    missing: anyRows.optional().describe('For classify: the missing samples from scan'),
+    items: anyRows.optional().describe('For download_owned / buy_with_credits: rows from classify'),
+  },
+  async ({ action, alsPath, missing, items }) => guarded(async () => {
+    switch (action) {
+      case 'status': return runApp('splice-login-status');
+      case 'sign_in': return runApp('splice-start-login', [], { timeoutMs: 15 * 60_000 });
+      case 'scan': return runApp('splice-scan', [{ alsPath: need(alsPath, 'alsPath') }]);
+      case 'classify': return runApp('splice-classify', [{ missing: need(missing, 'missing') }], { timeoutMs: 30 * 60_000 });
+      case 'download_owned': return runApp('splice-download-owned', [{ items: need(items, 'items') }], { timeoutMs: 60 * 60_000 });
+      case 'credits_balance': return runApp('splice-credits-balance');
+      default: return runApp('splice-buy-credits', [{ items: need(items, 'items') }], { timeoutMs: 60 * 60_000 });
+    }
+  })
+);
+
+// ---------------------------------------------------------------------------
 // Start server
 // ---------------------------------------------------------------------------
 async function main() {
@@ -828,6 +1403,7 @@ async function main() {
 
   // Close the shared store windows when the client goes away.
   const shutdown = () => {
+    flushOpLogSync();
     void releaseSharedBrowsers().catch(() => {}).finally(() => process.exit(0));
   };
   process.stdin.on('end', shutdown);

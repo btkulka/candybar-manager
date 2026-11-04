@@ -20,9 +20,18 @@ export const AUTO_SELECT_CONFIDENCE = 0.75;
 /** At or above this a match reads as "Exact match". */
 export const EXACT_MATCH_CONFIDENCE = 0.9;
 
+/** Claude's verdict on the record, when Claude picked or checked this match. */
+function claudeConfidence(m: QobuzCartMatch): 'high' | 'medium' | 'low' | null {
+  return m.finder?.by === 'claude' && m.finder.verdict !== 'none' ? m.finder.confidence : null;
+}
+
 /** The match is for a different version than the one asked for: a remix of an
- *  original, the original of a remix, a sped-up edit. Still offered, flagged. */
+ *  original, the original of a remix, a sped-up edit. Still offered, flagged.
+ *  Claude reading the version as right (high or medium) outweighs the string
+ *  score's guess, which a SoundCloud title's "[FREE DL]" can throw off. */
 export function isOtherVersion(m: QobuzCartMatch): boolean {
+  const claude = claudeConfidence(m);
+  if (claude === 'high' || claude === 'medium') return false;
   return (m.scoreParts?.penalty ?? 0) > 0;
 }
 
@@ -44,6 +53,10 @@ export function matchPillHtml(m: QobuzCartMatch): string {
   if (isReleaseMatch(m)) {
     return pill('warn', 'Whole release — check', `Qobuz matched the whole release, not this one track, so the name and price may be the release's. Open it on Qobuz before buying. ${sure}`);
   }
+  const claude = claudeConfidence(m);
+  if (claude === 'high') return pill('ok', 'Exact match', 'Claude checked the artist, title and version against the store listing.');
+  if (claude === 'medium') return pill('info', 'Close match', 'Claude thinks this is the record, with one detail a judgment call. Worth a quick listen.');
+  if (claude === 'low') return pill('warn', 'Best guess — check', "Claude's best guess at the record. Listen before you buy.");
   if (m.confidence >= EXACT_MATCH_CONFIDENCE) return pill('ok', 'Exact match', sure);
   if (m.confidence >= AUTO_SELECT_CONFIDENCE) return pill('info', 'Close match', `${sure} Worth a quick listen.`);
   return pill('warn', 'Close match — check', `${sure} Listen before you buy.`);
@@ -72,6 +85,9 @@ export function isCompressedOnly(m: QobuzCartMatch): boolean {
 /** Why a track has nothing to buy, as a sentence. */
 export function notForSaleReason(m: QobuzCartMatch): string {
   if (m.status === 'error') return "Track Lab couldn't search the stores for this one. Check the list again later.";
+  if (m.finder?.by === 'claude' && m.finder.verdict === 'none') {
+    return m.finder.note ? `Claude: ${m.finder.note}` : 'Claude checked Qobuz and Beatport, and neither sells this record.';
+  }
   if (isCompressedOnly(m)) {
     const store = m.source ? STORE_LABEL[m.source] : 'The store';
     const what = m.qobuzTrack?.quality ? ` (${m.qobuzTrack.quality})` : '';
@@ -92,9 +108,14 @@ export function notForSalePillHtml(m: QobuzCartMatch): string {
  *  the release. A release-level Qobuz hit carries the whole release's title
  *  and price ("CRISIS VISION", $12.55), so it's offered but never pre-ticked. */
 export function autoSelectable(m: QobuzCartMatch): boolean {
-  if (m.status !== 'matched' || m.lossless !== true || m.confidence < AUTO_SELECT_CONFIDENCE) return false;
-  if (isOtherVersion(m) || m.scoreParts?.artistFloored) return false;
+  if (m.status !== 'matched' || m.lossless !== true) return false;
   if (m.source === 'qobuz' && (m.albumLevel !== false || !m.qobuzTrack?.trackResolved)) return false;
+  // Claude's word decides when it checked the record: only a sure pick is
+  // ticked, whatever the string score says.
+  const claude = claudeConfidence(m);
+  if (claude) return claude === 'high';
+  if (m.confidence < AUTO_SELECT_CONFIDENCE) return false;
+  if (isOtherVersion(m) || m.scoreParts?.artistFloored) return false;
   return true;
 }
 
@@ -244,6 +265,42 @@ async function addBatches(
     } finally {
       off();
     }
+  }
+}
+
+/** The tracks Track Lab remembers adding to one store, against that store's
+ *  real cart. A track leaves the cart when it's bought or taken out, so `gone`
+ *  is also what a finished checkout has to download. */
+export type CartReconcile = {
+  inCart: StoreMatch[];
+  gone: StoreMatch[];
+  /** False when the store couldn't be read: everything stays in `inCart`. */
+  checked: boolean;
+  /** The store's cart is empty (only ever true when `checked`). */
+  empty: boolean;
+};
+
+export async function reconcileWithCart(store: Store, items: StoreMatch[]): Promise<CartReconcile> {
+  const unchecked: CartReconcile = { inCart: items, gone: [], checked: false, empty: false };
+  if (items.length === 0) return unchecked;
+  try {
+    const res = await window.candybar.storeCartCheck(store, items.map(m => ({ trackId: m.trackId, articleId: m.articleId })));
+    if (!res.known) {
+      console.log(`[cart-check] ${store}: ${res.reason}`);
+      return unchecked;
+    }
+    if (res.empty) return { inCart: [], gone: items, checked: true, empty: true };
+    if (res.present === null) return unchecked;
+    const present = new Set(res.present);
+    return {
+      inCart: items.filter(m => present.has(m.trackId)),
+      gone: items.filter(m => !present.has(m.trackId)),
+      checked: true,
+      empty: false,
+    };
+  } catch (err) {
+    console.log(`[cart-check] ${store}: ${getErrorMessage(err)}`);
+    return unchecked;
   }
 }
 

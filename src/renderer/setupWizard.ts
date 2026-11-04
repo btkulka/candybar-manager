@@ -12,8 +12,8 @@
  * requestOpenSetup(step). The side-nav badge counts what's still not set up.
  */
 
-import type { AppConfig, StoreAccount } from '../types';
-import { escapeHtml, getErrorMessage, plural, setActiveTab, setValue, showToast, trapDialogFocus, captureFocusReturn, checkSpotifyConnection, checkStoreConnections } from './shared';
+import type { AppConfig, SoundCloudSignIn, StoreAccount } from '../types';
+import { escapeHtml, getErrorMessage, plural, setActiveTab, setValue, showToast, trapDialogFocus, captureFocusReturn, checkSpotifyConnection, checkSoundCloudConnection, checkStoreConnections } from './shared';
 import { setCurrentArchivePath, setLibraryRootDisplay, setRekordboxBackupDir, setRekordboxEnabled, setStoreCredentials } from './settings';
 import { autoRefreshLibrary } from './library';
 import { startTour } from './tour';
@@ -66,6 +66,8 @@ let rekordboxCheck: { state: 'idle' | 'checking' | 'ok' | 'error'; message: stri
 let spotifyCheck: { state: 'idle' | 'checking' | 'ok' | 'error'; message: string } = { state: 'idle', message: '' };
 let storeSignedIn: Record<Store, number> = { qobuz: 0, beatport: 0 };
 let storeBusy: Store | null = null;
+let soundcloudStatus: SoundCloudSignIn | null = null;
+let soundcloudBusy = false;
 // Where Rekordbox safety backups go when nothing's been chosen (next to the
 // library); saved only if someone picks a different folder.
 let defaultBackupDir = '';
@@ -440,15 +442,16 @@ const VIEWS: Record<StepId, () => StepView> = {
 
   stores: () => ({
     html: `
-      ${heading('Step 5 of 5', 'Sign in to your music stores', 'Optional. Sign in to Qobuz and Beatport to search them, fill your carts and re-download what you\'ve bought. You can add more than one account later in Settings.')}
+      ${heading('Step 5 of 5', 'Sign in to your music stores', 'Optional. Sign in to Qobuz and Beatport to search them, fill your carts and re-download what you\'ve bought, and to SoundCloud for your likes, private sets and free downloads. You can add more store accounts later in Settings.')}
       <div class="setup-stores">
         ${storeCard('qobuz', 'Qobuz', 'Full-quality downloads of almost everything.')}
         ${storeCard('beatport', 'Beatport', 'The DJ store: club mixes, extended versions and remixes.')}
+        ${soundcloudCard()}
       </div>
       <p class="setup-note">${ICON.shield}<span>Signing in opens the store's own page. Your password goes to the store, never to Track Lab.</span></p>
     `,
     buttons: [skipButton('stores'), button('btn-primary', 'Continue', () => {
-      if (storeSignedIn.qobuz + storeSignedIn.beatport > 0) outcome.stores = 'done';
+      if (storeSignedIn.qobuz + storeSignedIn.beatport > 0 || soundcloudStatus?.signedIn) outcome.stores = 'done';
       else outcome.stores ??= 'skipped';
       next();
     })],
@@ -456,6 +459,7 @@ const VIEWS: Record<StepId, () => StepView> = {
       body.querySelectorAll<HTMLButtonElement>('[data-sign-in]').forEach((b) => {
         b.addEventListener('click', () => void signIn(b.dataset.signIn as Store));
       });
+      body.querySelector('[data-soundcloud-sign-in]')?.addEventListener('click', () => void signInSoundCloud());
     },
   }),
 
@@ -465,7 +469,7 @@ const VIEWS: Record<StepId, () => StepView> = {
       { id: 'folders', label: 'New downloads and set-aside folders', later: 'Change them in Settings → Library' },
       { id: 'rekordbox', label: 'Rekordbox', later: 'Turn it on or off in Settings → Library' },
       { id: 'spotify', label: 'Spotify', later: 'Connect it any time in Settings → Spotify' },
-      { id: 'stores', label: 'Qobuz and Beatport', later: 'Sign in any time in Settings' },
+      { id: 'stores', label: 'Qobuz, Beatport and SoundCloud', later: 'Sign in any time in Settings' },
     ];
     return {
       html: `
@@ -505,6 +509,25 @@ function storeCard(store: Store, name: string, desc: string): string {
       <p>${escapeHtml(desc)}</p>
       <button type="button" class="${n > 0 ? 'btn-ghost' : 'btn-secondary'}" data-sign-in="${store}" ${busy ? 'disabled' : ''}>
         ${busy ? 'Waiting for you to sign in…' : n > 0 ? 'Add another account' : `Sign in to ${name}`}
+      </button>
+    </div>
+  `;
+}
+
+/** SoundCloud has one sign-in (the Chrome profile every SoundCloud run
+ *  opens), not a list of accounts. */
+function soundcloudCard(): string {
+  const signedIn = !!soundcloudStatus?.signedIn;
+  const who = soundcloudStatus?.username || soundcloudStatus?.permalink || '';
+  return `
+    <div class="setup-store setup-store--soundcloud">
+      <div class="setup-store-head">
+        <strong>SoundCloud</strong>
+        <span class="status-pill ${signedIn ? 'status-pill--ok' : ''}">${signedIn ? (who ? `Signed in as ${escapeHtml(who)}` : 'Signed in') : 'Not signed in'}</span>
+      </div>
+      <p>Your likes, private sets and free downloads. Signing in here signs in every SoundCloud run, including Claude's.</p>
+      <button type="button" class="${signedIn ? 'btn-ghost' : 'btn-secondary'}" data-soundcloud-sign-in ${soundcloudBusy ? 'disabled' : ''}>
+        ${soundcloudBusy ? 'Waiting for you to sign in…' : signedIn ? 'Check again' : 'Sign in to SoundCloud'}
       </button>
     </div>
   `;
@@ -606,6 +629,29 @@ async function refreshStoreCounts(): Promise<void> {
       beatport: Object.values(s.beatportAccounts ?? {}).filter(Boolean).length,
     };
   } catch { /* shows as not signed in */ }
+  try {
+    soundcloudStatus = await window.candybar.soundcloudSignInStatus();
+  } catch { /* shows as not signed in */ }
+}
+
+async function signInSoundCloud(): Promise<void> {
+  if (soundcloudBusy) return;
+  soundcloudBusy = true;
+  render();
+  try {
+    const res = await window.candybar.soundcloudSignIn();
+    if (!res.success) showToast('error', 'Couldn\'t sign in to SoundCloud', res.error ?? 'Something went wrong.');
+    else if (!res.status?.signedIn) showToast('warning', 'Not signed in', 'The sign-in window closed before you finished.');
+    soundcloudStatus = res.status ?? soundcloudStatus;
+  } catch (err) {
+    showToast('error', 'Sign-in didn\'t work', getErrorMessage(err));
+  } finally {
+    soundcloudBusy = false;
+  }
+  if (soundcloudStatus?.signedIn) outcome.stores = 'done';
+  // The top bar's pill reads the same note, so it updates without a second check.
+  void checkSoundCloudConnection(false);
+  if (current === 'stores') render();
 }
 
 async function signIn(store: Store): Promise<void> {

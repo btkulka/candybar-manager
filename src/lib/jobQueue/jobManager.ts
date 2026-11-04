@@ -28,6 +28,9 @@ export class JobManager extends EventEmitter {
   private running = new Set<JobId>();
   private sharedStore = new SharedResultStore();
   private maxConcurrent: number;
+  /** Wraps each job's run (the app runs it inside the job's operation, so its
+   *  logs land in that operation's record). */
+  runWrapper: ((info: JobInfo, run: () => Promise<unknown>) => Promise<unknown>) | null = null;
 
   constructor(maxConcurrent = 1) {
     super();
@@ -204,7 +207,8 @@ export class JobManager extends EventEmitter {
       if (signal.aborted) onAbort();
       else signal.addEventListener('abort', onAbort, { once: true });
     });
-    const runPromise = Promise.resolve().then(() => def.run(ctx));
+    const wrap = this.runWrapper;
+    const runPromise = Promise.resolve().then(() => wrap ? wrap(this.toJobInfo(record), () => def.run(ctx)) : def.run(ctx));
     // If the abort wins the race the job may still finish or throw later; don't
     // let that surface as an unhandled rejection.
     runPromise.catch(() => {});
@@ -227,7 +231,7 @@ export class JobManager extends EventEmitter {
       record.result = null;
       record.completedAt = Date.now();
       record.resolve(result);
-      this.emit('job-completed', this.toJobInfo(record));
+      this.emit('job-completed', this.toJobInfo(record), result);
     } catch (err) {
       if (timeout) clearTimeout(timeout);
       const message = err instanceof Error ? err.message : String(err);

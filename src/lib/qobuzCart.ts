@@ -72,7 +72,17 @@ export type QobuzCartMatch = {
   albumLevel?: boolean;
   /** Why a match needs a second look (release not resolved, lossy-only tier). */
   note?: string;
+  /** A SoundCloud set offers this track free; the store match is the fallback
+   *  for when the free file turns out compressed or doesn't come through. */
+  free?: import('../types').SetFreeDownload;
+  /** What "Get free downloads" did for it (renderer-side, after the run). */
+  freeOutcome?: import('./freeSources').FreeUpgradeOutcome;
+  /** Who picked this match: Claude, or the plain search. */
+  finder?: import('../types').MatchFinder;
 };
+
+/** Every store result one track's search saw, for the Claude finder to judge. */
+export type StoreCandidates = { qobuz: QobuzTrack[]; beatport: BeatportTrack[] };
 
 // ========== Batch Search ==========
 
@@ -86,7 +96,7 @@ function parseQualityScore(quality: string | null): number {
   return Number(match[1]) * Number(match[2]);
 }
 
-type QobuzResolution = {
+export type QobuzResolution = {
   track: QobuzTrack;
   parts?: StoreScoreParts;
   lossless: boolean;
@@ -96,7 +106,7 @@ type QobuzResolution = {
 /** Pin a Qobuz release hit to the requested track and its best lossless tier.
  *  When that can't be done the hit comes back unchanged (still release-level)
  *  with a note saying why. */
-async function resolveQobuzHit(hit: QobuzTrack, want: QobuzCartTrackInput): Promise<QobuzResolution> {
+export async function resolveQobuzHit(hit: QobuzTrack, want: QobuzCartTrackInput): Promise<QobuzResolution> {
   const albumGuess = Boolean(hit.quality);
   let pick: ReturnType<typeof pickReleaseTrack<{ id: string; title: string; artist: string }>>;
   try {
@@ -136,7 +146,8 @@ async function resolveQobuzHit(hit: QobuzTrack, want: QobuzCartTrackInput): Prom
 export async function batchSearchQobuz(
   tracks: QobuzCartTrackInput[],
   onProgress?: (current: number, total: number, currentTrack: string) => void,
-  onMatch?: (match: QobuzCartMatch) => void
+  onMatch?: (match: QobuzCartMatch) => void,
+  onCandidates?: (key: string, candidates: StoreCandidates) => void
 ): Promise<QobuzCartMatch[]> {
   const results: QobuzCartMatch[] = [];
 
@@ -166,6 +177,7 @@ export async function batchSearchQobuz(
           return [] as BeatportTrack[];
         }),
       ]);
+      onCandidates?.(track.key, { qobuz: qobuzTracks, beatport: beatportTracks });
 
       let bestQobuzMatch: QobuzTrack | null = null;
       let bestQobuzScore = 0;

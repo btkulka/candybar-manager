@@ -1,5 +1,5 @@
 import path from 'path';
-import type { ClaudeTrackTagsParams, SourcingReviewRow, TrackTagField } from '../../types';
+import type { ClaudeTrackTagsParams, FinderTrack, SourcingReviewRow, TrackTagField } from '../../types';
 
 // Prompts and result schemas for the Claude jobs. The review rules come from
 // the playlist-sourcing skill's past reviews, so they hold for anyone running
@@ -68,6 +68,61 @@ The summary is at most two sentences: how many to buy, and what needed judgment.
 
 Rows:
 ${JSON.stringify(rows, null, 1)}`;
+}
+
+// ---------- Store finder ----------
+
+export const STORE_FINDER_SCHEMA = {
+  type: 'object',
+  properties: {
+    picks: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          key: { type: 'string' },
+          ref: { type: 'string' },
+          confidence: { type: 'string', enum: ['high', 'medium', 'low'] },
+          note: { type: 'string' },
+        },
+        required: ['key', 'ref', 'confidence', 'note'],
+        additionalProperties: false,
+      },
+    },
+  },
+  required: ['picks'],
+  additionalProperties: false,
+};
+
+/** One finder session's prompt: a few wanted tracks, each with the candidates
+ *  the plain search saw. Without `canSearch` (the app's tools aren't built)
+ *  Claude judges those candidates only. */
+export function buildStoreFinderPrompt(tracks: FinderTrack[], canSearch: boolean): string {
+  const search = canSearch
+    ? `When no candidate is the record, search again with search_store_catalog before giving up: the artist and the title without the version, the title alone, the remixer with the title, or the other store. Two or three searches per track at most. Refs from those searches are valid picks.`
+    : `You can't search; pick from the candidates given, or answer "" when none is the record.`;
+  return `Find the store record a DJ wants for each track below: the one to buy on Beatport or Qobuz. Answer with one pick per track key.
+
+Each track lists candidates from the app's own search: a ref, the store, artists, title, label, release date, and the plain search's 0-1 score. searchPick is what that string-matching search chose. It is often right, so keep it when it is, but check it like any other candidate.
+
+How to tell the right record:
+- Artist first. A main artist (or, for a remix, the remixer) has to be on the candidate. The same title by someone else is another record, however high its score.
+- Then the version. A bare title, "Original Mix" and "Extended Mix" are the same recording; for a bare or Original request pick the Extended Mix when there is one, because a DJ wants the long cut. A request that names a remix, edit, bootleg, VIP or dub wants exactly that version (its extended cut is fine); the original, or another remixer's mix, is a different record. A Radio Edit request is happy with the Extended or Original Mix.
+- Wanted titles from SoundCloud carry noise like "[FREE DL]", "*Premiere*", "OUT NOW" or a label tag in brackets. Ignore it.
+- Qobuz candidates are releases (a single, EP or album), not tracks. Pick one only when it carries the track; the app finds the track on it and checks it's sold lossless. A Qobuz quality of null means the release may only be sold compressed, so prefer a lossless candidate of the same record.
+- Beatport sells every track lossless. When both stores have the same record, pick Beatport.
+
+${search}
+
+For every key:
+- ref: the chosen candidate's ref, or "" when neither store sells this record (searchPick is another record and nothing else fits). If you can't tell because a search failed, keep searchPick with low confidence and say so in the note.
+- confidence: "high" when artist, title and version all agree; "medium" when one detail is a judgment call; "low" for a best guess.
+- note: one short sentence for the DJ when your pick differs from searchPick, when you made a version call, or when nothing is sold ("Beatport only has the Radio Edit; picked the Extended Mix on Qobuz."). Use "" when you simply kept searchPick.
+
+${HOUSE_RULES}
+
+Tracks:
+${JSON.stringify(tracks, null, 1)}`;
 }
 
 // ---------- Track tags ----------

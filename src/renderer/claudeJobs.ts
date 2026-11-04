@@ -1,5 +1,5 @@
 import type { ClaudeStatus, JobProgress } from '../types';
-import { showToast, requestOpenSettings } from './shared';
+import { showToast } from './shared';
 
 // Starting and following Claude jobs from the renderer. Jobs run in main on
 // the job queue; this enqueues one, streams its log lines, and settles with
@@ -115,7 +115,8 @@ export function describeClaudeStatus(s: ClaudeStatus): ClaudeStatusView {
   return { ready: true, tone: 'ok', label: `Connected · ${plan}`, detail: `Claude jobs run on your ${plan}${who ? `, ${who}` : ''}.${usage}` };
 }
 
-/** True when jobs can run. Otherwise says why and offers Settings → Claude. */
+/** True when jobs can run. Otherwise says why and offers Claude's settings
+ *  (in the Ask Claude drawer, behind the gear). */
 export async function ensureClaudeReady(): Promise<boolean> {
   let status: ClaudeStatus;
   try {
@@ -126,6 +127,9 @@ export async function ensureClaudeReady(): Promise<boolean> {
   }
   const view = describeClaudeStatus(status);
   if (view.ready) return true;
-  showToast('warning', view.label, view.detail, 8000, { label: 'Set up Claude', onClick: () => requestOpenSettings('claude') });
+  showToast('warning', view.label, view.detail, 8000, {
+    label: 'Set up Claude',
+    onClick: () => document.dispatchEvent(new CustomEvent('claude-chat:open', { detail: { view: 'settings' } })),
+  });
   return false;
 }

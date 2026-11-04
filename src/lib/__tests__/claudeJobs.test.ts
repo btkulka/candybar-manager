@@ -5,8 +5,13 @@ import type { SourcingReviewRow } from '../../types';
 
 describe('soundcloudArgs', () => {
   it('keeps account actions off unless asked', () => {
-    expect(soundcloudArgs({})).toEqual(['--sc-actions', 'none']);
-    expect(soundcloudArgs({ accountActions: true })).toEqual(['--sc-actions', 'follow,like,comment']);
+    expect(soundcloudArgs({})).toEqual(['--no-email', '--sc-actions', 'none']);
+    expect(soundcloudArgs({ accountActions: true })).toEqual(['--no-email', '--sc-actions', 'follow,like,comment']);
+  });
+
+  it('holds the saved email back when the form\'s email was cleared', () => {
+    expect(soundcloudArgs({ email: '   ' })).toContain('--no-email');
+    expect(soundcloudArgs({ email: 'x@y.z' })).not.toContain('--no-email');
   });
 
   it('maps the options to the downloader\'s flags', () => {

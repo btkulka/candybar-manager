@@ -318,6 +318,28 @@ export type CacheStatus = {
   libraryHealth: { valid: boolean; age: number | null; libraryRoot: string | null } | null;
 };
 
+/** Who the saved SoundCloud sign-in belonged to at its last check. The sign-in
+ *  itself is the 'soundcloud' Chrome profile that every SoundCloud run opens
+ *  (src/lib/soundcloudSession.ts); this is only the note each check leaves. */
+export type SoundCloudSignIn = {
+  signedIn: boolean;
+  username: string | null;
+  permalink: string | null;
+  url: string | null;
+  checkedAt: string;
+  reason?: string | null;
+};
+
+/** Ask Claude's first-run questions (src/lib/claude/userProfile.ts). A
+ *  skipped question stays unset. */
+export type ClaudeProfile = {
+  techSavvy?: 'simple' | 'comfortable' | 'technical';
+  rekordbox?: 'new' | 'regular' | 'expert';
+  gear?: 'usb' | 'controller' | 'both' | 'none';
+  /** When the questions were answered or skipped; they only show while unset. */
+  answeredAt: string;
+};
+
 export type StoreAccount = {
   id: string;
   /** Optional free-form identifier (kept for display). Auth no longer uses it. */
@@ -335,6 +357,17 @@ export type AppConfig = {
   claudeOauthToken: string;
   /** Model alias for Claude jobs ('opus', 'sonnet', …); empty is Claude Code's default. */
   claudeModel: string;
+  /** Find & buy has Claude pick each track's store record (falls back to the
+   *  plain search when Claude Code isn't ready). */
+  claudeFindMatches: boolean;
+  /** What Ben told Ask Claude about himself the first time it opened; tunes
+   *  how Claude answers (src/lib/claude/userProfile.ts). Null until answered
+   *  or skipped. */
+  claudeProfile: ClaudeProfile | null;
+  /** Given to free-download gates (Hypeddit &c) that won't release a file
+   *  without an email. Saving it is the go-ahead for every run (the app's,
+   *  Claude's and the CLI's); empty skips those gates. Kept in secrets.json. */
+  gateEmail: string;
   floatingConsoleEnabled: boolean;
   activeTab: string;
   checkCsvPath: string;
@@ -417,6 +450,14 @@ export type StoreCartResult = {
   totalCost: string;
 };
 
+/** Which of the tracks Track Lab added are still in the store's real cart.
+ *  `present` lists their trackIds; null when the cart holds things that can't
+ *  be matched to them. Unknown (signed out, store unreachable) is never read
+ *  as empty. */
+export type StoreCartCheck =
+  | { known: false; reason: string }
+  | { known: true; empty: boolean; present: string[] | null };
+
 /** A single row in the "already in library" bucket returned by
  *  `library-sourcing:run`. Minimal shape so the renderer can render the list
  *  and export playlists without additional round-trips. */
@@ -473,7 +514,43 @@ export type LibrarySourcingResult = {
   /** Inputs that had no library match and no store match — so the user can
    *  see what fully slipped through. */
   notFound: import('./lib/qobuzCart').QobuzCartTrackInput[];
+  /** Who picked the store matches this run: Claude, or the plain search
+   *  because Claude wasn't there (with why). */
+  finder: SourcingFinderSummary;
 };
+
+/** A track in a SoundCloud set that the set itself offers free: SoundCloud's
+ *  own download button, or a free link behind a gate (Hypeddit &c). The file's
+ *  format is only known once it lands, so the store match stays as a fallback. */
+export type SetFreeDownload = {
+  kind: 'native' | 'gate';
+  /** The track's SoundCloud page. */
+  url: string;
+  /** The title as the set lists it ("… [FREE DL]"). */
+  listedAs: string;
+  uploader: string;
+  gateHost: string | null;
+  /** One line for the UI: "SoundCloud download button", "Free download via hypeddit.com". */
+  reason: string;
+};
+
+/** How a row's store match was chosen. `claude` verdicts: kept the plain
+ *  search's pick, changed it to another record, found one the plain search
+ *  missed, or said the store doesn't sell it. */
+export type MatchFinder =
+  | { by: 'claude'; verdict: 'kept' | 'changed' | 'found' | 'none'; confidence: FinderConfidence; note: string }
+  | { by: 'search' };
+
+export type FinderConfidence = 'high' | 'medium' | 'low';
+
+export type SourcingFinderSummary = {
+  by: 'claude' | 'search';
+  /** Plain words for the summary line: what Claude did, or why it didn't run. */
+  note: string;
+};
+
+/** Progress of the Claude finder, on `library-sourcing:finder-progress`. */
+export type SourcingFinderProgress = { done: number; total: number; message: string };
 
 // ---------- Saved playlists (Find and buy → "Your playlists") ----------
 
@@ -659,7 +736,8 @@ export type JobType =
   | 'claude-ask'
   | 'claude-sourcing-review'
   | 'claude-track-tags'
-  | 'claude-soundcloud';
+  | 'claude-soundcloud'
+  | 'claude-store-finder';
 
 export type JobProgress = {
   jobId: string;
@@ -751,6 +829,47 @@ export type ClaudeTrackTagsResult = {
   notes: string;
 };
 
+/** One store result as the Claude finder sees it; `ref` names it back to the app. */
+export type FinderCandidate = {
+  /** 'bp:<track id>' or 'qz:<release id>'. */
+  ref: string;
+  store: 'beatport' | 'qobuz';
+  artists: string;
+  /** Beatport: the track with its mix. Qobuz: the release's title. */
+  title: string;
+  remixers?: string;
+  label?: string;
+  released?: string;
+  bpm?: number;
+  /** Qobuz only: the release's lossless tier ("24/96"), or null when it may be sold compressed only. */
+  quality?: string | null;
+  price?: string | null;
+  /** The plain search's 0..1 score against the wanted track. */
+  score?: number;
+};
+
+export type FinderTrack = {
+  key: string;
+  artist: string;
+  title: string;
+  album?: string;
+  durationSec?: number;
+  /** The plain search's pick, as a candidate ref, or null. */
+  searchPick: string | null;
+  candidates: FinderCandidate[];
+};
+
+/** Claude's answer for one track: a candidate ref, or '' for "not sold". */
+export type FinderPick = { key: string; ref: string; confidence: FinderConfidence; note: string };
+
+export type ClaudeStoreFinderParams = { tracks: FinderTrack[] };
+export type ClaudeStoreFinderResult = {
+  picks: FinderPick[];
+  /** Tracks whose session failed or never ran; they keep the plain search's match. */
+  unchecked: number;
+  firstError: string | null;
+};
+
 export type ClaudeSoundcloudParams = {
   /** A set link; empty means the signed-in account's likes. */
   setUrl?: string;
@@ -815,4 +934,10 @@ export type UsbHealthProgress = {
   current: number;
   total: number;
   currentFile?: string;
+};
+
+/** The top-bar update button's state, from the last GitHub check. */
+export type UpdateState = {
+  /** What's waiting ("3 changes on GitHub", "Track Lab 0.2.0"); null when up to date or not checked yet. */
+  available: string | null;
 };

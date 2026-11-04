@@ -2,7 +2,7 @@ import type { QobuzCartMatch } from '../lib/qobuzCart';
 import { cartUrl } from '../lib/storeUrls';
 import type {
   CsvPreview, StoreMatch, LibraryMatchedRow, LibraryProbableRow, SourcePlaylistInfo,
-  SavedSource, SavedSourceCounts, SavedSourceInput, SavedSourceKind,
+  SavedSource, SavedSourceCounts, SavedSourceInput, SavedSourceKind, SourcingFinderSummary,
 } from '../types';
 import { showToast, setStatus, escapeHtml, setValue, getErrorMessage, plural, formatPriceTotal, isReleaseMatch, requestOpenSettings } from './shared';
 import { confirmAction } from './confirmDialog';
@@ -12,10 +12,12 @@ import {
   type Store, STORE_LABEL, autoSelectable, isOtherVersion, parsePriceDollars, toStoreMatch,
   addToStoreCarts, isAddingToCart, toastCartOutcome, mergeAdded, uniqueByTrack,
   matchPillHtml, qualityHtml, notForSaleReason, notForSalePillHtml, isCompressedOnly, AUTO_SELECT_CONFIDENCE, revealInContent,
+  reconcileWithCart, type CartReconcile,
 } from './storeCart';
+import { isStoreCheckoutStep } from '../lib/mainGuards';
 import { exportM3u8, exportRekordbox, exportCsv } from './libraryExport';
 import { isArtistHeader, isTitleHeader } from '../lib/csvHeaders';
-import { attachSourcingReview, claudeVerdictHtml } from './claudeReview';
+import { attachSourcingReview, claudeVerdictHtml, SPINNER_SVG } from './claudeReview';
 
 // Find and buy tracks: a Spotify playlist, SoundCloud set or spreadsheet is
 // checked against the Rekordbox collection, the rest is searched on Qobuz and
@@ -75,12 +77,14 @@ const cartDownload = document.getElementById('source-cart-download') as HTMLElem
 const cartSection = document.getElementById('source-cart-section') as HTMLElement;
 const cartQobuzBlock = document.getElementById('source-cart-qobuz') as HTMLElement;
 const cartQobuzList = document.getElementById('source-cart-qobuz-list') as HTMLDivElement;
-const cartQobuzCount = document.getElementById('source-cart-qobuz-count') as HTMLSpanElement;
-const cartQobuzTotal = document.getElementById('source-cart-qobuz-total') as HTMLElement;
+const cartQobuzMeta = document.getElementById('source-cart-qobuz-meta') as HTMLElement;
+const cartQobuzGone = document.getElementById('source-cart-qobuz-gone') as HTMLElement;
 const cartBeatportBlock = document.getElementById('source-cart-beatport') as HTMLElement;
 const cartBeatportList = document.getElementById('source-cart-beatport-list') as HTMLDivElement;
-const cartBeatportCount = document.getElementById('source-cart-beatport-count') as HTMLSpanElement;
-const cartBeatportTotal = document.getElementById('source-cart-beatport-total') as HTMLElement;
+const cartBeatportMeta = document.getElementById('source-cart-beatport-meta') as HTMLElement;
+const cartBeatportGone = document.getElementById('source-cart-beatport-gone') as HTMLElement;
+const cartDownloadTitle = document.getElementById('source-cart-download-title') as HTMLElement;
+const cartDownloadText = document.getElementById('source-cart-download-text') as HTMLElement;
 const autoCheckoutQobuzBtn = document.getElementById('source-auto-checkout-qobuz') as HTMLButtonElement;
 const autoCheckoutBeatportBtn = document.getElementById('source-auto-checkout-beatport') as HTMLButtonElement;
 
@@ -150,6 +154,14 @@ let downloadFiredBeatport = false;
 let checkoutArmedAt: Record<Store, number | null> = { qobuz: null, beatport: null };
 /** How long after opening the cart a purchase still counts as this tab's. */
 const CHECKOUT_WATCH_MS = 3 * 60 * 60 * 1000;
+/** Each store's real cart as last read. Not saved: it's read again when the
+ *  drawer opens. Null until read, and after an add the read hasn't seen. */
+let cartChecks: Record<Store, CartReconcile | null> = { qobuz: null, beatport: null };
+let cartChecking = false;
+/** The panel reached checkout proper since this tab opened the cart. A
+ *  purchase confirmation only counts after one, so browsing your downloads
+ *  page never fires the post-checkout download. */
+const checkoutSeen: Record<Store, boolean> = { qobuz: false, beatport: false };
 /** True while a check is running: the picker, saved list and add strip stay locked. */
 let searching = false;
 
@@ -161,6 +173,16 @@ let sessionSources: Array<{ kind: SourceType; ref: string; name: string }> = [];
 let lastRunAt: number | null = null;
 /** Playlist metadata for the check that's running (from playlist-info). */
 let runPlaylistInfo: SourcePlaylistInfo | null = null;
+/** Who picked the store matches on screen: Claude, or the plain search (and why). */
+let finderInfo: SourcingFinderSummary | null = null;
+
+// A SoundCloud set's own free downloads ("Free on SoundCloud")
+/** Track keys ticked for "Get free downloads". */
+let selectedFree = new Set<string>();
+let fetchingFree = false;
+let freeAccountActions = false;
+let freeLine = '';
+let freeCount: { i: number; n: number } | null = null;
 
 // Saved playlists
 let savedSources: SavedSource[] = [];
@@ -213,29 +235,93 @@ function cartTotal(tracks: StoreMatch[]): string {
   return formatPriceTotal(tracks.reduce((s, t) => s + parsePriceDollars(t.price), 0), tracks.map(t => t.price));
 }
 
+/** One store's added tracks, split by its real cart once that's been read. */
+function cartView(store: Store): CartReconcile {
+  const list = store === 'qobuz' ? lastAddedQobuz : lastAddedBeatport;
+  const check = cartChecks[store];
+  if (!check) return { inCart: list, gone: [], checked: false, empty: false };
+  const gone = new Set(check.gone.map(m => m.trackId));
+  return { inCart: list.filter(m => !gone.has(m.trackId)), gone: list.filter(m => gone.has(m.trackId)), checked: check.checked, empty: check.empty };
+}
+
+/** Read both stores' carts and redraw what depends on them. */
+async function refreshCartChecks(): Promise<void> {
+  if (cartChecking || lastAddedQobuz.length + lastAddedBeatport.length === 0) return;
+  cartChecking = true;
+  renderCartStage();
+  try {
+    const [q, b] = await Promise.all([
+      reconcileWithCart('qobuz', lastAddedQobuz),
+      reconcileWithCart('beatport', lastAddedBeatport),
+    ]);
+    cartChecks = { qobuz: q, beatport: b };
+  } finally {
+    cartChecking = false;
+    renderCartStage();
+    renderCartHero();
+  }
+}
+
+function renderCartStore(store: Store, els: { block: HTMLElement; meta: HTMLElement; list: HTMLDivElement; gone: HTMLElement; checkout: HTMLButtonElement }) {
+  const remembered = store === 'qobuz' ? lastAddedQobuz : lastAddedBeatport;
+  els.block.style.display = remembered.length > 0 ? '' : 'none';
+  if (remembered.length === 0) return;
+  const label = STORE_LABEL[store];
+  const v = cartView(store);
+
+  els.meta.innerHTML = v.inCart.length > 0
+    ? `${escapeHtml(plural(v.inCart.length, 'track'))} · <strong>${escapeHtml(cartTotal(v.inCart))}</strong>`
+    : v.empty ? 'Cart is empty' : '';
+  els.list.style.display = v.inCart.length > 0 ? '' : 'none';
+  renderCartLines(els.list, v.inCart);
+
+  const note = cartChecking && !cartChecks[store]
+    ? `Checking what's in your ${label} cart…`
+    : v.gone.length === 0
+      ? ''
+      : v.inCart.length === 0
+        ? `Your ${label} cart no longer has the ${plural(v.gone.length, 'track')} Track Lab added: bought, or taken out.`
+        : `${plural(v.gone.length, 'other track')} Track Lab added ${v.gone.length === 1 ? 'is' : 'are'} no longer in your ${label} cart: bought, or taken out.`;
+  els.gone.hidden = !note;
+  els.gone.textContent = note;
+
+  // Nothing to drive through when the store's cart is empty.
+  els.checkout.disabled = v.empty;
+  els.checkout.setAttribute('data-tooltip-disabled', `Your ${label} cart is empty`);
+}
+
 function renderCartStage() {
-  const qTracks = lastAddedQobuz;
-  const bTracks = lastAddedBeatport;
+  renderCartStore('qobuz', { block: cartQobuzBlock, meta: cartQobuzMeta, list: cartQobuzList, gone: cartQobuzGone, checkout: autoCheckoutQobuzBtn });
+  renderCartStore('beatport', { block: cartBeatportBlock, meta: cartBeatportMeta, list: cartBeatportList, gone: cartBeatportGone, checkout: autoCheckoutBeatportBtn });
 
-  cartQobuzBlock.style.display = qTracks.length > 0 ? '' : 'none';
-  if (qTracks.length > 0) {
-    cartQobuzCount.textContent = plural(qTracks.length, 'track');
-    cartQobuzTotal.textContent = cartTotal(qTracks);
-    renderCartLines(cartQobuzList, qTracks);
-  }
-  cartBeatportBlock.style.display = bTracks.length > 0 ? '' : 'none';
-  if (bTracks.length > 0) {
-    cartBeatportCount.textContent = plural(bTracks.length, 'track');
-    cartBeatportTotal.textContent = cartTotal(bTracks);
-    renderCartLines(cartBeatportList, bTracks);
-  }
-  // One primary per view: the first store's checkout leads, the other follows.
-  autoCheckoutQobuzBtn.className = 'btn-primary';
-  autoCheckoutBeatportBtn.className = qTracks.length > 0 ? 'btn-secondary' : 'btn-primary';
+  const q = cartView('qobuz');
+  const b = cartView('beatport');
+  // One primary per view: the first store with something to check out leads;
+  // with nothing left in either cart, the download does.
+  const qLeads = lastAddedQobuz.length > 0 && !q.empty;
+  autoCheckoutQobuzBtn.className = qLeads ? 'btn-primary' : 'btn-secondary';
+  autoCheckoutBeatportBtn.className = !qLeads && lastAddedBeatport.length > 0 && !b.empty ? 'btn-primary' : 'btn-secondary';
 
-  const any = qTracks.length + bTracks.length > 0;
+  const gone = q.gone.length + b.gone.length;
+  const any = lastAddedQobuz.length + lastAddedBeatport.length > 0;
   cartDownload.style.display = any ? '' : 'none';
+  cartDownloadTitle.textContent = gone > 0 ? `${plural(gone, 'track')} left your carts` : 'Checked out already?';
+  cartDownloadText.textContent = gone > 0
+    ? 'If you checked out, download them into your new-music folder, ready to sort.'
+    : 'Download what you bought into your new-music folder, ready to sort.';
+  downloadPurchasesBtn.className = q.inCart.length + b.inCart.length === 0 && gone > 0 ? 'btn-primary' : 'btn-secondary';
   cartSection.style.display = any ? 'flex' : 'none';
+}
+
+/** Drop tracks that were downloaded (by input key) from the added lists:
+ *  bought and fetched, they're no longer anything to check out. */
+function pruneDownloaded(keys: Set<string>) {
+  if (keys.size === 0) return;
+  lastAddedQobuz = lastAddedQobuz.filter(m => !keys.has(m.input.key));
+  lastAddedBeatport = lastAddedBeatport.filter(m => !keys.has(m.input.key));
+  saveSourcesState();
+  renderCartStage();
+  updateBuyBar();
 }
 
 // ========== Picker ==========
@@ -339,10 +425,13 @@ function clearResults(): void {
   selectedBeatportIds = new Set();
   lastAddedQobuz = [];
   lastAddedBeatport = [];
+  cartChecks = { qobuz: null, beatport: null };
   checkoutArmedAt = { qobuz: null, beatport: null };
   sessionSources = [];
   lastRunAt = null;
   appendMode = false;
+  selectedFree = new Set();
+  finderInfo = null;
   clearPlaylistCard();
   closeCartDrawer();
   resultsSection.style.display = 'none';
@@ -544,13 +633,37 @@ function hasLosslessMatch(m: QobuzCartMatch): boolean {
   return m.status === 'matched' && m.lossless;
 }
 
+/** "Get free downloads" ran for this track and nothing full quality landed. */
+function freeFailed(m: QobuzCartMatch): boolean {
+  return !!m.freeOutcome && !m.freeOutcome.filePath;
+}
+
+/** In "Free on SoundCloud": the set gives it away, it isn't maybe-owned, and
+ *  a free download hasn't already failed (then it falls back to its store
+ *  match, in To buy or Not for sale). */
+function inFreeGroup(m: QobuzCartMatch): boolean {
+  return !!m.free && m.libraryStatus !== 'probable' && !freeFailed(m);
+}
+
+/** A free row "Get free downloads" can still do something with. */
+function freeFetchable(m: QobuzCartMatch): boolean {
+  return inFreeGroup(m) && !m.freeOutcome?.filePath;
+}
+
+function freeMatches(list: QobuzCartMatch[] = matches, filtered = true): QobuzCartMatch[] {
+  return list.filter(m => inFreeGroup(m) && (!filtered || matchesSearch(m)));
+}
+
 /** Store matches belonging to a store-backed segment.
  *   - new:      not in library + a lossless store match (the buyable tracks)
  *   - maybe:    a probable library hit, with a lossless match to buy anyway
- *   - notfound: searched, but no lossless match (compressed-only included) */
+ *   - notfound: searched, but no lossless match (compressed-only included)
+ *  A track in "Free on SoundCloud" is in neither To buy nor Not for sale
+ *  until its free download fails. */
 function segmentMatches(seg: 'new' | 'maybe' | 'notfound', list: QobuzCartMatch[] = matches, filtered = true): QobuzCartMatch[] {
   return list.filter(m => {
     if (filtered && !matchesSearch(m)) return false;
+    if (seg !== 'maybe' && inFreeGroup(m)) return false;
     if (seg === 'notfound') return !hasLosslessMatch(m);
     if (seg === 'maybe') return hasLosslessMatch(m) && m.libraryStatus === 'probable';
     return hasLosslessMatch(m) && m.libraryStatus !== 'probable';
@@ -642,6 +755,9 @@ function saveSourcesState() {
       csvPath,
       openGroups: [...openGroups],
       searchQuery,
+      selectedFree: [...selectedFree],
+      freeAccountActions,
+      finderInfo,
       sessionSources,
       lastRunAt,
       resultsShown: resultsSection.style.display === 'block'
@@ -695,6 +811,9 @@ function restoreSourcesState() {
   downloadFiredBeatport = snapshot.downloadFiredBeatport ?? true;
   checkoutArmedAt = { qobuz: snapshot.checkoutArmedAt?.qobuz ?? null, beatport: snapshot.checkoutArmedAt?.beatport ?? null };
   searchQuery = snapshot.searchQuery ?? '';
+  selectedFree = new Set(Array.isArray(snapshot.selectedFree) ? snapshot.selectedFree : []);
+  freeAccountActions = snapshot.freeAccountActions === true;
+  finderInfo = snapshot.finderInfo ?? null;
   sessionSources = Array.isArray(snapshot.sessionSources) ? snapshot.sessionSources : [];
   lastRunAt = typeof snapshot.lastRunAt === 'number' ? snapshot.lastRunAt : null;
 
@@ -916,7 +1035,40 @@ function treatProbableAsMissing(inputKey: string) {
 
 /** Whether a match needs a look before buying (shown on the row itself). */
 function needsCheck(m: QobuzCartMatch): boolean {
+  if (m.finder?.by === 'claude' && m.finder.verdict !== 'none') return isReleaseMatch(m) || m.finder.confidence !== 'high';
   return isOtherVersion(m) || isReleaseMatch(m) || m.confidence < AUTO_SELECT_CONFIDENCE;
+}
+
+/** What Claude did with a row, as a sub-line; '' when it simply agreed.
+ *  "Not sold" rows are under Not found and say so there. */
+function finderHtml(m: QobuzCartMatch): string {
+  const f = m.finder;
+  if (f?.by !== 'claude' || f.verdict === 'none') return '';
+  const lead = f.verdict === 'changed' ? "Claude picked this over the plain search's match."
+    : f.verdict === 'found' ? 'Claude found this one; the plain search missed it.' : '';
+  const text = [lead, f.note].filter(Boolean).join(' ');
+  return text ? `<span class="buy-sub buy-finder">${escapeHtml(text)}</span>` : '';
+}
+
+/** Why "Get free downloads" didn't land a file, as a sentence. */
+function freeFailedReason(m: QobuzCartMatch): string {
+  const tried = (m.freeOutcome?.attempts ?? []).filter(a => a.status !== 'covered');
+  const why = (a: { status: string; reason: string }) => {
+    switch (a.status) {
+      case 'lossy':
+      case 'lossy-dropped': return 'the file was compressed (like an MP3), so it was deleted';
+      case 'needs-email': return 'the download page wants an email address (add one in Settings → SoundCloud)';
+      case 'emailed': return 'the download link was emailed';
+      case 'needs-you':
+      case 'stalled': return 'the download page needs a person to finish it';
+      case 'several-files': return 'several files arrived (a stem pack?), so pick the full track in your new-music folder';
+      case 'not-free': return 'it turned out not to be free';
+      case 'pending':
+      case 'skipped': return "it wasn't tried";
+      default: return "the download didn't finish";
+    }
+  };
+  return tried.length ? `The free download didn't work: ${tried.map(why).join('; ')}.` : "The free download didn't work.";
 }
 
 /** One tickable To buy row: title, artist and price up front; the store,
@@ -950,6 +1102,8 @@ function buildTrackRow(match: QobuzCartMatch): HTMLElement {
       <span class="buy-trk">
         <span class="buy-t">${escapeHtml(track.name)}</span>
         <span class="buy-a">${escapeHtml(sub)}</span>
+        ${freeFailed(match) ? `<span class="buy-sub">${escapeHtml(freeFailedReason(match))}</span>` : ''}
+        ${finderHtml(match)}
         ${claudeVerdictHtml(match)}
       </span>
       ${flag ? `<span class="buy-pill">${flag}</span>` : ''}
@@ -1000,20 +1154,271 @@ function buildTrackRow(match: QobuzCartMatch): HTMLElement {
 function buildNotFoundRow(match: QobuzCartMatch): HTMLElement {
   const el = document.createElement('div');
   el.className = 'buy-row buy-row--info';
+  // Claude turned down the plain search's pick; it's still on the row, so the
+  // user can overrule.
+  const rejected = match.finder?.by === 'claude' && match.finder.verdict === 'none' && !!match.source && match.lossless
+    ? (match.source === 'qobuz' ? match.qobuzTrack : match.beatportTrack) : null;
   el.innerHTML = `
     <span class="buy-trk">
       <span class="buy-t">${escapeHtml(match.trackInput.title)}</span>
       <span class="buy-a">${escapeHtml(match.trackInput.artist)}</span>
+      ${freeFailed(match) ? `<span class="buy-sub">${escapeHtml(freeFailedReason(match))}</span>` : ''}
       <span class="buy-sub">${escapeHtml(notForSaleReason(match))}</span>
+      ${rejected ? `<span class="buy-sub">The plain search's pick was <b>${escapeHtml(rejected.artists.join(', '))} — ${escapeHtml(rejected.name)}</b> on ${STORE_LABEL[match.source!]}.</span>` : ''}
     </span>
-    ${notForSalePillHtml(match)}`;
+    ${rejected
+      ? `<button type="button" class="btn-secondary btn-sm buy-anyway" data-tooltip="Claude thinks it's a different record. If you know it's the one, move it to To buy.">Use it anyway</button>`
+      : notForSalePillHtml(match)}`;
+  el.querySelector('.buy-anyway')?.addEventListener('click', () => {
+    match.status = 'matched';
+    match.finder = { by: 'search' };
+    updateSummary();
+    renderResults();
+    updateBuyBar();
+    saveSourcesState();
+    showToast('info', 'Moved to To buy', 'Tick it there to add it to a cart.');
+  });
   return el;
+}
+
+// ---------- Free on SoundCloud ----------
+// A SoundCloud set says which of its tracks are free (SoundCloud's download
+// button, or a gate like Hypeddit). Those go first; the store copy is only
+// the fallback, used when the free file turns out compressed or never comes.
+
+/** Ticked free rows that "Get free downloads" would fetch. */
+function freeTicked(): QobuzCartMatch[] {
+  return freeMatches(matches, false).filter(m => selectedFree.has(m.trackInput.key) && freeFetchable(m));
+}
+
+function buildFreeRow(m: QobuzCartMatch): HTMLElement {
+  const f = m.free!;
+  const key = m.trackInput.key;
+  const landed = m.freeOutcome?.filePath ?? null;
+  const canTick = freeFetchable(m) && !fetchingFree;
+  const ticked = selectedFree.has(key) && freeFetchable(m);
+  const rowKey = `free:${key}`;
+  const open = openRows.has(rowKey);
+  const el = document.createElement('div');
+  el.className = 'buy-row buy-row--pick';
+  el.classList.toggle('sel', ticked);
+  el.classList.toggle('is-open', open);
+  el.classList.toggle('buy-row--static', !freeFetchable(m));
+  const store = hasLosslessMatch(m) ? m.source : null;
+  const storeTrack = store === 'qobuz' ? m.qobuzTrack : store === 'beatport' ? m.beatportTrack : null;
+  const fallback = store && storeTrack ? `${STORE_LABEL[store]} (${storeTrack.price || 'for sale'})` : '';
+  const detailsId = `buy-row-more-${Math.random().toString(36).slice(2, 9)}`;
+  el.innerHTML = `
+    <div class="buy-row-main" role="checkbox" tabindex="${canTick ? 0 : -1}" aria-checked="${ticked}"${canTick ? '' : ' aria-disabled="true"'}>
+      <span class="buy-cbx" aria-hidden="true">${CHECK_SVG}</span>
+      ${artHtml(null)}
+      <span class="buy-trk">
+        <span class="buy-t">${escapeHtml(m.trackInput.title)}</span>
+        <span class="buy-a">${escapeHtml(m.trackInput.artist)}</span>
+        <span class="buy-sub upg-free-via"><span class="buy-kind">${SOURCE_KIND_ICONS.soundcloud}SoundCloud</span><span>${landed
+          ? `Downloaded: <span class="term" tabindex="0" data-tooltip="${escapeHtml(landed)}">${escapeHtml(fileNameOf(landed))}</span>`
+          : escapeHtml(f.reason)}</span></span>
+      </span>
+      ${landed ? '<span class="buy-pill"><span class="status-pill status-pill--ok">Downloaded</span></span>' : ''}
+      <span class="buy-price buy-price--free">Free</span>
+    </div>
+    <button type="button" class="btn-icon buy-row-expand" aria-expanded="${open}" aria-controls="${detailsId}" aria-label="Details for ${escapeHtml(m.trackInput.title)}" data-tooltip="Where the free copy is, and what happens if it doesn't work out">${CHEVRON_SVG}</button>
+    <div class="buy-row-more" id="${detailsId}" ${open ? '' : 'hidden'}>
+      <p>On SoundCloud as <b>${escapeHtml(f.listedAs)}</b>${f.uploader ? `, uploaded by ${escapeHtml(f.uploader)}` : ''}.${f.kind === 'gate'
+        ? ` The file is behind a download page${f.gateHost ? ` on ${escapeHtml(f.gateHost)}` : ''}, which may ask you to follow or like first.` : ''}</p>
+      <p>SoundCloud doesn't say the file type until it arrives. If it's compressed (like an MP3), it's deleted${fallback ? ` and this track goes back to ${escapeHtml(fallback)}` : ''}.</p>
+      <div class="buy-row-facts"><button type="button" class="btn-ghost btn-sm buy-row-open" data-tooltip="Open the track on SoundCloud in your browser, to listen first.">Open on SoundCloud</button></div>
+    </div>`;
+  attachArtFallback(el);
+
+  const main = el.querySelector<HTMLElement>('.buy-row-main')!;
+  const toggle = () => {
+    if (!freeFetchable(m) || fetchingFree) return;
+    const on = !selectedFree.has(key);
+    if (on) selectedFree.add(key); else selectedFree.delete(key);
+    el.classList.toggle('sel', on);
+    main.setAttribute('aria-checked', String(on));
+    refreshFreeActions();
+    saveSourcesState();
+  };
+  main.addEventListener('click', (e) => {
+    if ((e.target as HTMLElement).closest('.term, .status-pill')) return;
+    toggle();
+  });
+  main.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); }
+  });
+  const expand = el.querySelector<HTMLButtonElement>('.buy-row-expand')!;
+  const more = el.querySelector<HTMLElement>('.buy-row-more')!;
+  expand.addEventListener('click', () => {
+    const nowOpen = more.hidden;
+    more.hidden = !nowOpen;
+    expand.setAttribute('aria-expanded', String(nowOpen));
+    el.classList.toggle('is-open', nowOpen);
+    if (nowOpen) openRows.add(rowKey); else openRows.delete(rowKey);
+  });
+  el.querySelector('.buy-row-open')?.addEventListener('click', () => void window.candybar.openExternal(f.url));
+  return el;
+}
+
+/** A downloader line as a sentence; anything else keeps the last one showing. */
+function applyFreeLine(line: string) {
+  const m = line.match(/^\((\d+)\/(\d+)\)\s+(.*?)\s+\[/);
+  if (m) {
+    freeCount = { i: Number(m[1]), n: Number(m[2]) };
+    freeLine = `Getting ${m[3]}`;
+  } else if (/sign in/i.test(line)) {
+    freeLine = 'Sign in to SoundCloud in the Chrome window that just opened. Track Lab waits for you.';
+  } else if (/STOPPED: only/.test(line)) {
+    freeLine = 'Your drive is almost full, so the downloads stopped. Free up some space, then try again.';
+  }
+}
+
+function updateFreeProgress() {
+  const line = document.getElementById('source-free-line');
+  const count = document.getElementById('source-free-count');
+  const bar = document.getElementById('source-free-bar');
+  if (line) line.textContent = freeLine || 'Starting the downloads…';
+  if (count) count.textContent = freeCount ? `${freeCount.i.toLocaleString()} of ${plural(freeCount.n, 'download')}` : '';
+  if (bar) bar.style.width = freeCount ? `${Math.round(((freeCount.i - 1) / freeCount.n) * 100)}%` : '0%';
+}
+
+function freeActionsEl(): HTMLElement {
+  const el = document.createElement('div');
+  el.className = 'upg-free-actions';
+  el.id = 'source-free-actions';
+  if (fetchingFree) {
+    el.innerHTML = `
+      <div class="callout upg-free-progress" role="status">${SPINNER_SVG}
+        <div class="callout-body">
+          <strong>Getting your free downloads…</strong>
+          <p id="source-free-line"></p>
+          <div class="buy-meter buy-meter--sm"><div class="buy-meter-fill" id="source-free-bar" style="width: 0%"></div></div>
+          <p class="upg-free-count" id="source-free-count"></p>
+        </div>
+        <div class="callout-actions"><button type="button" class="btn-secondary btn-sm" id="source-free-stop" data-tooltip="Stop after the track it's on. Anything already downloaded stays in your new-music folder.">Stop</button></div>
+      </div>`;
+    el.querySelector('#source-free-stop')?.addEventListener('click', () => void window.candybar.librarySourcingFetchFreeStop());
+    queueMicrotask(updateFreeProgress);
+    return el;
+  }
+  const n = freeTicked().length;
+  el.innerHTML = `
+    <label class="upg-check">
+      <input type="checkbox" id="source-free-actions-ok" ${freeAccountActions ? 'checked' : ''} />
+      <span><strong>Let download pages follow, like and comment for me</strong><span>Some free downloads on SoundCloud ask you to follow or like first. This does it on your SoundCloud account. Without it, those ones are skipped.</span></span>
+    </label>
+    <div class="card-actions">
+      <span class="card-actions-note">Nothing is bought. Files go to your new-music folder.</span>
+      <button type="button" class="${n > 0 ? 'btn-primary' : 'btn-secondary'}" id="source-get-free" ${n === 0 ? 'disabled' : ''}
+        data-tooltip="Download the ticked free copies from SoundCloud. A Chrome window opens for the download pages."
+        data-tooltip-disabled="Tick at least one free download first">${n > 0 ? `Get ${plural(n, 'free download')}` : 'Get free downloads'}</button>
+    </div>`;
+  el.querySelector<HTMLInputElement>('#source-free-actions-ok')?.addEventListener('change', (e) => {
+    freeAccountActions = (e.target as HTMLInputElement).checked;
+    saveSourcesState();
+  });
+  el.querySelector('#source-get-free')?.addEventListener('click', () => void getFreeDownloads());
+  return el;
+}
+
+/** Redraw the group's action bar after a tick (the rows stay as they are). */
+function refreshFreeActions() {
+  document.getElementById('source-free-actions')?.replaceWith(freeActionsEl());
+}
+
+async function getFreeDownloads() {
+  const rows = freeTicked();
+  if (rows.length === 0 || fetchingFree) return;
+  fetchingFree = true;
+  freeLine = '';
+  freeCount = null;
+  setStatus('Downloading…');
+  renderResults();
+  const off = window.candybar.onLibrarySourcingFreeProgress((p) => {
+    applyFreeLine(p.message);
+    updateFreeProgress();
+  });
+  try {
+    const res = await window.candybar.librarySourcingFetchFree(rows.map(m => m.trackInput.key), { accountActions: freeAccountActions });
+    if (!res.success || !res.outcomes) throw new Error(res.error || 'The downloads stopped without saying why.');
+    let landed = 0;
+    for (const m of rows) {
+      const o = res.outcomes[m.trackInput.key];
+      // Never reached (the run stopped early): still free, still ticked.
+      if (!o || (!o.filePath && o.attempts.every(a => a.status === 'pending' || a.status === 'skipped'))) continue;
+      m.freeOutcome = o;
+      selectedFree.delete(m.trackInput.key);
+      if (o.filePath) {
+        landed++;
+      } else if (autoSelectable(m)) {
+        // Back on its store copy, ticked like any sure match.
+        if (m.source === 'qobuz' && m.qobuzTrack) selectedQobuzIds.add(m.qobuzTrack.id);
+        else if (m.source === 'beatport' && m.beatportTrack) selectedBeatportIds.add(m.beatportTrack.id);
+      }
+    }
+    const missed = rows.length - landed;
+    showToast(landed > 0 && missed === 0 ? 'success' : 'warning',
+      landed > 0 ? `${plural(landed, 'free download')} in your new-music folder` : 'No free downloads came through',
+      missed > 0 ? `${plural(missed, 'track')} didn't work and went back to the store list. Each one says why.` : 'Organize files them into your library.');
+  } catch (err) {
+    const message = getErrorMessage(err);
+    if (message === 'Stopped') showToast('info', 'Free downloads stopped', 'Anything already downloaded stays in your new-music folder. Get them again to pick those up.');
+    else showToast('error', 'The free downloads stopped', message);
+  } finally {
+    off();
+    fetchingFree = false;
+    setStatus('Idle');
+    saveSourcesState();
+    updateSummary();
+    renderResults();
+    updateBuyBar();
+  }
+}
+
+function renderFreeGroup(): HTMLElement {
+  const rows = freeMatches();
+  const group = document.createElement('section');
+  group.className = 'buy-group';
+  group.setAttribute('aria-labelledby', 'buy-group-free');
+  group.innerHTML = `
+    <div class="buy-group-head">
+      <div class="buy-group-text">
+        <h3 class="buy-group-title" id="buy-group-free">Free on SoundCloud <span class="buy-group-count">${freeMatches(matches, false).length.toLocaleString()}</span></h3>
+        <p class="card-desc">The set gives these away, so Track Lab gets them before anything is bought. If a file arrives compressed or doesn't come through, the track goes back to its store copy.</p>
+      </div>
+      ${rows.some(freeFetchable) && !fetchingFree ? `<div class="buy-group-actions">
+        <button type="button" class="btn-ghost btn-sm" data-free-select="all">Tick all</button>
+        <button type="button" class="btn-ghost btn-sm" data-free-select="none">Untick all</button>
+      </div>` : ''}
+    </div>`;
+  if (rows.length === 0) {
+    group.appendChild(emptyGroup('Nothing free here', ''));
+  } else {
+    const ul = document.createElement('div');
+    ul.className = 'buy-list';
+    for (const m of rows) ul.appendChild(buildFreeRow(m));
+    group.appendChild(ul);
+  }
+  if (freeMatches(matches, false).some(freeFetchable) || fetchingFree) group.appendChild(freeActionsEl());
+  group.querySelectorAll<HTMLButtonElement>('[data-free-select]').forEach(btn => btn.addEventListener('click', () => {
+    for (const m of freeMatches()) {
+      if (!freeFetchable(m)) continue;
+      if (btn.dataset.freeSelect === 'none') selectedFree.delete(m.trackInput.key);
+      else selectedFree.add(m.trackInput.key);
+    }
+    renderResults();
+    saveSourcesState();
+  }));
+  return group;
 }
 
 /** Render To buy, then the quieter groups that have something in them. */
 function renderResults() {
   groupsContainer.innerHTML = '';
   emptyState.style.display = 'none';
+
+  if (freeMatches(matches, false).length > 0) groupsContainer.appendChild(renderFreeGroup());
 
   // ---- To buy ----
   const toBuy = segmentMatches('new');
@@ -1115,13 +1520,24 @@ function updateSummary() {
   if (c.notForSale > 0) {
     sentences.push(`${c.notForSale.toLocaleString()} ${c.notForSale === 1 ? "isn't" : "aren't"} for sale in full quality.`);
   }
+  const free = freeMatches(matches, false);
+  const freeLeft = free.filter(freeFetchable).length;
+  if (free.length > 0) {
+    sentences.push(freeLeft > 0
+      ? `${plural(freeLeft, 'track')} ${freeLeft === 1 ? 'is' : 'are'} free on SoundCloud, so get ${freeLeft === 1 ? 'it' : 'them'} first.`
+      : `${plural(free.length, 'free download')} came from SoundCloud.`);
+  }
   const combined = sessionSources.length > 1
     ? `<p class="buy-summary-sources">This list combines ${sessionSources.length} playlists: ${sessionSources.map(s => escapeHtml(s.name)).join(', ')}.</p>`
     : '';
+  const finder = finderInfo?.note
+    ? `<p class="buy-summary-finder${finderInfo.by === 'claude' ? ' is-claude' : ''}">${escapeHtml(finderInfo.note)}</p>`
+    : '';
   scanSummary.style.display = '';
   scanSummary.innerHTML = `
-    <h3 class="buy-summary-title">${c.toBuy > 0 ? `${plural(c.toBuy, 'track')} to buy in full quality` : 'Nothing new to buy'}</h3>
+    <h3 class="buy-summary-title">${c.toBuy > 0 ? `${plural(c.toBuy, 'track')} to buy in full quality` : freeLeft > 0 ? `${plural(freeLeft, 'free download')} to get` : 'Nothing new to buy'}</h3>
     <p>${sentences.join(' ')}</p>
+    ${finder}
     ${combined}`;
 }
 
@@ -1141,16 +1557,28 @@ function selectedForCart(store: Store): StoreMatch[] {
 function renderCartHero() {
   const hero = document.getElementById('source-cart-hero');
   if (!hero) return;
-  const n = lastAddedQobuz.length + lastAddedBeatport.length;
-  hero.hidden = n === 0;
-  if (n === 0) return;
-  const where = [
-    lastAddedQobuz.length ? `${cartTotal(lastAddedQobuz)} on Qobuz` : '',
-    lastAddedBeatport.length ? `${cartTotal(lastAddedBeatport)} on Beatport` : '',
-  ].filter(Boolean).join(' and ');
-  (document.getElementById('source-cart-hero-title') as HTMLElement).textContent = `${plural(n, 'track')} ${n === 1 ? 'is' : 'are'} in your carts`;
-  (document.getElementById('source-cart-hero-text') as HTMLElement).textContent =
-    `${where}. Check out in the store, then download them into your new-music folder. Nothing is bought until you check out.`;
+  const q = cartView('qobuz');
+  const b = cartView('beatport');
+  const inCart = q.inCart.length + b.inCart.length;
+  const gone = q.gone.length + b.gone.length;
+  hero.hidden = inCart + gone === 0;
+  if (hero.hidden) return;
+  const title = document.getElementById('source-cart-hero-title') as HTMLElement;
+  const text = document.getElementById('source-cart-hero-text') as HTMLElement;
+  const open = document.getElementById('source-cart-hero-open') as HTMLButtonElement;
+  if (inCart > 0) {
+    const where = [
+      q.inCart.length ? `${cartTotal(q.inCart)} on Qobuz` : '',
+      b.inCart.length ? `${cartTotal(b.inCart)} on Beatport` : '',
+    ].filter(Boolean).join(' and ');
+    title.textContent = `${plural(inCart, 'track')} ${inCart === 1 ? 'is' : 'are'} in your carts`;
+    text.textContent = `${where}. Check out in the store, then download them into your new-music folder. Nothing is bought until you check out.`;
+    open.textContent = 'Review carts and check out';
+  } else {
+    title.textContent = `${plural(gone, 'track')} left your carts`;
+    text.textContent = 'Bought, or taken out. If you checked out, download them into your new-music folder.';
+    open.textContent = 'Review carts and download';
+  }
 }
 
 /** The sticky buy bar: "12 tracks selected · $28.62 on Qobuz" and the one action. */
@@ -1181,10 +1609,16 @@ function updateBuyBar() {
 let cartDrawerReturnFocus: HTMLElement | null = null;
 function openCartDrawer() {
   renderCartStage();
-  if (cartDrawer.style.display === 'none') cartDrawerReturnFocus = document.activeElement as HTMLElement | null;
+  void refreshCartChecks();
+  const opening = cartDrawer.style.display === 'none';
+  if (opening) cartDrawerReturnFocus = document.activeElement as HTMLElement | null;
   cartScrim.style.display = '';
   cartDrawer.style.display = 'flex';
-  cartCloseBtn.focus({ preventScroll: true });
+  // Focus once the slide-in has finished: focused mid-slide, the close
+  // button's tooltip is placed where the button was, a drawer-width away.
+  const focusClose = () => cartCloseBtn.focus({ preventScroll: true });
+  if (!opening || getComputedStyle(cartDrawer).animationName === 'none') focusClose();
+  else cartDrawer.addEventListener('animationend', focusClose, { once: true });
 }
 function closeCartDrawer() {
   const wasOpen = cartDrawer.style.display !== 'none';
@@ -1499,7 +1933,11 @@ async function runSearch(spec?: SourceSpec): Promise<boolean> {
     // reviewed by hand; tracks in the library (confirmed OR probable) are
     // never nudged into a re-buy.
     const toAutoSelect = appendMode ? matches.slice(matches.length - appendedCount) : matches;
+    if (!appendMode) selectedFree = new Set();
+    finderInfo = result.result.finder ?? null;
     for (const m of toAutoSelect) {
+      // A set's free download goes first: its store copy waits until that fails.
+      if (freeFetchable(m)) { selectedFree.add(m.trackInput.key); continue; }
       if (!autoSelectable(m)) continue;
       if (m.libraryStatus === 'confirmed' || m.libraryStatus === 'probable') continue;
       if (m.inLibrary) continue; // legacy guard for older matches missing libraryStatus
@@ -1590,10 +2028,12 @@ async function addSelectedToCart() {
   if (outcome.added.qobuz.length > 0) {
     lastAddedQobuz = mergeAdded(lastAddedQobuz, outcome.added.qobuz);
     downloadFiredQobuz = false;
+    cartChecks.qobuz = null;
   }
   if (outcome.added.beatport.length > 0) {
     lastAddedBeatport = mergeAdded(lastAddedBeatport, outcome.added.beatport);
     downloadFiredBeatport = false;
+    cartChecks.beatport = null;
   }
 
   if (outcome.added.qobuz.length + outcome.added.beatport.length > 0) openCartDrawer();
@@ -1604,6 +2044,7 @@ async function addSelectedToCart() {
  *  seen in the panel within CHECKOUT_WATCH_MS is taken as this tab's order. */
 function armCheckoutWatch(store: Store) {
   checkoutArmedAt[store] = Date.now();
+  checkoutSeen[store] = false;
   if (store === 'qobuz') downloadFiredQobuz = false; else downloadFiredBeatport = false;
   saveSourcesState();
 }
@@ -1684,12 +2125,28 @@ async function runAutoCheckout(store: 'qobuz' | 'beatport') {
     return;
   }
 
+  // The drawer's dimmer sits above the panel: a bank's approval step there
+  // would be under it, and the first click would only close the drawer.
+  closeCartDrawer();
   button.disabled = true;
   const originalText = button.textContent;
-  button.textContent = `Opening ${label}…`;
+  button.textContent = `Checking your ${label} cart…`;
 
   try {
+    // An empty cart has no checkout to fill in; say so rather than failing on
+    // the store's home page, where an empty cart redirects.
+    const check = await reconcileWithCart(store, tracks);
+    cartChecks[store] = check;
+    renderCartStage();
+    renderCartHero();
+    if (check.empty) {
+      showToast('info', `Your ${label} cart is empty`,
+        'Nothing to check out. If you already bought these, choose Download my purchases in Review carts.');
+      return;
+    }
+
     // Open the panel on the cart before driving it.
+    button.textContent = `Opening ${label}…`;
     armCheckoutWatch(store);
     await window.candybar.storePanelOpen(store, cartUrl(store));
     await new Promise(r => setTimeout(r, 1500));
@@ -1780,7 +2237,8 @@ async function exportResults() {
   }
 }
 
-async function downloadList(list: StoreMatch[], label?: string): Promise<void> {
+/** Download `list`; returns the input keys of the tracks that came down. */
+async function downloadList(list: StoreMatch[], label?: string): Promise<Set<string>> {
   const where = label ? `${label} ` : '';
   showToast('info', `Downloading your ${where}purchases`, `Getting ${plural(list.length, 'track')}…`);
   try {
@@ -1789,12 +2247,13 @@ async function downloadList(list: StoreMatch[], label?: string): Promise<void> {
       const got = res.downloaded ?? 0;
       showToast(got === list.length ? 'success' : 'warning', got === list.length ? 'Downloads finished' : 'Some downloads are still missing',
         `${got.toLocaleString()} of ${plural(list.length, 'track')} downloaded to ${res.destDir ?? 'your new-music folder'}.`);
-    } else {
-      showToast('error', "The downloads didn't start", res.error ?? 'Try again in a moment.');
+      return new Set((res.files ?? []).map(f => f.key));
     }
+    showToast('error', "The downloads didn't start", res.error ?? 'Try again in a moment.');
   } catch (e) {
     showToast('error', "The downloads didn't start", getErrorMessage(e, 'Try again in a moment.'));
   }
+  return new Set();
 }
 
 // ========== Init ==========
@@ -1997,9 +2456,12 @@ export function initSource() {
       showToast('warning', 'Nothing to download', "Track Lab hasn't put anything in your carts this time.");
       return;
     }
+    // Once the carts have been read, what left them is what was bought; the
+    // tracks still sitting in a cart weren't, and would only fail.
+    const gone = [...cartView('qobuz').gone, ...cartView('beatport').gone];
     downloadPurchasesBtn.disabled = true;
     try {
-      await downloadList(all);
+      pruneDownloaded(await downloadList(gone.length > 0 ? gone : all));
     } finally {
       downloadPurchasesBtn.disabled = false;
     }
@@ -2017,12 +2479,17 @@ export function initSource() {
       const list = store === 'qobuz' ? lastAddedQobuz : lastAddedBeatport;
       const fired = store === 'qobuz' ? downloadFiredQobuz : downloadFiredBeatport;
       if (fired || list.length === 0 || armedAt === null || Date.now() - armedAt > CHECKOUT_WATCH_MS) continue;
-      if (!isPurchaseConfirmation(store, url)) continue;
+      // A confirmation only counts after the panel went through checkout.
+      if (!(checkoutSeen[store] && isPurchaseConfirmation(store, url))) {
+        if (isStoreCheckoutStep(store, url)) checkoutSeen[store] = true;
+        continue;
+      }
 
       if (store === 'qobuz') downloadFiredQobuz = true; else downloadFiredBeatport = true;
       checkoutArmedAt[store] = null;
+      checkoutSeen[store] = false;
       saveSourcesState();
-      await downloadList(list, STORE_LABEL[store]);
+      pruneDownloaded(await downloadList(list, STORE_LABEL[store]));
     }
   });
 
@@ -2141,6 +2608,18 @@ export function initSource() {
     if (searching) onStreamingMatch(match);
   });
 
+  // Phase 3: Claude picking each track's record from what the search found.
+  window.candybar.onLibrarySourcingFinderProgress((p) => {
+    if (!searching) return;
+    progressMessage.textContent = `Claude is picking the right record for ${plural(p.total, 'track')}…`;
+    progressSub.textContent = p.done > 0
+      ? 'It checks each match’s artist and version, and searches again when nothing fits.'
+      : p.message;
+    setMeter(p.total > 0 ? Math.round((p.done / p.total) * 100) : 0);
+    progressCount.textContent = p.done > 0 ? `${p.done.toLocaleString()} of ${p.total.toLocaleString()} checked` : '';
+    if (progressEta) progressEta.textContent = '';
+  });
+
   // Playlist details arrive once Spotify/SoundCloud answer (before the slow
   // library check), so the cover card shows straight away.
   window.candybar.onLibrarySourcingPlaylistInfo((info) => {
@@ -2184,6 +2663,9 @@ export function initSource() {
   window.addEventListener('beforeunload', saveSourcesState);
   restoreSourcesState();
   void loadSaved();
+  // A saved list of what was added can be days old: read the real carts so
+  // the "in your carts" banner says what's actually there.
+  void refreshCartChecks();
 
   // "Check with Claude" (claudeReview.ts): it reads the rows with a
   // full-quality match and its verdicts tick or untick them. Only lossless,

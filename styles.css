@@ -2823,7 +2823,7 @@ body:not(.show-advanced) [data-advanced] { display: none !important; }
    the right below the topbar. Reflow the app content into the remaining left
    column so the two sit side by side (the panel is fixed-position, but a genuine
    DOM element — clipped, bordered, and z-ordered with the rest of the app). */
-html.store-panel-open .content {
+html.store-panel-open:not(.store-panel-overlay) .content {
   margin-right: var(--store-panel-width, 0px);
 }
 
@@ -2833,8 +2833,7 @@ html.store-panel-open .content {
 html.store-panel-open .toast-container {
   right: calc(var(--store-panel-width, 0px) + var(--space-xl));
 }
-html.store-panel-open .right-drawer,
-html.store-panel-open .source-cart-drawer {
+html.store-panel-open .right-drawer {
   right: var(--store-panel-width, 0px);
 }
 
@@ -2854,6 +2853,60 @@ html.store-panel-open .source-cart-drawer {
   z-index: 88;
 }
 .store-panel[hidden] { display: none; }
+/* Window too narrow to sit beside the app (storePanelLayout): the panel floats
+   over the content instead of squeezing it, so it needs a clearer edge. */
+html.store-panel-overlay .store-panel { box-shadow: -16px 0 48px rgba(0, 0, 0, 0.5); }
+
+/* Indeterminate loading bar under the header while the page loads. */
+.store-panel-progress {
+  flex: 0 0 auto;
+  height: 2px;
+  overflow: hidden;
+  background: var(--border-subtle);
+}
+.store-panel-progress[hidden] { display: none; }
+.store-panel-progress::after {
+  content: "";
+  display: block;
+  width: 35%;
+  height: 100%;
+  background: var(--accent);
+  animation: store-panel-progress 1.1s ease-in-out infinite;
+}
+@keyframes store-panel-progress { from { transform: translateX(-100%); } to { transform: translateX(290%); } }
+@media (prefers-reduced-motion: reduce) {
+  .store-panel-progress::after { animation: none; width: 100%; opacity: 0.6; }
+}
+
+/* "Sign in to Qobuz below": shown while the panel is on a sign-in page. */
+.store-panel-notice {
+  flex: 0 0 auto;
+  margin: 0;
+  padding: 8px 14px;
+  font-size: var(--fs-small);
+  color: var(--text-primary);
+  background: var(--bg-surface);
+  border-bottom: 1px solid var(--border-subtle);
+}
+.store-panel-notice[hidden] { display: none; }
+
+/* A page that didn't load: covers the blank guest with what happened. */
+.store-panel-error {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-sm);
+  padding: var(--space-xl);
+  text-align: center;
+  background: var(--bg-elevated);
+}
+.store-panel-error[hidden] { display: none; }
+.store-panel-error strong { font-size: var(--fs-body); color: var(--text-primary); }
+.store-panel-error p { max-width: 36ch; font-size: var(--fs-small); color: var(--text-secondary); }
 
 .store-panel-header {
   display: flex;
@@ -2997,7 +3050,14 @@ body.store-panel-resizing .store-panel-webview { pointer-events: none; }
   transform: translateX(100%);
   width: 320px;
   pointer-events: none;
+  /* Hidden, not just off-screen: with the store panel open the drawer is moved
+     in by the panel's width, and off-screen then lands on top of the panel.
+     Visibility flips once the slide-out has finished. */
+  visibility: hidden;
+  transition: width 0.2s ease, transform 0.2s ease, visibility 0s linear 0.2s;
 }
+/* No slide-out across the store panel: it just goes. */
+html.store-panel-open .right-drawer--hidden { transition: none; }
 
 .right-drawer--collapsed {
   width: 48px;

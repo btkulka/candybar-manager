@@ -7,50 +7,19 @@
  * titles into a clean artist/title pair. Loading it here (rather than porting
  * it) keeps the app and the skill reading a set the same way.
  *
- * Only public and secret-link sets are read: a private set needs the signed-in
- * SoundCloud session, which the app doesn't drive.
+ * Public and secret-link sets are read anonymously. A private set is read
+ * through the saved SoundCloud sign-in (soundcloudSession.ts), the same one
+ * the downloader uses.
  */
 
-import { app } from 'electron';
-import path from 'path';
-import { pathToFileURL } from 'url';
 import type { TrackRecord } from './musicLibraryCheck';
+import type { SetFreeDownload } from '../types';
 import { normalizeBasic } from './stringUtils';
+import { loadSoundCloudModule, withSoundCloudSession, type SetRow, type SetSource } from './soundcloudSession';
 
-type SetRow = {
-  scId: number;
-  artist: string;
-  title: string;
-  duration: number | null;
-  url: string | null;
-};
-
-type SetSource = {
-  set: string;
-  user: string | null;
-  url: string;
-  trackCount: number;
-  fetchedCount: number;
-  unavailable: Array<{ scId: number }>;
-  image: string | null;
-};
-
-type SoundCloudSourcingModule = {
-  fetchSetPublic: (
-    setUrl: string,
-    opts?: { onProgress?: (loaded: number, total: number) => void }
-  ) => Promise<{ source: SetSource; tracks: SetRow[] }>;
-};
-
-let mod: SoundCloudSourcingModule | null = null;
-
-async function getModule(): Promise<SoundCloudSourcingModule> {
-  if (!mod) {
-    const url = pathToFileURL(path.join(app.getAppPath(), 'lib', 'sourcing', 'soundcloud.mjs')).href;
-    mod = await import(url) as SoundCloudSourcingModule;
-  }
-  return mod;
-}
+/** A set track that the set itself gives away: what to show, and the row
+ *  bin/source-soundcloud-likes.mjs --tracks fetches it from. */
+export type SetFreeTrack = { free: SetFreeDownload; fetchRow: SetRow };
 
 export type SoundCloudSet = {
   name: string;
@@ -58,39 +27,73 @@ export type SoundCloudSet = {
   imageUrl: string | null;
   trackCount: number;
   tracks: TrackRecord[];
+  /** By track key: the tracks with SoundCloud's download button or a free gate. */
+  freeByKey: Map<string, SetFreeTrack>;
 };
 
-/** Read a public or secret-link set. A private set answers 401/403/404 to an
- *  anonymous read; that's reported as something the user can fix. */
+/** The free download a set row offers, or null. Exported for tests. */
+export function setFreeDownload(row: SetRow): SetFreeDownload | null {
+  const f = row.free;
+  if (!f || f.kind === 'none' || !row.url) return null;
+  const host = f.gate?.host ?? null;
+  return {
+    kind: f.kind,
+    url: row.url,
+    listedAs: row.scTitle || `${row.artist} - ${row.title}`,
+    uploader: row.uploader ?? '',
+    gateHost: host,
+    reason: f.kind === 'native' ? 'SoundCloud download button'
+      : host ? `Free download via ${host}` : `Free download link (${f.reason})`,
+  };
+}
+
+/** Read a set. One that answers 401/403/404 anonymously is private (or
+ *  gone), so it's read again through the saved sign-in, as the downloader
+ *  does; `onSignIn` fires if that has to wait for the user to sign in. */
 export async function fetchSoundCloudSet(
   setUrl: string,
-  onProgress?: (loaded: number, total: number) => void
+  onProgress?: (loaded: number, total: number) => void,
+  onSignIn?: () => void
 ): Promise<SoundCloudSet> {
-  const { fetchSetPublic } = await getModule();
+  const { fetchSetPublic } = await loadSoundCloudModule();
   // A pasted "soundcloud.com/…" without the scheme is still a set link.
   const url = /^https?:\/\//i.test(setUrl.trim()) ? setUrl.trim() : `https://${setUrl.trim()}`;
-  let result: Awaited<ReturnType<SoundCloudSourcingModule['fetchSetPublic']>>;
+  let result: { source: SetSource; tracks: SetRow[] };
   try {
     result = await fetchSetPublic(url, { onProgress });
   } catch (err) {
     const status = (err as { status?: number }).status;
-    if (status === 401 || status === 403 || status === 404) {
-      throw new Error('SoundCloud set not found or private. For a private set, copy its secret link (Share → Copy link) and paste that instead.');
+    if (status !== 401 && status !== 403 && status !== 404) throw err;
+    try {
+      result = await withSoundCloudSession(
+        (page, sess, sc) => sc.fetchSetViaSession(page, sess, url, { onProgress }),
+        { onWaiting: onSignIn }
+      );
+    } catch (sessionErr) {
+      const why = sessionErr instanceof Error ? sessionErr.message : String(sessionErr);
+      throw new Error(`That SoundCloud set isn't public, and reading it through your SoundCloud sign-in didn't work (${why}). If it's someone else's private set, ask for its secret link (Share → Copy link).`);
     }
-    throw err;
   }
 
   const { source, tracks } = result;
+  const keyOf = (t: SetRow) => normalizeBasic(`${t.artist} - ${t.title}`);
+  const freeByKey = new Map<string, SetFreeTrack>();
+  for (const t of tracks) {
+    const free = setFreeDownload(t);
+    // A track listed twice keeps its first free copy.
+    if (free && !freeByKey.has(keyOf(t))) freeByKey.set(keyOf(t), { free, fetchRow: t });
+  }
   return {
     name: source.set,
     owner: source.user ?? '',
     imageUrl: source.image,
     trackCount: source.trackCount,
     tracks: tracks.map(t => ({
-      key: normalizeBasic(`${t.artist} - ${t.title}`),
+      key: keyOf(t),
       artist: t.artist || 'Unknown Artist',
       title: t.title || 'Unknown Title',
       duration: t.duration ?? undefined,
     })),
+    freeByKey,
   };
 }

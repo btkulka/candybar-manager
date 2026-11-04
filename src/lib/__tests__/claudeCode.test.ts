@@ -37,6 +37,10 @@ describe('buildClaudeEnv', () => {
     expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBe('sk-ant-oat');
     expect(env.PATH).toBe(['/nvm/bin', '/usr/bin', '/bin'].join(path.delimiter));
   });
+
+  it('makes print mode wait for MCP servers, so a job has its tools from the first turn', () => {
+    expect(buildClaudeEnv({ MCP_CONNECTION_NONBLOCKING: 'true' }).MCP_CONNECTION_NONBLOCKING).toBe('false');
+  });
 });
 
 describe('buildClaudeArgs', () => {

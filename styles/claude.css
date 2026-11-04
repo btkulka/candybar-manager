@@ -1,5 +1,6 @@
-/* ===== Ask Claude page, Claude settings, and the Claude controls on other
-   screens (src/renderer/claude.ts, claudeReview.ts). Built from the
+/* ===== Ask Claude (round button + chat drawer), the SoundCloud downloads
+   page, and the Claude controls on other screens (src/renderer/claude.ts,
+   claudeReview.ts). Built from the
    foundation components; only the conversation, progress log and verdict
    lines are new here. ===== */
 
@@ -210,3 +211,128 @@
 .settings-section[data-section="claude"] .fields { margin-top: var(--space-lg); }
 .settings-section[data-section="claude"] .input-row { display: flex; gap: var(--space-sm); }
 .settings-section[data-section="claude"] .input-row input { flex: 1; min-width: 0; }
+
+/* ---- Ask Claude: the round button and its chat drawer ----
+     <button class="claude-fab"> … <span class="claude-fab-badge" data-state="busy|setup"></span></button>
+     <aside class="buy-drawer claude-chat">   (the carts' slide-over)
+       head · body (.claude-chat-view: intro | chat | settings) · .claude-chat-compose
+     </aside> */
+.claude-fab {
+  position: fixed;
+  right: var(--space-xl);
+  bottom: var(--space-xl);
+  z-index: 89; /* under the drawer's scrim (90) */
+  width: 52px;
+  height: 52px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  color: var(--on-accent);
+  background: var(--accent);
+  box-shadow: var(--shadow-lg), 0 0 24px var(--accent-glow);
+  transition: transform var(--fx-quick) var(--fx-ease), opacity var(--fx-quick) var(--fx-ease), box-shadow var(--fx-quick) var(--fx-ease);
+}
+.claude-fab svg { width: 24px; height: 24px; }
+.claude-fab:hover { transform: translateY(-2px); box-shadow: var(--shadow-lg), 0 0 32px var(--accent-glow); }
+.claude-fab:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.claude-fab[aria-expanded="true"] { opacity: 0; pointer-events: none; transform: scale(0.85); }
+html.store-panel-open .claude-fab { right: calc(var(--store-panel-width, 0px) + var(--space-xl)); }
+.claude-fab-badge {
+  position: absolute;
+  top: -2px;
+  right: -2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 2px solid var(--bg-base);
+}
+.claude-fab-badge[hidden] { display: none; }
+.claude-fab-badge[data-state="setup"] { background: var(--warning); }
+.claude-fab-badge[data-state="busy"] {
+  background: var(--bg-elevated);
+  border-color: var(--accent-dim);
+  border-top-color: var(--text-primary);
+  animation: claude-spin 0.9s linear infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .claude-fab, .claude-fab:hover { transition: none; transform: none; }
+}
+/* Toasts sit above the button rather than on it. */
+.toast-container { bottom: calc(var(--space-xl) + 52px + var(--space-md)); }
+
+.claude-chat-heading { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-sm) var(--space-md); min-width: 0; }
+.claude-chat-heading .status-pill { cursor: pointer; }
+.claude-chat-head-actions { display: flex; align-items: center; gap: var(--space-2xs); flex-shrink: 0; }
+.claude-chat-head-actions .btn-icon svg { width: 18px; height: 18px; }
+.claude-chat-head-actions [aria-pressed="true"] { color: var(--accent); background: var(--accent-muted); }
+
+.claude-chat-body { display: flex; flex-direction: column; gap: var(--space-lg); }
+.claude-chat-view { display: flex; flex-direction: column; gap: var(--space-lg); }
+.claude-chat-view[hidden] { display: none; }
+/* In the drawer the body scrolls, so the thread doesn't need its own cap. */
+.claude-chat .claude-thread { max-height: none; overflow: visible; margin: 0; padding: 0; }
+.claude-chat .claude-msg { max-width: 94%; }
+
+.claude-chat-empty { display: flex; flex-direction: column; gap: var(--space-sm); color: var(--text-secondary); font-size: var(--fs-body); }
+.claude-chat-empty[hidden] { display: none; }
+.claude-chat-empty p { margin: 0 0 var(--space-xs); line-height: var(--lh-normal); }
+.claude-chat-example {
+  text-align: left;
+  padding: var(--space-sm) var(--space-md);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--bg-raised);
+  color: var(--text-primary);
+  font-size: var(--fs-small);
+  line-height: var(--lh-normal);
+  transition: border-color var(--fx-quick) var(--fx-ease), background var(--fx-quick) var(--fx-ease);
+}
+.claude-chat-example:hover { border-color: var(--border-accent); background: var(--bg-surface-hover); }
+
+.claude-chat-compose {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  padding: var(--space-md) var(--space-xl) var(--space-lg);
+  border-top: 1px solid var(--border-subtle);
+  background: var(--bg-elevated);
+}
+.claude-chat-compose[hidden] { display: none; }
+.claude-chat-compose textarea { width: 100%; resize: vertical; min-height: 56px; max-height: 40vh; }
+.claude-chat-compose-row { display: flex; align-items: center; justify-content: space-between; gap: var(--space-md); }
+.claude-chat-compose-row .card-actions-note { display: flex; align-items: center; gap: var(--space-xs); font-size: var(--fs-small); color: var(--text-muted); }
+.claude-chat-compose-row .card-actions-note svg { width: 14px; height: 14px; flex-shrink: 0; }
+
+/* First-run questions */
+.claude-intro { display: flex; flex-direction: column; gap: var(--space-lg); }
+.claude-intro h4 { font-size: var(--fs-h3); font-weight: 600; }
+.claude-intro .card-desc { margin: calc(-1 * var(--space-sm)) 0 0; }
+.claude-intro-q { border: 0; padding: 0; margin: 0; display: flex; flex-direction: column; gap: var(--space-sm); }
+.claude-intro-q legend { font-weight: 600; color: var(--text-primary); margin-bottom: var(--space-sm); padding: 0; }
+.claude-intro-options { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: var(--space-sm); }
+/* Four answers read better as two rows of two than three and one. */
+.claude-intro-options:has(> :nth-child(4)) { grid-template-columns: repeat(2, 1fr); }
+.claude-intro-option {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-sm);
+  padding: var(--space-sm) var(--space-md);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--bg-raised);
+  cursor: pointer;
+  transition: border-color var(--fx-quick) var(--fx-ease), background var(--fx-quick) var(--fx-ease);
+}
+.claude-intro-option:hover { border-color: var(--border-default); }
+.claude-intro-option:has(input:checked) { border-color: var(--border-accent); background: var(--accent-muted); }
+.claude-intro-option input { margin-top: 3px; flex-shrink: 0; accent-color: var(--accent); }
+.claude-intro-option > span { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.claude-intro-option strong { font-size: var(--fs-small); font-weight: 600; color: var(--text-primary); }
+.claude-intro-option > span > span { font-size: var(--fs-micro); color: var(--text-muted); line-height: var(--lh-normal); }
+.claude-intro-actions { display: flex; justify-content: flex-end; gap: var(--space-sm); }
+
+/* Settings behind the gear */
+.claude-settings { display: flex; flex-direction: column; gap: var(--space-md); }
+.claude-settings h4 { font-size: var(--fs-h3); font-weight: 600; }
+.claude-settings h4:not(:first-child) { margin-top: var(--space-lg); padding-top: var(--space-lg); border-top: 1px solid var(--border-subtle); }
+.claude-settings .card-desc { margin: 0; }

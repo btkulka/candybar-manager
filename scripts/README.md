@@ -12,6 +12,9 @@ Full setup on a Mac. It works from a checkout, or standalone, where it clones in
 - the shared packages: `btkulka/packages` cloned beside this repo, then
   `npm install` and `npm run build` there under its `.npm-lock`
 - `npm ci`, the app build, and the MCP build
+- `.venv-rbx/` at the repo root, on the Command Line Tools' `python3`, with
+  `requirements-rbx.txt` (pyrekordbox, mutagen) installed: the interpreter the
+  app runs its Rekordbox scripts with (`candybar_python_env` in `_common.sh`)
 - a clickable **Track Lab** in `/Applications` (or `~/Applications`), with the
   record icon, that starts this checkout (`candybar_make_app` in `_common.sh`).
   The app also makes it once on launch for installs from before it existed, and
@@ -22,7 +25,10 @@ Full setup on a Mac. It works from a checkout, or standalone, where it clones in
 
 A fast-forward pull of `origin/main`. When that brings anything new, it updates
 and rebuilds the shared packages, runs `npm ci` if `package.json` or the lock
-changed, and rebuilds. `--relaunch` starts the app afterwards. The app runs it
+changed, and rebuilds. Every run also brings `.venv-rbx/` up to
+`requirements-rbx.txt`, creating it if it's missing, so installs from before it
+was part of setup get pyrekordbox. A failure there is logged but doesn't stop
+the update. `--relaunch` starts the app afterwards. The app runs it
 itself, detached, from the **Update & Restart** prompt
 (`--wait-pid <pid> --relaunch`), and the log goes to
 `~/Library/Logs/candybar-manager/update.log`. `_common.sh` holds what the two
@@ -41,7 +47,7 @@ installing. The sidebar's inline copy of the mark is in `index.html`.
 Idempotent setup. Default mode installs npm deps + Playwright Chromium (enough for splice recovery). Flags:
 
 - `-App` also runs `npm run build` (Electron app).
-- `-Rbx` also creates `.venv-rbx/` at repo root and installs `pyrekordbox` for the rekordbox scripts under `rekordbox/`.
+- `-Rbx` also creates `.venv-rbx/` at repo root and installs `requirements-rbx.txt` (pyrekordbox, mutagen) for the rekordbox scripts under `rekordbox/`.
 - `-Full` is `-App -Rbx`.
 - `-Force` reinstalls even if a target already exists.
 

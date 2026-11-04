@@ -25,6 +25,7 @@ import { initTour, offerTour } from './renderer/tour';
 import { initSetupWizard, startFirstRunSetup, refreshSetupBadge } from './renderer/setupWizard';
 import { initUpgrade } from './renderer/upgrade';
 import { initClaude } from './renderer/claude';
+import { initUpdates } from './renderer/updates';
 
 // Re-export types that were previously exported from this file
 export type { SuggestedAction, HealthIssue } from './renderer/shared';
@@ -181,6 +182,7 @@ function initApp() {
   safeInit('initClaude', initClaude);
   safeInit('applyHowSteps', () => applyHowSteps());
   safeInit('initConnections', initConnections);
+  safeInit('initUpdates', initUpdates);
 
   loadConfig().catch((err) => console.error('[Renderer] loadConfig failed:', err));
   checkSpotifyConnection(false).catch((err) => console.error('[Renderer] checkSpotifyConnection failed:', err));

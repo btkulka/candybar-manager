@@ -347,6 +347,10 @@
 .buy-summary-title { font-size: var(--fs-h2); font-weight: 700; color: var(--text-primary); margin-bottom: 4px; }
 .buy-summary p { font-size: var(--fs-body); color: var(--text-secondary); line-height: var(--lh-normal); max-width: 72ch; }
 .buy-summary .buy-summary-sources { margin-top: 4px; font-size: var(--fs-small); color: var(--text-muted); }
+.buy-summary .buy-summary-finder { margin-top: 4px; font-size: var(--fs-small); color: var(--text-muted); }
+.buy-summary .buy-summary-finder.is-claude { color: var(--info); }
+/* What Claude did with a row: picked another record, or found one. */
+.buy-finder { color: var(--info); }
 
 .buy-toolbar { display: flex; align-items: center; gap: var(--space-md); margin-bottom: var(--space-lg); }
 .buy-toolbar > .btn-ghost { margin-left: auto; }
@@ -600,6 +604,9 @@
   animation: buy-drawer-in 0.24s var(--ease-out);
 }
 html.store-panel-open .buy-drawer { right: var(--store-panel-width, 0px); }
+/* The dimmer stops at the store panel, so the store's own page stays live and
+   readable next to the drawer. */
+html.store-panel-open .buy-drawer-scrim { right: var(--store-panel-width, 0px); }
 @keyframes buy-drawer-in { from { transform: translateX(100%); } to { transform: translateX(0); } }
 @media (prefers-reduced-motion: reduce) {
   .buy-drawer, .buy-drawer-scrim { animation: none; }
@@ -635,6 +642,7 @@ html.store-panel-open .buy-drawer { right: var(--store-panel-width, 0px); }
 .buy-cart-line-price { font-size: var(--fs-small); font-weight: 600; color: var(--text-primary); font-variant-numeric: tabular-nums; }
 .buy-cart-actions { display: flex; flex-wrap: wrap; gap: var(--space-sm); margin-top: var(--space-lg); }
 .buy-cart-note { margin-top: var(--space-sm); font-size: var(--fs-small); color: var(--text-muted); }
+.buy-cart-gone { margin-top: var(--space-sm); font-size: var(--fs-small); color: var(--text-secondary); }
 .buy-cart-download {
   display: flex;
   align-items: center;

@@ -24,6 +24,24 @@
 /* ===== Top bar ===== */
 .topbar { gap: 12px; padding: 0 16px; }
 
+/* Update button: a dot when GitHub has a newer version; the arrow turns while it checks */
+.topbar-update { position: relative; }
+.topbar-update:disabled { cursor: progress; }
+.topbar-update.loading svg { animation: serviceSpin 0.9s linear infinite; }
+.topbar-update.has-update { color: var(--accent); }
+.topbar-update-dot {
+  display: none;
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 2px var(--bg-elevated);
+}
+.topbar-update.has-update .topbar-update-dot { display: block; }
+
 /* Mini player: until a track plays it's a one-line hint, not dead controls */
 .sidebar-player-title { font-size: var(--fs-small); color: var(--text-secondary); }
 .sidebar-player-hint {
@@ -285,6 +303,9 @@
 .setup-store-head strong { font-size: var(--fs-h3); }
 .setup-store--qobuz .setup-store-head strong { color: var(--brand-qobuz); }
 .setup-store--beatport .setup-store-head strong { color: var(--brand-beatport); }
+.setup-store--soundcloud .setup-store-head strong { color: var(--brand-soundcloud); }
+/* The third card takes its own row rather than sitting half-width alone. */
+.setup-store--soundcloud { grid-column: 1 / -1; }
 .setup-store p { font-size: var(--fs-small); color: var(--text-secondary); flex: 1; }
 
 .setup-summary { list-style: none; display: flex; flex-direction: column; gap: 8px; }

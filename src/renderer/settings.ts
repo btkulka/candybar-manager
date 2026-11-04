@@ -1,6 +1,6 @@
 import type { ScriptOutput } from './shared';
-import type { AppConfig, StoreAccount } from '../types';
-import { showToast, getValue, setValue, getErrorMessage, setActiveTab, requestOpenSetup } from './shared';
+import type { AppConfig, SoundCloudSignIn, StoreAccount } from '../types';
+import { showToast, getValue, setValue, getErrorMessage, setActiveTab, requestOpenSetup, checkSoundCloudConnection } from './shared';
 import { autoRefreshLibrary } from './library';
 import { confirmAction, confirmChoice } from './confirmDialog';
 
@@ -138,7 +138,9 @@ export async function setStoreCredentials(config: {
   beatportAccounts?: StoreAccount[];
   spotifyClientId?: string;
   spotifyClientSecret?: string;
+  gateEmail?: string;
 }): Promise<void> {
+  if (config.gateEmail !== undefined) setValue('setting-gate-email', config.gateEmail);
   let statuses: { qobuzAccounts: Record<string, boolean>; beatportAccounts: Record<string, boolean> } = {
     qobuzAccounts: {}, beatportAccounts: {}
   };
@@ -317,6 +319,52 @@ function serviceLabel(service: StoreService): string {
   return service === 'qobuz' ? 'Qobuz' : 'Beatport';
 }
 
+// ========== SoundCloud ==========
+//
+// One sign-in, not a list of accounts: the Chrome profile every SoundCloud run
+// opens. The row reads the note the last check left; the button checks for
+// real and opens a window only when the profile is signed out.
+
+function showSoundCloudSignIn(status: SoundCloudSignIn | null, busy = false): void {
+  const text = document.getElementById('setting-soundcloud-status');
+  const btn = document.getElementById('setting-soundcloud-sign-in') as HTMLButtonElement | null;
+  const who = status?.username || status?.permalink || '';
+  if (text) {
+    text.textContent = busy
+      ? 'Checking… if a Chrome window opens, sign in to SoundCloud there.'
+      : status?.signedIn
+        ? `Signed in as ${who || 'your account'}. Private sets, your likes and free downloads use this sign-in.`
+        : 'Not signed in. Private sets, your likes and SoundCloud\'s own download buttons need it.';
+  }
+  if (btn) {
+    btn.disabled = busy;
+    btn.textContent = status?.signedIn ? 'Check again' : 'Sign in';
+  }
+}
+
+async function refreshSoundCloudSignIn(): Promise<void> {
+  try {
+    showSoundCloudSignIn(await window.candybar.soundcloudSignInStatus());
+  } catch {
+    showSoundCloudSignIn(null);
+  }
+}
+
+async function signInSoundCloudFromSettings(): Promise<void> {
+  showSoundCloudSignIn(null, true);
+  try {
+    const res = await window.candybar.soundcloudSignIn();
+    if (!res.success) showToast('error', 'Couldn\'t sign in to SoundCloud', res.error ?? 'Something went wrong.');
+    else if (!res.status?.signedIn) showToast('warning', 'Not signed in to SoundCloud', 'The sign-in window closed before you finished.');
+    showSoundCloudSignIn(res.status ?? null);
+  } catch (err) {
+    showToast('error', 'Sign-in didn\'t work', getErrorMessage(err));
+    await refreshSoundCloudSignIn();
+  }
+  // The top bar's pill reads the same note.
+  void checkSoundCloudConnection(false);
+}
+
 async function refreshAccountConnectionStates(): Promise<void> {
   let statuses: { qobuzAccounts: Record<string, boolean>; beatportAccounts: Record<string, boolean> };
   try {
@@ -478,6 +526,7 @@ async function saveSettings(): Promise<void> {
     const beatportAccounts = collectAccounts('beatport');
     const spotifyClientId = getValue('setting-spotify-client-id');
     const spotifyClientSecret = getValue('setting-spotify-client-secret');
+    const gateEmail = getValue('setting-gate-email').trim();
     // Blank keeps the default next to the library rather than saving "".
     const rekordboxBackupDir = getValue('setting-rekordbox-backup-dir').trim();
 
@@ -492,6 +541,7 @@ async function saveSettings(): Promise<void> {
       beatportAccounts,
       spotifyClientId,
       spotifyClientSecret,
+      gateEmail,
       ...(rekordboxBackupDir ? { rekordboxBackupDir } : {}),
     } as Partial<AppConfigWithBackups>);
 
@@ -514,7 +564,9 @@ export function initSettings(): void {
   openSettingsBtn?.addEventListener('click', () => {
     showSettingsModal();
     void refreshAccountConnectionStates();
+    void refreshSoundCloudSignIn();
   });
+  document.getElementById('setting-soundcloud-sign-in')?.addEventListener('click', () => void signInSoundCloudFromSettings());
 
   closeSettingsBtn?.addEventListener('click', () => void requestCloseSettings());
 

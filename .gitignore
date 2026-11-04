@@ -34,3 +34,6 @@ sourcing-sessions/
 
 # Local CLI run log
 .fm-cli-log.jsonl
+
+# packaged app output (npm run dist)
+release/

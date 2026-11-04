@@ -24,7 +24,9 @@
 //                        stalled (needs-you / stalled / failed, plus needs-email once --email is given) are retried
 //   --assist SECONDS     when a gate stalls, wait this long for you to finish it in Chrome (default 0)
 //   --gate-timeout SEC   per-gate automation budget (default 90)
-//   --email ADDR         fill gates that demand an email address
+//   --email ADDR         fill gates that demand an email address (default: the one saved in
+//                        Track Lab's Settings → SoundCloud)
+//   --no-email           give gates no email this run, even if one is saved
 //   --postcode ZIP       the zip code Bandcamp asks for alongside the address
 //   --sc-actions LIST    account actions a gate may do for real: follow,like,comment[,repost] | none (default follow,like,comment)
 //   --comment TEXT       the comment left when a gate asks for one (default "dis shit nasty" — always that, by request)
@@ -42,7 +44,7 @@
 
 import fs from 'fs';
 import path from 'path';
-import { sessionDir } from '../lib/sourcing/config.mjs';
+import { sessionDir, loadConfig } from '../lib/sourcing/config.mjs';
 import { loadLibrary, bucketTracks } from '../lib/sourcing/library.mjs';
 import {
   openSoundCloud, captureSession, waitForSoundCloudLogin, fetchLikesViaSession, fetchLikesPublic, resolveNativeDownload,
@@ -75,6 +77,7 @@ function parseArgs(argv) {
     else if (a === '--assist') args.assist = Number(argv[++i]);
     else if (a === '--gate-timeout') args.gateTimeout = Number(argv[++i]);
     else if (a === '--email') args.email = argv[++i];
+    else if (a === '--no-email') args.noEmail = true;
     else if (a === '--postcode') args.postcode = argv[++i];
     else if (a === '--sc-account') args.scAccount = argv[++i];
     else if (a === '--comment') args.comment = argv[++i];
@@ -88,6 +91,10 @@ function parseArgs(argv) {
     else if (a === '--ledger') args.ledger = argv[++i];
     else if (a === '--help' || a === '-h') args.help = true;
   }
+  // Saving an email in Settings is the go-ahead for every run; --email
+  // overrides it and --no-email holds it back for this one.
+  if (args.noEmail) delete args.email;
+  else if (!args.email) args.email = loadConfig().gateEmail || undefined;
   return args;
 }
 
@@ -141,7 +148,7 @@ function flagText(r) {
 async function main() {
   const args = parseArgs(process.argv);
   if (args.help) {
-    log('usage: source-soundcloud-likes.mjs [--user NAME] [--set URL]... [--tracks PATH] [--limit N] [--since DATE] [--list-only] [--no-gates] [--drop-lossy] [--dest DIR] [--out PATH] [--resume PATH] [--assist SEC] [--gate-timeout SEC] [--email ADDR] [--postcode ZIP] [--sc-account NAME] [--comment TEXT] [--sc-actions follow,like,comment,repost|none] [--headless] [--no-library] [--ledger PATH]');
+    log('usage: source-soundcloud-likes.mjs [--user NAME] [--set URL]... [--tracks PATH] [--limit N] [--since DATE] [--list-only] [--no-gates] [--drop-lossy] [--dest DIR] [--out PATH] [--resume PATH] [--assist SEC] [--gate-timeout SEC] [--email ADDR | --no-email] [--postcode ZIP] [--sc-account NAME] [--comment TEXT] [--sc-actions follow,like,comment,repost|none] [--headless] [--no-library] [--ledger PATH]');
     process.exit(0);
   }
   const fromSets = !!args.sets?.length;

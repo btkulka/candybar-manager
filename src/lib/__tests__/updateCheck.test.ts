@@ -3,7 +3,7 @@ import { execFileSync } from 'child_process';
 import fs from 'fs/promises';
 import path from 'path';
 import os from 'os';
-import { checkForUpdate, oneClickBlocker, type UpdateStatus } from '../updateCheck';
+import { checkForUpdate, checkForRelease, isNewerVersion, oneClickBlocker, type UpdateStatus } from '../updateCheck';
 
 let tmp: string;
 
@@ -92,5 +92,46 @@ describe('oneClickBlocker', () => {
   it('blocks when untracked files would be overwritten by the pull', () => {
     expect(oneClickBlocker({ ...base, untrackedCollisions: ['src/lib/new.ts'] })).toMatch(/src\/lib\/new\.ts/);
     expect(oneClickBlocker(base)).toBeNull();
+  });
+});
+
+describe('isNewerVersion', () => {
+  it('compares dotted versions numerically', () => {
+    expect(isNewerVersion('v0.10.0', '0.9.3')).toBe(true);
+    expect(isNewerVersion('0.2.0', '0.2.0')).toBe(false);
+    expect(isNewerVersion('v1.0', '1.0.1')).toBe(false);
+    expect(isNewerVersion('1.0.0-beta.2', '0.9.9')).toBe(true);
+  });
+});
+
+describe('checkForRelease', () => {
+  const release = {
+    tag_name: 'v0.2.0',
+    html_url: 'https://github.com/btkulka/candybar-manager/releases/tag/v0.2.0',
+    assets: [
+      { name: 'Track-Lab-0.2.0-arm64.dmg', browser_download_url: 'https://example.test/arm64.dmg', size: 170 },
+      { name: 'Track-Lab-0.2.0-arm64.dmg.blockmap', browser_download_url: 'https://example.test/arm64.blockmap', size: 1 },
+      { name: 'Track-Lab-0.2.0-x64.dmg', browser_download_url: 'https://example.test/x64.dmg', size: 160 },
+    ],
+  };
+  const answer = (status: number, body?: unknown) =>
+    (async () => new Response(body === undefined ? null : JSON.stringify(body), { status })) as unknown as typeof fetch;
+
+  it("returns a newer release with this Mac's dmg", async () => {
+    await expect(checkForRelease('0.1.0', 'x64', answer(200, release))).resolves.toEqual({
+      version: '0.2.0',
+      pageUrl: release.html_url,
+      dmg: { name: 'Track-Lab-0.2.0-x64.dmg', url: 'https://example.test/x64.dmg', size: 160 },
+    });
+  });
+
+  it('is up to date on the same version, a prerelease, or no releases at all', async () => {
+    await expect(checkForRelease('0.2.0', 'arm64', answer(200, release))).resolves.toBeNull();
+    await expect(checkForRelease('0.1.0', 'arm64', answer(200, { ...release, prerelease: true }))).resolves.toBeNull();
+    await expect(checkForRelease('0.1.0', 'arm64', answer(404))).resolves.toBeNull();
+  });
+
+  it('throws rather than reporting "up to date" when GitHub fails', async () => {
+    await expect(checkForRelease('0.1.0', 'arm64', answer(403, { message: 'rate limited' }))).rejects.toThrow(/403/);
   });
 });
