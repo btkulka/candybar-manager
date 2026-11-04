@@ -2426,7 +2426,8 @@ body:not(.show-advanced) [data-advanced] { display: none !important; }
   max-width: 320px;
 }
 
-.setting-info label {
+.setting-info label,
+.setting-info .setting-label {
   display: block;
   font-size: var(--fs-body);
   font-weight: 600;
@@ -9051,6 +9052,43 @@ a:focus-visible, button:focus-visible, [role="button"]:focus-visible,
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-lg);
   padding: var(--space-lg) var(--space-xl);
+}
+
+/* Reopened picker while merging into a list: says so, and can back out. */
+.source-append-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-md);
+  margin-bottom: var(--space-md);
+  font-size: var(--fs-body);
+  color: var(--text-secondary);
+}
+
+/* The collapsed picker above a list: add another source, or start over. */
+.source-add-strip {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-sm) var(--space-md);
+  padding: var(--space-sm) var(--space-md);
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+}
+
+.source-add-label {
+  font-size: var(--fs-body);
+  color: var(--text-secondary);
+}
+
+.source-add-actions {
+  display: flex;
+  gap: var(--space-sm);
+}
+
+.source-add-strip .source-new-list {
+  margin-left: auto;
 }
 
 /* Lossless Upgrades — reuses the Sources results chrome; only the picker row

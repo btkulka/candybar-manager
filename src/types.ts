@@ -354,6 +354,7 @@ export type AppConfig = {
   rekordboxEnabled?: boolean; // when false, hides rekordbox UI (settings tab, Restore page) for machines that don't manage a rekordbox library
   showAdvancedTools?: boolean; // when false (default), hides developer and repair controls marked data-advanced
   tutorialCompleted?: boolean; // false until the first-run tour is finished or skipped; config files that predate the tour read as true
+  tourOffered?: boolean; // set once someone who predates the tour has been offered it, so the nudge shows only once
 };
 
 // Store purchase types

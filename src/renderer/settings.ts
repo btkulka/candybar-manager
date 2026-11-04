@@ -414,6 +414,13 @@ function trapSettingsFocus(e: KeyboardEvent): void {
   else if (!e.shiftKey && (document.activeElement === last || !inside)) { e.preventDefault(); first.focus(); }
 }
 
+/** Close Settings the way the × does (asking about unsaved changes). Resolves
+ *  true once it's closed, false if the user chose to keep editing. */
+export async function closeSettings(): Promise<boolean> {
+  await requestCloseSettings();
+  return !settingsModal.classList.contains('visible');
+}
+
 async function requestCloseSettings(): Promise<void> {
   if (!settingsModal.classList.contains('visible')) return;
   if (settingsFormState() !== savedFormState) {

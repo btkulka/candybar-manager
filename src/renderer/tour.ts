@@ -3,13 +3,15 @@
  *
  * Dims the app and spotlights one area at a time with a short card explaining
  * it, switching pages as it goes. Starts on a machine's first launch (config
- * `tutorialCompleted` is false) and replays from the ? button in the topbar.
+ * `tutorialCompleted` is false) and replays from the ? button in the topbar or
+ * Settings → Library. Someone whose config predates the tour gets a one-time
+ * toast offering it instead (`tourOffered`).
  * Finishing or skipping marks it completed; quitting mid-tour does not, so it
  * comes back next launch.
  */
 
-import { setActiveTab } from './shared';
-import { openSettingsTo } from './settings';
+import { setActiveTab, showToast } from './shared';
+import { openSettingsTo, closeSettings } from './settings';
 
 interface TourStep {
   /** Selector for the area to spotlight; several matches are spotlit as one box.
@@ -147,6 +149,24 @@ export function startTour(): void {
 
 export function initTour(): void {
   document.getElementById('start-tour')?.addEventListener('click', startTour);
+  document.getElementById('settings-start-tour')?.addEventListener('click', async () => {
+    if (await closeSettings()) startTour();
+  });
+}
+
+/** One-time nudge for someone who was using the app before the tour existed:
+ *  their config reads as tour-completed, so it never starts on its own. */
+export function offerTour(): void {
+  showToast(
+    'info',
+    'New: a quick tour',
+    'Upgrades, SoundCloud sets in Sourcing and more. The one-minute tour shows where everything lives. It\'s also under ? in the top bar.',
+    15000,
+    { label: 'Take the tour', onClick: startTour }
+  );
+  void window.candybar.updateConfig({ tourOffered: true }).catch((err: unknown) => {
+    console.error('[Tour] failed to save the offer:', err);
+  });
 }
 
 // ========== Steps ==========
@@ -184,7 +204,7 @@ function endTour(): void {
 async function markCompleted(): Promise<void> {
   try {
     // Merge-write the one key, so a Settings save racing this can't undo it.
-    await window.candybar.updateConfig({ tutorialCompleted: true });
+    await window.candybar.updateConfig({ tutorialCompleted: true, tourOffered: true });
   } catch (err) {
     console.error('[Tour] failed to save completion:', err);
   }

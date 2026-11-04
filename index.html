@@ -304,9 +304,24 @@
 
           <div class="source-workspace" id="source-workspace">
 
-            <!-- CSV / Spotify picker — collapses to the playlist chip after a search -->
+            <!-- CSV / Spotify / SoundCloud picker — collapses to the add strip below after a search -->
             <div class="source-input-bar" id="source-input-bar">
+              <div class="source-append-head" id="source-append-head" style="display: none;">
+                <span>Adding to this list. New tracks are merged in, without repeats.</span>
+                <button type="button" class="btn-ghost btn-sm" id="source-append-cancel">Cancel</button>
+              </div>
               <div id="source-source-slot"></div>
+            </div>
+
+            <!-- Shown above the results while the picker is collapsed -->
+            <div class="source-add-strip" id="source-add-strip" style="display: none;">
+              <span class="source-add-label">Add another playlist</span>
+              <div class="source-add-actions">
+                <button type="button" class="btn-secondary btn-sm" data-add-source="spotify" data-tooltip="Merge a Spotify playlist into this list">Spotify</button>
+                <button type="button" class="btn-secondary btn-sm" data-add-source="soundcloud" data-tooltip="Merge a SoundCloud set into this list">SoundCloud</button>
+                <button type="button" class="btn-secondary btn-sm" data-add-source="csv" data-tooltip="Merge a CSV file into this list">CSV</button>
+              </div>
+              <button type="button" class="btn-ghost btn-sm source-new-list" id="source-new-list" data-tooltip="Put this list away and start over with a new playlist">New list</button>
             </div>
 
             <!-- Search progress (shown while sourcing) -->
@@ -1371,6 +1386,13 @@
                 <input type="checkbox" id="setting-show-advanced" />
                 <span class="switch-slider"></span>
               </label>
+            </div>
+            <div class="setting-row">
+              <div class="setting-info">
+                <span class="setting-label">App tour</span>
+                <p class="setting-desc">A one-minute walkthrough of what each page is for.</p>
+              </div>
+              <button type="button" class="btn-secondary btn-sm" id="settings-start-tour">Take the tour</button>
             </div>
           </div>
 

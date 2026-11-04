@@ -20,7 +20,7 @@ import { initRestore } from './renderer/restore';
 import { initSpliceRecovery } from './renderer/spliceRecovery';
 import { initRightDrawer } from './renderer/rightDrawer';
 import { initStorePanel } from './renderer/storePanel';
-import { initTour, startTour } from './renderer/tour';
+import { initTour, startTour, offerTour } from './renderer/tour';
 import { initUpgrade } from './renderer/upgrade';
 
 // Re-export types that were previously exported from this file
@@ -84,6 +84,7 @@ async function loadConfig() {
   // First launch on this machine. Started after the tab restore above so it
   // can't yank the page out from under the tour.
   if (!config.tutorialCompleted) startTour();
+  else if (!config.tourOffered) offerTour();
 
   // Restore persisted input (CSV path or Spotify playlist URL) into the
   // Source tab. The config keys are still `checkCsvPath` / `checkSpotifyPlaylistUrl`

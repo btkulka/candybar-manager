@@ -21,6 +21,10 @@ let runSearchBtn: HTMLButtonElement;
 // away once a search runs, the progress strip shows while sourcing, and the
 // results section takes over. These three drive that flow.
 const inputBar = document.getElementById('source-input-bar') as HTMLElement;
+// While a list is on screen the picker collapses to this strip of "add another"
+// buttons; the head explains the picker when it's reopened to merge into a list.
+const addStrip = document.getElementById('source-add-strip') as HTMLElement;
+const appendHead = document.getElementById('source-append-head') as HTMLElement;
 const progressSection = document.getElementById('source-progress-section') as HTMLElement;
 const progressBar = document.getElementById('source-progress-bar') as HTMLDivElement;
 const progressMessage = document.getElementById('source-progress-message') as HTMLSpanElement;
@@ -217,6 +221,102 @@ function updateRunButton() {
   } else {
     runSearchBtn.disabled = !soundcloudUrlValid;
   }
+}
+
+/** The picker and the add strip trade places: with a list on screen and
+ *  nothing running, the picker collapses to the strip. */
+function setInputBarVisible(visible: boolean): void {
+  inputBar.style.display = visible ? '' : 'none';
+  syncAddStrip();
+}
+
+function syncAddStrip(): void {
+  const listShown = resultsSection.style.display !== 'none';
+  const pickerShown = inputBar.style.display !== 'none';
+  addStrip.style.display = listShown && !pickerShown && !searching ? '' : 'none';
+  appendHead.style.display = appendMode && pickerShown && listShown ? '' : 'none';
+}
+
+/** Reopen the picker above the current list, optionally on one source type;
+ *  the next run merges into the list (deduped by input key). */
+function beginAppend(type?: SourceType): void {
+  if (searching) return;
+  appendMode = true;
+  clearCsvFile();
+  if (spotifyUrlInput) {
+    spotifyUrlInput.value = '';
+    validateSpotifyUrl('');
+  }
+  if (soundcloudUrlInput) {
+    soundcloudUrlInput.value = '';
+    validateSoundCloudUrl('');
+  }
+  if (type) setSourceType(type);
+  setInputBarVisible(true);
+  inputBar.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  if (sourceType === 'spotify') spotifyUrlInput?.focus();
+  else if (sourceType === 'soundcloud') soundcloudUrlInput?.focus();
+}
+
+function cancelAppend(): void {
+  if (searching) return;
+  appendMode = false;
+  setInputBarVisible(resultsSection.style.display === 'none');
+}
+
+/** A link pasted under the wrong tab (a SoundCloud set in the Spotify field, or
+ *  the reverse) moves to the right one instead of just showing ✗. */
+function movePastedLink(type: 'spotify' | 'soundcloud', value: string): void {
+  const from = type === 'spotify' ? soundcloudUrlInput : spotifyUrlInput;
+  const to = type === 'spotify' ? spotifyUrlInput : soundcloudUrlInput;
+  from.value = '';
+  to.value = value;
+  setSourceType(type);
+  validateSpotifyUrl(spotifyUrlInput.value);
+  validateSoundCloudUrl(soundcloudUrlInput.value);
+  to.focus();
+}
+
+/** Clear and New list both throw away the reviewed list and its picks, so ask
+ *  first. Store carts and the library aren't touched. */
+async function confirmClearResults(): Promise<void> {
+  if (searching) return;
+  if (matches.length + libraryMatched.length + libraryProbable.length > 0) {
+    // The playlist's own count; summing the result lists double-counts, since
+    // store matches overlap the owned/maybe-owned rows.
+    const info = currentPlaylistInfo;
+    const count = info ? (info.fetchedCount || info.trackCount) : 0;
+    const what = info?.name ? `"${info.name}"${count ? ` (${plural(count, 'track')})` : ''}` : 'the current list';
+    const ok = await confirmAction({
+      title: 'Start a new list?',
+      message: `This puts away ${what} and your picks so you can start from a new playlist.`,
+      safetyNote: 'Nothing in your Qobuz or Beatport carts or your library changes.',
+      confirmLabel: 'Start a new list',
+      tone: 'caution',
+    });
+    if (!ok) return;
+  }
+  clearResults();
+}
+
+function clearResults(): void {
+  matches = [];
+  libraryMatched = [];
+  libraryProbable = [];
+  selectedQobuzIds = new Set();
+  selectedBeatportIds = new Set();
+  lastAddedQobuz = [];
+  lastAddedBeatport = [];
+  checkoutArmedAt = { qobuz: null, beatport: null };
+  appendMode = false;
+  clearPlaylistCard();
+  closeCartDrawer();
+  resultsSection.style.display = 'none';
+  cartSection.style.display = 'none';
+  buyBar.style.display = 'none';
+  downloadPurchasesBtn.style.display = 'none';
+  setInputBarVisible(true);
+  saveSourcesState();
 }
 
 function setSourceType(type: SourceType) {
@@ -553,7 +653,7 @@ function restoreSourcesState() {
   updateSegmentCounts();
   setActiveSegment(activeSegment);
   updateBuyBar();
-  inputBar.style.display = 'none';
+  setInputBarVisible(false);
   // If a prior session already pushed tracks to a cart, keep the download path live.
   if (lastAddedQobuz.length + lastAddedBeatport.length > 0) {
     downloadPurchasesBtn.style.display = 'inline-flex';
@@ -942,7 +1042,7 @@ async function runSearch() {
   (progressSection as HTMLElement & { _resetStats?: () => void })._resetStats?.();
 
   // Collapse the input bar; the progress strip is now the focus.
-  inputBar.style.display = 'none';
+  setInputBarVisible(false);
 
   try {
     const result = await window.candybar.librarySourcingRun(
@@ -953,7 +1053,7 @@ async function runSearch() {
 
     if (!result.success || !result.result) {
       showToast('error', 'Search Failed', result.error || 'Unknown error');
-      inputBar.style.display = '';
+      setInputBarVisible(true);
       return;
     }
 
@@ -1006,7 +1106,7 @@ async function runSearch() {
     appendMode = false;
 
     resultsSection.style.display = 'block';
-    inputBar.style.display = 'none';
+    setInputBarVisible(false);
     movePlaylistCardToResults();
     updateSegmentCounts();
     setActiveSegment('new');
@@ -1016,10 +1116,11 @@ async function runSearch() {
   } catch (err) {
     const message = getErrorMessage(err);
     showToast('error', 'Search Failed', message);
-    inputBar.style.display = '';
+    setInputBarVisible(true);
     setStatus('Error');
   } finally {
     searching = false;
+    syncAddStrip();
     updateRunButton();
     clearResultsBtn.disabled = false;
     addMoreBtn.disabled = false;
@@ -1390,6 +1491,10 @@ export function initSource() {
   // Spotify URL input (debounced)
   let spotifyUrlDebounce: ReturnType<typeof setTimeout>;
   spotifyUrlInput.addEventListener('input', () => {
+    if (/soundcloud\.com\//i.test(spotifyUrlInput.value)) {
+      movePastedLink('soundcloud', spotifyUrlInput.value.trim());
+      return;
+    }
     clearTimeout(spotifyUrlDebounce);
     spotifyUrlDebounce = setTimeout(() => {
       validateSpotifyUrl(spotifyUrlInput.value);
@@ -1399,6 +1504,10 @@ export function initSource() {
   // SoundCloud set URL input (debounced)
   let soundcloudUrlDebounce: ReturnType<typeof setTimeout>;
   soundcloudUrlInput.addEventListener('input', () => {
+    if (/open\.spotify\.com\/|^spotify:/i.test(soundcloudUrlInput.value.trim())) {
+      movePastedLink('spotify', soundcloudUrlInput.value.trim());
+      return;
+    }
     clearTimeout(soundcloudUrlDebounce);
     soundcloudUrlDebounce = setTimeout(() => {
       validateSoundCloudUrl(soundcloudUrlInput.value);
@@ -1434,27 +1543,14 @@ export function initSource() {
   // Add to cart
   addToCartBtn.addEventListener('click', () => addSelectedToCart());
 
-  // "+ Add More Tracks" — queue an append search. Clears the source input so
-  // the user can drop a new CSV or paste a new Spotify/SoundCloud URL, then the
-  // next runSearch() merges the new matches into the existing stack (deduped by
-  // input key).
-  addMoreBtn.addEventListener('click', () => {
-    if (searching) return;
-    appendMode = true;
-    clearCsvFile();
-    if (spotifyUrlInput) {
-      spotifyUrlInput.value = '';
-      validateSpotifyUrl('');
-    }
-    if (soundcloudUrlInput) {
-      soundcloudUrlInput.value = '';
-      validateSoundCloudUrl('');
-    }
-    // Reveal the input bar again above the current results so the next run
-    // merges into them.
-    inputBar.style.display = '';
-    inputBar.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  // "+ Add list" and the add strip's Spotify / SoundCloud / CSV buttons reopen
+  // the picker above the current list; the next run merges into it.
+  addMoreBtn.addEventListener('click', () => beginAppend());
+  addStrip.querySelectorAll<HTMLButtonElement>('[data-add-source]').forEach((btn) => {
+    btn.addEventListener('click', () => beginAppend(btn.dataset.addSource as SourceType));
   });
+  document.getElementById('source-append-cancel')?.addEventListener('click', cancelAppend);
+  document.getElementById('source-new-list')?.addEventListener('click', () => void confirmClearResults());
 
   // Open cart in embedded store panel. Close the review drawer first — its
   // full-window scrim would otherwise sit over the app (and the drawer itself
@@ -1548,26 +1644,7 @@ export function initSource() {
   exportCsvBtn.addEventListener('click', () => exportResults());
 
   // Clear results
-  clearResultsBtn.addEventListener('click', () => {
-    if (searching) return;
-    matches = [];
-    libraryMatched = [];
-    libraryProbable = [];
-    selectedQobuzIds = new Set();
-    selectedBeatportIds = new Set();
-    lastAddedQobuz = [];
-    lastAddedBeatport = [];
-    checkoutArmedAt = { qobuz: null, beatport: null };
-    appendMode = false;
-    clearPlaylistCard();
-    closeCartDrawer();
-    resultsSection.style.display = 'none';
-    cartSection.style.display = 'none';
-    buyBar.style.display = 'none';
-    downloadPurchasesBtn.style.display = 'none';
-    inputBar.style.display = '';
-    saveSourcesState();
-  });
+  clearResultsBtn.addEventListener('click', () => void confirmClearResults());
 
   // Progress UX — elapsed, ETA, live counts, last-found preview.
   const progressPercent = document.getElementById('source-progress-percent') as HTMLSpanElement | null;
