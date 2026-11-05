@@ -26,6 +26,7 @@ import { initSetupWizard, startFirstRunSetup, refreshSetupBadge } from './render
 import { initUpgrade } from './renderer/upgrade';
 import { initClaude } from './renderer/claude';
 import { initUpdates } from './renderer/updates';
+import { initProfiles } from './renderer/profiles';
 
 // Re-export types that were previously exported from this file
 export type { SuggestedAction, HealthIssue } from './renderer/shared';
@@ -161,6 +162,7 @@ function initApp() {
   safeInit('initUpgrade', initUpgrade);
   safeInit('initLibrary', initLibrary);
   safeInit('initSettings', initSettings);
+  safeInit('initProfiles', initProfiles);
   safeInit('initBrowseButtons', initBrowseButtons);
   safeInit('initActivity', initActivity);
   safeInit('initPlayer', initPlayer);

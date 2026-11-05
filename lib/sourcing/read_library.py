@@ -23,10 +23,16 @@ import os
 import sqlite3
 import sys
 
-# The app passes its own candybar.db when its user-data folder isn't the default.
-CANDYBAR_DB = os.environ.get("CANDYBAR_DB") or os.path.expanduser(
-    "~/Library/Application Support/candybar-manager/candybar.db"
+# The candybar.db to read: what the caller passes (lib/sourcing/library.mjs
+# always does), else the active Track Lab profile's data folder, else main's.
+CANDYBAR_DB = os.environ.get("CANDYBAR_DB") or os.path.join(
+    os.environ.get("CANDYBAR_USER_DATA")
+    or os.path.expanduser("~/Library/Application Support/candybar-manager"),
+    "candybar.db",
 )
+# "0": this profile has Rekordbox off, so the collection on this Mac (someone
+# else's) is left out and ownership comes from candybar.db alone.
+USE_REKORDBOX = os.environ.get("CANDYBAR_REKORDBOX", "1") != "0"
 
 
 def norm_path(p):
@@ -114,12 +120,15 @@ def read_candybar():
 def main():
     stats = {"rekordbox": 0, "candybar": 0, "disk_only": 0, "errors": []}
 
-    try:
-        rb = read_rekordbox()
-        stats["rekordbox"] = len(rb)
-    except Exception as e:
-        rb = []
-        stats["errors"].append("rekordbox: %s" % e)
+    rb = []
+    if USE_REKORDBOX:
+        try:
+            rb = read_rekordbox()
+            stats["rekordbox"] = len(rb)
+        except Exception as e:
+            stats["errors"].append("rekordbox: %s" % e)
+    else:
+        stats["rekordbox_off"] = True
 
     try:
         cb, ignored = read_candybar()

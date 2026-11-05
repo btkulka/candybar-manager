@@ -16,6 +16,7 @@
     "src/lib/trackConverter.ts",
     "src/lib/constants.ts",
     "src/lib/fileUtils.ts",
+    "src/lib/profiles.ts",
     "src/types.ts"
   ]
 }

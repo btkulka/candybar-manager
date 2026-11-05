@@ -71,6 +71,33 @@ After install, `npm run dev` for development or `npm start` to preview a product
 - Edit `config.json` for initial defaults.
 - Saved defaults are stored in the app's user data directory.
 
+## Profiles
+
+Track Lab can hold several people's data, one profile each: library folders,
+SoundCloud/Spotify/store sign-ins, gate email and address, download ledger,
+sourcing history and Track Lab's library database. Switch from the profile chip
+under the logo or in Settings → Profiles. Switching restarts the app in that
+profile. The **default** profile is the one Track Lab opens in. It starts as the
+original profile and stays that way until another is made default.
+
+```text
+~/Library/Application Support/candybar-manager/              main (the original) + profiles.json + store-bridge.sock
+~/Library/Application Support/candybar-manager/profiles/<id>/ every other profile (its own config.json, secrets.json, candybar.db, logs…)
+~/.cache/candybar-manager/                                    main's browser sign-ins (SoundCloud, Splice)
+…/profiles/<id>/cache/                                        another profile's browser sign-ins
+```
+
+Only one Track Lab runs at a time, whichever profile it's in. Processes the app
+starts get the profile in their environment (`CANDYBAR_PROFILE`,
+`CANDYBAR_USER_DATA`, `CANDYBAR_CACHE_DIR`, `CANDYBAR_PROFILES_ROOT`). The MCP
+server and the sourcing CLI otherwise read `profiles.json` for the profile the
+app is running. A new profile starts with Rekordbox off, because the Rekordbox
+collection on the Mac belongs to whoever set it up. With Rekordbox off,
+ownership checks leave the collection out and the Rekordbox-only features
+refuse. From Claude Code or Claude Desktop, Claude asks which profile to use
+whenever there's more than one (the MCP server's instructions and the
+`profiles` tool).
+
 ## Write journal
 
 Every destructive file operation (move, delete, ffmpeg conversion, tag rewrite,

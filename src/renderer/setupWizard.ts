@@ -53,6 +53,9 @@ const ICON = {
 
 let root: HTMLElement | null = null;
 let config: SetupConfig | null = null;
+/** Set when this Track Lab runs a profile other than the original: the
+ *  Rekordbox collection on this Mac is the original profile's. */
+let otherProfile: { name: string; mainName: string } | null = null;
 let current: StepId = 'welcome';
 let firstRun = false;
 let libraryChanged = false;
@@ -96,6 +99,14 @@ export async function openSetupWizard(opts: { step?: StepId; firstRun?: boolean 
   }
   try {
     config = await window.candybar.getConfig();
+    try {
+      const profiles = await window.candybar.profilesList();
+      const running = profiles.profiles.find(p => p.isRunning);
+      const main = profiles.profiles.find(p => p.isMain);
+      otherProfile = running && main && !running.isMain ? { name: running.name, mainName: main.name } : null;
+    } catch {
+      otherProfile = null;
+    }
   } catch (err) {
     showToast('error', 'Couldn\'t open the setup guide', getErrorMessage(err));
     return;
@@ -411,6 +422,7 @@ const VIEWS: Record<StepId, () => StepView> = {
           <button type="button" class="choice-card" role="radio" aria-checked="${enabled}" data-rekordbox="on">${ICON.yes}<strong>Yes, I use Rekordbox</strong><span>Show Upgrade quality and Restore library</span></button>
           <button type="button" class="choice-card" role="radio" aria-checked="${!enabled}" data-rekordbox="off">${ICON.no}<strong>No, I don't</strong><span>Hide the Rekordbox-only pages</span></button>
         </div>
+        ${otherProfile ? callout('warn', `Rekordbox on this Mac is ${escapeHtml(otherProfile.mainName)}'s`, `Every profile sees the same Rekordbox collection on this Mac. Choose Yes only if that collection is ${escapeHtml(otherProfile.name)}'s too; otherwise ${escapeHtml(otherProfile.name)}'s tracks would be checked against, and upgraded in, someone else's library.`) : ''}
         ${status}
         ${enabled && backupDir ? pathField('setup-rekordbox-backups', 'Safety backups', 'Before Track Lab changes anything in Rekordbox, it saves a copy of your whole collection here, so any change can be undone.', backupDir) : ''}
         ${enabled ? '<p class="setup-note">' + ICON.shield + '<span>Track Lab only reads Rekordbox unless you start an upgrade, and it asks you to close Rekordbox first.</span></p>' : ''}

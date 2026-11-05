@@ -27,7 +27,9 @@ import type {
   StoreCartResult,
   StoreCartCheck,
   UpdateState,
-  VolumeInfo
+  VolumeInfo,
+  ProfilesState,
+  TrackLabProfile
 } from './types';
 
 /**
@@ -55,6 +57,15 @@ contextBridge.exposeInMainWorld('candybar', {
     ipcRenderer.invoke('check-library', { ...source, useCache, cacheOnly }),
   getConfig: () => ipcRenderer.invoke('get-config'),
   getConfigPath: (): Promise<string> => ipcRenderer.invoke('get-config-path'),
+  // Profiles: each a data folder of its own; switching restarts the app in it.
+  profilesList: (): Promise<ProfilesState> => ipcRenderer.invoke('profiles:list'),
+  profilesCreate: (name: string, switchTo = false): Promise<ProfilesState & { created: TrackLabProfile; switching: boolean }> =>
+    ipcRenderer.invoke('profiles:create', { name, switchTo }),
+  profilesRename: (id: string, name: string): Promise<ProfilesState> => ipcRenderer.invoke('profiles:rename', { id, name }),
+  profilesSetDefault: (id: string): Promise<ProfilesState> => ipcRenderer.invoke('profiles:set-default', { id }),
+  profilesDelete: (id: string): Promise<ProfilesState & { trashed: boolean; folder: string }> => ipcRenderer.invoke('profiles:delete', { id }),
+  profilesSwitch: (id: string): Promise<{ switching: boolean; profile: TrackLabProfile; reason?: string }> =>
+    ipcRenderer.invoke('profiles:switch', { id }),
   getLibraryRoot: () => ipcRenderer.invoke('get-library-root'),
   setConfig: (config: AppConfig) => ipcRenderer.invoke('set-config', config),
   // Merge just these fields into the saved config and get the result back.

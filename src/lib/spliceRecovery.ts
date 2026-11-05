@@ -15,8 +15,11 @@ function spliceLibUrl(file: string): string {
   return pathToFileURL(path.join(app.getAppPath(), 'lib', file)).href;
 }
 
-const TOKEN_CACHE = path.join(os.homedir(), '.cache', 'candybar-manager', 'splice-token.json');
-const PROFILE_DIR = path.join(os.homedir(), '.cache', 'candybar-manager', 'playwright-profiles', 'splice');
+// The running profile's Splice sign-in (profileBoot sets CANDYBAR_CACHE_DIR;
+// main's is ~/.cache/candybar-manager, as before profiles).
+const CACHE_DIR = process.env.CANDYBAR_CACHE_DIR || path.join(os.homedir(), '.cache', 'candybar-manager');
+const TOKEN_CACHE = path.join(CACHE_DIR, 'splice-token.json');
+const PROFILE_DIR = path.join(CACHE_DIR, 'playwright-profiles', 'splice');
 
 export type SpliceLoginStatus = {
   connected: boolean;

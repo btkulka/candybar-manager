@@ -75,10 +75,18 @@ function toolLabel(name: string): string {
   return name.startsWith(`mcp__${CANDYBAR_MCP}__`) ? name.slice(`mcp__${CANDYBAR_MCP}__`.length).replace(/_/g, ' ') : name;
 }
 
-/** The app's MCP server for a session, with the store bridge pointed at this app. */
+/** The running profile, as profileBoot handed it to this process. */
+const PROFILE_ENV_KEYS = ['CANDYBAR_PROFILES_ROOT', 'CANDYBAR_PROFILE', 'CANDYBAR_USER_DATA', 'CANDYBAR_CACHE_DIR'] as const;
+
+/** The app's MCP server for a session, with the store bridge pointed at this
+ *  app and the profile this app is running, so the job's tools read and write
+ *  that profile's files (an MCP server isn't sure to inherit the environment). */
 function appMcpServer(deps: ClaudeJobDeps): McpServerConfig | null {
   const server = candybarMcpServer(deps.appRoot);
-  if (server && deps.storeBridgePath) server.env = { ...server.env, CANDYBAR_STORE_BRIDGE: deps.storeBridgePath };
+  if (!server) return null;
+  const profileEnv: Record<string, string> = {};
+  for (const key of PROFILE_ENV_KEYS) if (process.env[key]) profileEnv[key] = process.env[key]!;
+  server.env = { ...server.env, ...profileEnv, ...(deps.storeBridgePath ? { CANDYBAR_STORE_BRIDGE: deps.storeBridgePath } : {}) };
   return server;
 }
 

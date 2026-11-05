@@ -29,6 +29,13 @@ export const PARITY: Record<string, readonly string[] | string> = {
   'get-library-root': ['get_settings'],
   'set-config': ['update_settings'],
   'update-config': ['update_settings'],
+  // Profiles (each person's data folder; switching restarts the app in it)
+  'profiles:list': ['profiles'],
+  'profiles:create': ['profiles'],
+  'profiles:rename': ['profiles'],
+  'profiles:set-default': ['profiles'],
+  'profiles:delete': ['profiles'],
+  'profiles:switch': ['profiles'],
   'get-cache-status': ['scan_cache'],
   'clear-cache': ['scan_cache'],
   'get-storage-stats': ['storage_stats'],

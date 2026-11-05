@@ -11,6 +11,13 @@ The engine is `$TRACK_LAB_ROOT/lib/sourcing/` (plain Node, no build step; see **
 
 **Paths.** `$TRACK_LAB_ROOT` is Track Lab's code: the engine (`lib/sourcing/`) and its CLIs (`bin/`). Track Lab sets it when it runs this skill; in a terminal session it's the candybar-manager checkout (`export TRACK_LAB_ROOT=~/source/candybar-manager` if it isn't set). `$SKILL` is this skill's own folder (Claude Code shows it as the skill's base directory). `$WORK` is a scratch folder: your scratchpad, or the current folder when Track Lab runs you. `node` is whatever is on PATH — real Node in a terminal, Track Lab's own runtime when the app runs you.
 
+## Whose profile
+
+Track Lab keeps each person's data in a **profile**: library folders, SoundCloud/Spotify/store sign-ins, the email gates get, the download ledger and history. The engine and the MCP tools use the profile Track Lab is running.
+
+- **From Claude Code or Claude Desktop:** before anything that reads or writes a profile's data, call the MCP `profiles` tool with `list`. If there's more than one profile, **always ask which profile to use**, even when the running one looks right, then `switch` to it if it isn't the one running. Running as the wrong person follows artists, sends gate emails and fills carts from the wrong accounts.
+- **Inside a Track Lab job** (below), don't ask: the job already belongs to the profile the app is running.
+
 ## When Track Lab runs you
 
 Track Lab's own Claude jobs load this skill: "Review with Claude" on Find & buy, and on Upgrade quality (`references/upgrades.md`, which builds on everything here). In those jobs:
@@ -132,6 +139,8 @@ The same pipeline pointed at a likes list or a SoundCloud set (`--set <url>`): r
 The `candybar-audio-tools` server wraps the same engine: `check_library_for_tracks` (fast, no browser), `source_playlist`, `source_soundcloud_likes`, `render_sourcing_review`, `search_beatport`, `search_qobuz`, `list_purchases`, `store_login`, `download_track`. The sourcing tools block for the whole run and take no `--out` or `--resume`, so prefer the CLI in the background for a real playlist and the tools for one-off lookups. Store tools drive the browser, not an API; `signedIn: false` is a real answer — offer `store_login`, never present it as "no results".
 
 ## Where things live
+
+Paths below are the main profile's. Another profile keeps the same files under `~/Library/Application Support/candybar-manager/profiles/<id>/`, with its browser sign-ins in that folder's `cache/` instead of `~/.cache/candybar-manager`. The store socket stays at the top level whichever profile is running.
 
 | What | Where |
 |---|---|

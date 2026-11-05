@@ -1,3 +1,5 @@
+// First: picks the profile (and so the data folder) before anything reads it.
+import { PROFILES_ROOT, RUNNING_PROFILE, GOT_SINGLE_INSTANCE_LOCK } from './lib/profileBoot';
 import log, { createScopedLogger, enableFileLog } from './lib/logger';
 import { app, BrowserWindow, webContents, ipcMain, dialog, nativeImage, Tray, Menu, protocol, net, shell, session, type OpenDialogOptions } from 'electron';
 import fs from 'fs';
@@ -57,6 +59,10 @@ import {
   isStorePartition, isAllowedWebviewSrc, isAllowedGuestNavigation, isAllowedExternalUrl,
   isStoreCheckoutUrl, isStoreSignInUrl, plainChromeUserAgent, PLACE_ORDER_RE, ADVANCE_RE, scrapeItemCount, resyncRefusal,
 } from './lib/mainGuards';
+import {
+  readRegistry, findProfile, listProfiles, createProfile, renameProfile, setDefaultProfile, removeProfile, sharedSecretsFrom,
+  type ProfileView,
+} from './lib/profiles';
 import { readConfig, writeConfig, AppConfig, DEFAULT_LIBRARY_ROOT, getDefaultArchivePath, getDefaultRestoreStageDir, setSecretsPath, getConfigWarnings, resolveRekordboxBackupDir } from './lib/config';
 import { searchSpotify, testSpotifyConnection, SpotifySearchResult, getPlaylistTracks, getSpotifyTracksByIds } from './lib/spotify';
 import { fetchSoundCloudSet } from './lib/soundcloudSets';
@@ -148,6 +154,10 @@ function withCors(res: Response): Response {
 }
 
 const CONFIG_PATH = path.join(app.getPath('userData'), 'config.json');
+// Claude's tools and the sourcing CLI reach the app here. It sits in the
+// profiles root, not the profile's folder: one Track Lab runs at a time, and
+// they find it without knowing which profile it's in (lib/storeBridge.mjs).
+const STORE_BRIDGE_PATH = path.join(PROFILES_ROOT, 'store-bridge.sock');
 // `app.getAppPath()` returns the repo root in dev and the unpacked app dir
 // in production — robust to Vite's code-splitting moving main.js around.
 const CONFIG_DEFAULTS_PATH = path.join(app.getAppPath(), 'config.json');
@@ -157,7 +167,8 @@ const CONFIG_DEFAULTS_PATH = path.join(app.getAppPath(), 'config.json');
 // move copies that file across once and leaves the original where it was.
 const LEGACY_SECRETS_PATH = path.join(app.getAppPath(), 'secrets.json');
 const SECRETS_PATH = path.join(app.getPath('userData'), 'secrets.json');
-setSecretsPath(migrateSecretsFile(LEGACY_SECRETS_PATH, SECRETS_PATH));
+// Only main ever had a repo copy: another profile must never be seeded with it.
+setSecretsPath(RUNNING_PROFILE.id === 'main' ? migrateSecretsFile(LEGACY_SECRETS_PATH, SECRETS_PATH) : SECRETS_PATH);
 
 /** One-time copy of the repo-checkout secrets.json into userData. Returns the
  *  path to use: the userData file, or the legacy one if the copy couldn't be
@@ -318,18 +329,20 @@ async function drainRunningWork(timeoutMs = 15_000): Promise<void> {
 }
 
 /** Ask before cutting running work short. Returns true to go ahead. */
-async function confirmInterruptWork(action: 'quit' | 'update'): Promise<boolean> {
+async function confirmInterruptWork(action: 'quit' | 'update' | 'switch'): Promise<boolean> {
   const running = describeRunningWork();
   if (running.length === 0) return true;
   const win = getMainWindow();
   const opts: Electron.MessageBoxOptions = {
     type: 'warning',
-    title: action === 'quit' ? 'Quit Track Lab?' : 'Update Track Lab?',
+    title: { quit: 'Quit Track Lab?', update: 'Update Track Lab?', switch: 'Switch profile?' }[action],
     message: `Track Lab is still working: ${running.join(', ')}.`,
-    detail: action === 'quit'
-      ? 'Quitting now cancels it. Files already moved stay moved; a copy in progress is finished or abandoned cleanly first.'
-      : 'Updating restarts the app, which cancels it. You can update after it finishes — the check runs again on the next launch.',
-    buttons: [action === 'quit' ? 'Quit Anyway' : 'Update Anyway', 'Keep Working'],
+    detail: {
+      quit: 'Quitting now cancels it. Files already moved stay moved; a copy in progress is finished or abandoned cleanly first.',
+      update: 'Updating restarts the app, which cancels it. You can update after it finishes — the check runs again on the next launch.',
+      switch: 'Switching restarts the app in the other profile, which cancels it. Files already moved stay moved; a copy in progress is finished or abandoned cleanly first.',
+    }[action],
+    buttons: [{ quit: 'Quit Anyway', update: 'Update Anyway', switch: 'Switch Anyway' }[action], 'Keep Working'],
     defaultId: 1,
     cancelId: 1,
   };
@@ -537,11 +550,12 @@ app.on('session-created', (ses) => {
   }
 });
 
-// One Track Lab at a time: opening it again (the Applications shortcut, the
-// Dock) brings the open window forward instead of starting a second copy.
-// The lock is per user-data folder, so scratch runs with --user-data-dir have
-// their own; e2e tests (NODE_ENV=test) share the real one and skip it.
-if (process.env.NODE_ENV !== 'test' && !app.requestSingleInstanceLock()) {
+// One Track Lab at a time, whichever profile it runs: opening it again (the
+// Applications shortcut, the Dock) brings the open window forward instead of
+// starting a second copy. The lock (taken in profileBoot, on the profiles
+// root) is per root, so scratch runs with --user-data-dir have their own;
+// e2e tests (NODE_ENV=test) share the real one and skip it.
+if (!GOT_SINGLE_INSTANCE_LOCK) {
   app.exit(0);
 }
 app.on('second-instance', () => {
@@ -565,7 +579,7 @@ function ensureAppShortcut(): void {
   if (process.platform !== 'darwin' || process.env.NODE_ENV === 'test' || app.commandLine.hasSwitch('user-data-dir')) return;
   const repoDir = app.getAppPath();
   if (!fs.existsSync(path.join(repoDir, 'scripts', '_common.sh')) || !fs.existsSync(path.join(repoDir, '.git'))) return;
-  const marker = path.join(app.getPath('userData'), 'app-shortcut-made');
+  const marker = path.join(PROFILES_ROOT, 'app-shortcut-made'); // once per Mac, not per profile
   const refreshOnly = fs.existsSync(marker);
   execFile(
     '/bin/bash',
@@ -696,7 +710,7 @@ app.whenReady().then(async () => {
           profile: config.claudeProfile ?? null,
         };
       },
-      storeBridgePath: path.join(app.getPath('userData'), 'store-bridge.sock'),
+      storeBridgePath: STORE_BRIDGE_PATH,
       scratchDir: (() => {
         const dir = path.join(app.getPath('userData'), 'claude-scratch');
         fs.mkdirSync(dir, { recursive: true });
@@ -726,7 +740,7 @@ app.whenReady().then(async () => {
 
   // Claude's store tools and the sourcing CLI reach the store accounts through
   // here. Without it they can't, but the app itself is unaffected.
-  startStoreBridge(path.join(app.getPath('userData'), 'store-bridge.sock'), loggedBridgeHandlers(STORE_BRIDGE_HANDLERS))
+  startStoreBridge(STORE_BRIDGE_PATH, loggedBridgeHandlers(STORE_BRIDGE_HANDLERS))
     .then((stop) => { stopStoreBridge = stop; mainLog.info('Store bridge listening'); })
     .catch((err) => mainLog.warn('Store bridge not started:', err));
 
@@ -1571,6 +1585,80 @@ handleIpc('update-config', async (_event, partial: Partial<AppConfig>) => {
   }
 });
 
+// ---------- Profiles ----------
+//
+// Each profile is a data folder of its own (src/lib/profiles.ts): settings,
+// sign-ins, ledgers and Track Lab's library database. Switching restarts the
+// app in the other profile; the default profile is the one it opens in.
+
+function profilesState(): { running: string; defaultId: string; profiles: ProfileView[] } {
+  const reg = readRegistry(PROFILES_ROOT);
+  return { running: RUNNING_PROFILE.id, defaultId: reg.defaultId, profiles: listProfiles(PROFILES_ROOT, RUNNING_PROFILE.id) };
+}
+
+function profileOrThrow(idOrName: unknown) {
+  const profile = findProfile(readRegistry(PROFILES_ROOT), typeof idOrName === 'string' ? idOrName : '');
+  if (!profile) throw new Error(`No profile "${String(idOrName)}". Profiles: ${readRegistry(PROFILES_ROOT).profiles.map(p => p.name).join(', ')}`);
+  return profile;
+}
+
+let profileSwitchPending = false;
+
+/** Restart Track Lab in another profile. The reply goes out first; then the
+ *  normal quit path runs (drain jobs, flush the journal and cookies). */
+async function switchProfile(idOrName: unknown): Promise<{ switching: boolean; profile: ProfileView; reason?: string }> {
+  const target = profileOrThrow(idOrName);
+  const view = listProfiles(PROFILES_ROOT, RUNNING_PROFILE.id).find(p => p.id === target.id)!;
+  if (target.id === RUNNING_PROFILE.id) return { switching: false, profile: view, reason: `Already running as "${target.name}".` };
+  if (profileSwitchPending) return { switching: true, profile: view };
+  if (!(await confirmInterruptWork('switch'))) return { switching: false, profile: view, reason: 'Kept working: running work would have been cancelled.' };
+  profileSwitchPending = true;
+  quitConfirmed = true;
+  const args = process.argv.slice(1).filter(a => !a.startsWith('--profile='));
+  app.relaunch({ args: [...args, `--profile=${target.id}`] });
+  recordEvent('profile:switch', { source: 'app', args: { from: RUNNING_PROFILE.id, to: target.id } });
+  setTimeout(() => app.quit(), 300);
+  return { switching: true, profile: view };
+}
+
+handleIpc('profiles:list', async () => profilesState());
+
+handleIpc('profiles:create', async (_event, { name, switchTo }: { name: string; switchTo?: boolean }) => {
+  // Starts with the app's own keys (Spotify app, Claude sign-in); a person's
+  // accounts, gate details and library are filled in by the setup guide.
+  const profile = createProfile(PROFILES_ROOT, name, { sharedSecrets: sharedSecretsFrom(SECRETS_PATH) });
+  mainLog.info(`Profile added: ${profile.name} (${profile.id})`);
+  const switched = switchTo ? await switchProfile(profile.id) : null;
+  return { ...profilesState(), created: profile, switching: switched?.switching ?? false };
+});
+
+handleIpc('profiles:rename', async (_event, { id, name }: { id: string; name: string }) => {
+  renameProfile(PROFILES_ROOT, profileOrThrow(id).id, name);
+  return profilesState();
+});
+
+handleIpc('profiles:set-default', async (_event, { id }: { id: string }) => {
+  const profile = setDefaultProfile(PROFILES_ROOT, profileOrThrow(id).id);
+  mainLog.info(`Default profile: ${profile.name} (${profile.id})`);
+  return profilesState();
+});
+
+handleIpc('profiles:delete', async (_event, { id }: { id: string }) => {
+  // Out of the list first, then its folder to the Trash (recoverable there).
+  const { profile, dir } = removeProfile(PROFILES_ROOT, profileOrThrow(id).id, RUNNING_PROFILE.id);
+  let trashed = true;
+  try {
+    await shell.trashItem(dir);
+  } catch (err) {
+    trashed = false;
+    mainLog.warn(`Profile ${profile.id} removed, but its folder couldn't go to the Trash: ${dir}`, err);
+  }
+  mainLog.info(`Profile removed: ${profile.name} (${profile.id})`);
+  return { ...profilesState(), removed: profile, folder: dir, trashed };
+});
+
+handleIpc('profiles:switch', async (_event, { id }: { id: string }) => switchProfile(id));
+
 // ---------- Ownership: Rekordbox + candybar.db ----------
 //
 // "Do I already own this?" is answered by lib/sourcing/library.mjs — the
@@ -1581,7 +1669,7 @@ handleIpc('update-config', async (_event, partial: Partial<AppConfig>) => {
 type SourcingLibraryTrack = { file_path?: string; in_rekordbox?: boolean };
 type SourcingLibrary = { index: { tracks: SourcingLibraryTrack[] }; ignored: Set<string>; stats: OwnershipStats };
 type SourcingLibraryModule = {
-  loadLibrary: (opts?: { candybarDbPath?: string | null }) => Promise<SourcingLibrary>;
+  loadLibrary: (opts?: { candybarDbPath?: string | null; rekordbox?: boolean | null }) => Promise<SourcingLibrary>;
   bucketTracks: (
     wanted: unknown[],
     lib: { index: unknown; ignored: Set<string> },
@@ -1607,7 +1695,11 @@ function sourcingLibrary(): Promise<SourcingLibraryModule> {
 async function loadOwnershipLibrary(): Promise<SourcingLibrary> {
   const [mod, config] = await Promise.all([sourcingLibrary(), readConfig(CONFIG_PATH, CONFIG_DEFAULTS_PATH)]);
   // The DB this app writes (its own userData), not whatever the reader defaults to.
-  const lib = await mod.loadLibrary({ candybarDbPath: path.join(app.getPath('userData'), 'candybar.db') });
+  const lib = await mod.loadLibrary({
+    candybarDbPath: path.join(app.getPath('userData'), 'candybar.db'),
+    // Rekordbox off: this profile's collection isn't the one on this Mac.
+    rekordbox: config.rekordboxEnabled !== false,
+  });
   for (const e of lib.stats?.errors ?? []) mainLog.warn(`Library reader: ${e}`);
   if (config.rekordboxEnabled !== false) {
     const err = rekordboxReadError(lib.stats);
@@ -1616,6 +1708,18 @@ async function loadOwnershipLibrary(): Promise<SourcingLibrary> {
     }
   }
   return lib;
+}
+
+/** Rekordbox-only features (Lossless Upgrades, the swap) refuse in a profile
+ *  with Rekordbox off: the collection on this Mac belongs to whoever set it
+ *  up, and reading or rewriting it from someone else's profile would mix
+ *  their libraries. */
+async function requireRekordbox(): Promise<void> {
+  const config = await readConfig(CONFIG_PATH, CONFIG_DEFAULTS_PATH);
+  if (config.rekordboxEnabled === false) {
+    const name = findProfile(readRegistry(PROFILES_ROOT), RUNNING_PROFILE.id)?.name ?? RUNNING_PROFILE.name;
+    throw new Error(`Rekordbox is off in the "${name}" profile (Settings → Rekordbox), so no Rekordbox playlist is read or changed here.`);
+  }
 }
 
 /** Bucket tracks into owned / probable / missing against the collection, as the
@@ -3142,6 +3246,7 @@ handleIpc('saved-sources:remove', async (_event, { id }: { id: number }) => {
 // channels so the two tabs never drive each other's progress UI.
 handleIpc('lossless-upgrade:list-playlists', async () => {
   try {
+    await requireRekordbox();
     return { success: true, playlists: await listRekordboxPlaylists() };
   } catch (error) {
     mainLog.error('IPC lossless-upgrade:list-playlists failed:', error);
@@ -3152,6 +3257,7 @@ handleIpc('lossless-upgrade:list-playlists', async () => {
 handleIpc('lossless-upgrade:run', async (event, { playlistId }: { playlistId: string }) => {
   const send = (p: import('./types').LosslessUpgradeProgress) => safeSend(event.sender, 'lossless-upgrade:progress', p);
   try {
+    await requireRekordbox();
     send({ phase: 'reading', current: 0, total: 0, message: 'Reading the playlist from Rekordbox…' });
     const { playlist, tracks, collection } = await readRekordboxPlaylist(playlistId);
     // A playlist can hold the same entry twice; one row per entry keeps
@@ -3596,6 +3702,7 @@ handleIpc('library-sourcing:fetch-free-stop', () => {
 // file. Plan is read-only; apply runs main's cached plan for the given ids,
 // never paths from the renderer. The work is in lib/rekordboxUpgradeSwap.ts.
 async function upgradeSwapDeps(sender: Electron.WebContents): Promise<import('./lib/rekordboxUpgradeSwap').SwapDeps> {
+  await requireRekordbox();
   const config = await readConfig(CONFIG_PATH, CONFIG_DEFAULTS_PATH);
   const libraryRoot = config.libraryRoot || DEFAULT_LIBRARY_ROOT;
   return {

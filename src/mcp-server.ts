@@ -15,43 +15,51 @@ import { convertToAiff, reencodeToMp3 } from './lib/trackConverter';
 import * as mm from 'music-metadata';
 import path from 'path';
 import fs from 'fs/promises';
-import os from 'os';
 import url from 'url';
 
 import { initWriteJournal, getWriteJournalDir } from './lib/writeJournal';
 import { consoleToStderr, enableFileLog } from './lib/logger';
 import { initOpLog, withOp, currentOp, summarize, flushOpLogSync } from './lib/opLog';
 import { listOps, getOp, readTextLog, textLogFiles, queryWriteJournal, type OpStatus } from './lib/logQuery';
+import { activeUserDataDir, activeProfile, defaultProfilesRoot, listProfiles, readRegistry } from './lib/profiles';
 
-/** The Electron app's userData directory, worked out without Electron: the
- *  platform's app-data folder plus the app name ('candybar-manager'), exactly
- *  as app.getPath('userData') resolves it. */
-function appUserDataDir(): string {
-  const home = os.homedir();
-  const name = 'candybar-manager';
-  if (os.platform() === 'darwin') return path.join(home, 'Library', 'Application Support', name);
-  if (os.platform() === 'win32') return path.join(process.env.APPDATA || path.join(home, 'AppData', 'Roaming'), name);
-  return path.join(process.env.XDG_CONFIG_HOME || path.join(home, '.config'), name);
+// The data folder of the Track Lab profile in use (src/lib/profiles.ts): the
+// one handed down when the app started this server (a Claude job), else the one
+// the app is running. Logs, operations and the write journal are that
+// profile's, and they follow a profile switch: this server outlives one.
+let USER_DATA_DIR = '';
+let LOGS_DIR = '';
+let OPS_DIR = '';
+
+function followProfile(): void {
+  const dir = activeUserDataDir();
+  if (dir === USER_DATA_DIR) return;
+  USER_DATA_DIR = dir;
+  LOGS_DIR = path.join(dir, 'logs');
+  // stdout carries the MCP protocol; log lines go to stderr and logs/mcp.log.
+  enableFileLog(LOGS_DIR, 'mcp');
+  // Every tool call is an operation in logs/ops (YYYY-MM-DD.mcp.jsonl); the app
+  // records the work it does for a call there too, linked by `parent`.
+  OPS_DIR = initOpLog(dir, { proc: 'mcp' });
+  // Share the Electron app's write journal so conversions/deletes driven via
+  // MCP land in the same recovery log.
+  initWriteJournal(dir);
 }
 
-const USER_DATA_DIR = appUserDataDir();
-const LOGS_DIR = path.join(USER_DATA_DIR, 'logs');
-
-// stdout carries the MCP protocol; log lines go to stderr and logs/mcp.log.
 consoleToStderr();
-enableFileLog(LOGS_DIR, 'mcp');
-// Every tool call is an operation in logs/ops (YYYY-MM-DD.mcp.jsonl); the app
-// records the work it does for a call there too, linked by `parent`.
-const OPS_DIR = initOpLog(USER_DATA_DIR, { proc: 'mcp' });
+followProfile();
 
-// Share the Electron app's write journal so conversions/deletes driven via MCP
-// land in the same recovery log.
-initWriteJournal(USER_DATA_DIR);
-
-const server = new McpServer({
-  name: 'candybar-audio-tools',
-  version: '0.1.0',
-});
+const server = new McpServer(
+  { name: 'candybar-audio-tools', version: '0.1.0' },
+  {
+    instructions: [
+      'Track Lab keeps each person\'s data in a profile: settings, library, SoundCloud/Spotify/store sign-ins, the email download gates get, download ledger and history.',
+      'Before running anything that reads or writes a profile\'s data (sourcing, downloads, gates, carts, library checks, settings), call `profiles` with action "list".',
+      'If there is more than one profile, ALWAYS ask Ben which profile to use, even when the running one looks right, then `profiles` "switch" to it if it is not the one running.',
+      'Skip the question only inside a Track Lab Claude job the app itself started: that job is tied to the profile the app is running.',
+    ].join(' '),
+  },
+);
 
 /** A tool's reply carrying `"error"` (or flagged isError) failed. */
 function toolFailure(r: { content?: Array<{ text?: string }>; isError?: boolean }): string | null {
@@ -68,8 +76,10 @@ function toolFailure(r: { content?: Array<{ text?: string }>; isError?: boolean 
 /** server.tool, with each call recorded as an operation (source "claude"). */
 const tool = ((name: string, ...rest: unknown[]) => {
   const handler = rest.pop() as (...a: unknown[]) => Promise<any>;
-  return (server.tool as (...a: unknown[]) => unknown).call(server, name, ...rest, (...a: unknown[]) =>
-    withOp(name, { source: 'claude', args: a[0] }, () => handler(...a), { failure: toolFailure }));
+  return (server.tool as (...a: unknown[]) => unknown).call(server, name, ...rest, (...a: unknown[]) => {
+    followProfile();
+    return withOp(name, { source: 'claude', args: a[0] }, () => handler(...a), { failure: toolFailure });
+  });
 }) as typeof server.tool;
 
 // ---------------------------------------------------------------------------
@@ -682,7 +692,7 @@ tool(
   async ({ event, source, since, search }) => {
     const history = await sourcingModule('history');
     const rows = history.queryHistory({ event, source, since, search });
-    return { content: [{ type: 'text', text: JSON.stringify({ path: history.HISTORY_PATH, count: rows.length, events: rows }, null, 2) }] };
+    return { content: [{ type: 'text', text: JSON.stringify({ path: history.historyPath(), count: rows.length, events: rows }, null, 2) }] };
   }
 );
 
@@ -790,6 +800,7 @@ tool(
     const lastStart = listOps(OPS_DIR, { name: 'app:start', since: new Date(Date.now() - 30 * 86_400_000), limit: 1 })[0];
     return reply({
       app,
+      profile: activeProfile(),
       lastAppStart: lastStart?.startedAt ?? null,
       runningOperations: listOps(OPS_DIR, { status: 'running', since, limit: 20 }),
       failedLast24h: listOps(OPS_DIR, { status: 'error', since, limit: 10 }),
@@ -872,7 +883,7 @@ tool(
 // log for Ben and for Claude. Track Lab is started when it's closed. Actions
 // that need the window (pickers, the store panel's checkout) aren't here.
 
-const RESULTS_DIR = path.join(LOGS_DIR, 'results');
+const resultsDir = () => path.join(LOGS_DIR, 'results');
 const MAX_INLINE_CHARS = 60_000;
 
 type ToolReply = { content: Array<{ type: 'text'; text: string }> };
@@ -882,8 +893,8 @@ type ToolReply = { content: Array<{ type: 'text'; text: string }> };
 async function reply(body: unknown): Promise<ToolReply> {
   const text = JSON.stringify(body, null, 2) ?? 'null';
   if (text.length <= MAX_INLINE_CHARS) return { content: [{ type: 'text', text }] };
-  await fs.mkdir(RESULTS_DIR, { recursive: true });
-  const file = path.join(RESULTS_DIR, `${currentOp()?.id ?? Date.now()}.json`);
+  await fs.mkdir(resultsDir(), { recursive: true });
+  const file = path.join(resultsDir(), `${currentOp()?.id ?? Date.now()}.json`);
   await fs.writeFile(file, text, 'utf8');
   return {
     content: [{ type: 'text', text: JSON.stringify({
@@ -959,6 +970,50 @@ tool(
   'Change Track Lab settings, as saving the Settings page does: only the keys given change (names as get_settings shows them). Confirm with Ben before changing folders or accounts.',
   { changes: z.record(z.string(), z.unknown()).describe('Settings to change, e.g. {"organizeSourceDir": "/Volumes/…"}') },
   async ({ changes }) => guarded(async () => reply({ config: redactAll((await invokeApp('update-config', [changes])).result) }))
+);
+
+/** The app's profile list without starting it: over the socket when Track
+ *  Lab is up, else read from profiles.json (it opens in the default). */
+async function profilesNow(): Promise<{ appRunning: boolean; running: string | null; defaultId: string; profiles: unknown[] }> {
+  try {
+    const bridge = await storeBridgeModule();
+    const state = await bridge.callApp('invoke', { channel: 'profiles:list', args: [] }, { launch: false, timeoutMs: 10_000, meta: bridgeMeta() }) as { running: string; defaultId: string; profiles: unknown[] };
+    return { appRunning: true, ...state };
+  } catch {
+    const root = process.env.CANDYBAR_PROFILES_ROOT || defaultProfilesRoot();
+    const reg = readRegistry(root);
+    return { appRunning: false, running: null, defaultId: reg.defaultId, profiles: listProfiles(root, '').map(({ isRunning: _r, ...p }) => p) };
+  }
+}
+
+tool(
+  'profiles',
+  'Track Lab profiles. Each profile is one person\'s data: settings and library, SoundCloud/Spotify/store sign-ins, the email gates get, download ledger and history. "list" shows them, which one Track Lab is running and which is the default (the one it opens in). From Claude Code or Claude Desktop with more than one profile, ALWAYS ask Ben which profile to use before anything else, then "switch" to it if it isn\'t running. Track Lab restarts in it, and this waits until it\'s back. "create" adds one, which Ben fills in through the setup guide after switching. "rename", "set_default", and "delete" also exist. Delete sends the profile\'s folder to the Trash, and never works on the running profile or the original one.',
+  {
+    action: z.enum(['list', 'create', 'switch', 'rename', 'set_default', 'delete']),
+    profile: z.string().optional().describe('Profile id or name (switch, rename, set_default, delete)'),
+    name: z.string().optional().describe('The name (create, rename)'),
+    switchTo: z.boolean().optional().describe('create: switch to it straight away'),
+  },
+  async ({ action, profile, name, switchTo }) => guarded(async () => {
+    if (action === 'list') return reply(await profilesNow());
+    if (action === 'create') return runApp('profiles:create', [{ name: need(name, 'name'), switchTo: switchTo ?? false }]);
+    if (action === 'rename') return runApp('profiles:rename', [{ id: need(profile, 'profile'), name: need(name, 'name') }]);
+    if (action === 'set_default') return runApp('profiles:set-default', [{ id: need(profile, 'profile') }]);
+    if (action === 'delete') return runApp('profiles:delete', [{ id: need(profile, 'profile') }]);
+    const asked = (await invokeApp('profiles:switch', [{ id: need(profile, 'profile') }])).result as { switching: boolean; profile: { id: string; name: string }; reason?: string };
+    if (!asked.switching) return reply(asked);
+    // Wait for Track Lab to come back up in the new profile, so the next call
+    // doesn't start a second copy in the default one.
+    const deadline = Date.now() + 90_000;
+    await new Promise(r => setTimeout(r, 2_000));
+    while (Date.now() < deadline) {
+      const now = await profilesNow();
+      if (now.appRunning && now.running === asked.profile.id) return reply({ switched: true, profile: asked.profile, state: now });
+      await new Promise(r => setTimeout(r, 1_500));
+    }
+    return reply({ error: `Track Lab didn't come back up as "${asked.profile.name}" within 90 s. Check the app before going on.` });
+  })
 );
 
 tool(
@@ -1258,8 +1313,8 @@ tool(
     let artPath: string | null = null;
     const m = art && /^data:image\/(\w+);base64,(.*)$/s.exec(art);
     if (m) {
-      await fs.mkdir(RESULTS_DIR, { recursive: true });
-      artPath = path.join(RESULTS_DIR, `art-${Date.now()}.${m[1] === 'jpeg' ? 'jpg' : m[1]}`);
+      await fs.mkdir(resultsDir(), { recursive: true });
+      artPath = path.join(resultsDir(), `art-${Date.now()}.${m[1] === 'jpeg' ? 'jpg' : m[1]}`);
       await fs.writeFile(artPath, Buffer.from(m[2], 'base64'));
     }
     return reply({ info, artPath });

@@ -986,3 +986,24 @@ export type UpdateState = {
   /** What's waiting ("3 changes on GitHub", "Track Lab 0.2.0"); null when up to date or not checked yet. */
   available: string | null;
 };
+
+/** A Track Lab profile as the window sees it (src/lib/profiles.ts ProfileView). */
+export interface TrackLabProfile {
+  id: string;
+  name: string;
+  createdAt?: string;
+  /** Its data folder. */
+  dir: string;
+  /** The original profile (the data folder Track Lab always used). */
+  isMain: boolean;
+  /** The one Track Lab opens in. */
+  isDefault: boolean;
+  /** The one this Track Lab is running. */
+  isRunning: boolean;
+}
+
+export interface ProfilesState {
+  running: string;
+  defaultId: string;
+  profiles: TrackLabProfile[];
+}

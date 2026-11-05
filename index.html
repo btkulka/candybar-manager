@@ -37,6 +37,18 @@
           </svg>
           <span class="topbar-brand">Track Lab</span>
         </div>
+        <!-- Profiles: whose library and accounts this Track Lab is using (renderer/profiles.ts) -->
+        <div class="profile-switcher" id="profile-switcher">
+          <button type="button" class="profile-chip" id="profile-chip" aria-haspopup="menu" aria-expanded="false" aria-controls="profile-menu" data-tooltip-pos="right" data-tooltip="Whose library and accounts Track Lab is using. Click to switch profiles or add one.">
+            <span class="profile-chip-avatar" id="profile-chip-avatar" aria-hidden="true"></span>
+            <span class="profile-chip-text">
+              <span class="profile-chip-label">Profile</span>
+              <span class="profile-chip-name" id="profile-chip-name">…</span>
+            </span>
+            <svg class="profile-chip-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="6 9 12 15 18 9"/></svg>
+          </button>
+          <div class="profile-menu" id="profile-menu" role="menu" aria-label="Profiles" hidden></div>
+        </div>
         <nav class="topbar-nav">
           <div class="nav-section-label">Your library</div>
           <button class="nav-link active" data-page="library" data-tooltip-pos="right" data-tooltip="Everything in your collection: what's ready to play, what needs a fix, and any drives plugged in">
@@ -1903,6 +1915,7 @@
         <div class="modal-body settings-modal-body">
           <aside class="settings-nav" role="tablist" aria-orientation="vertical" aria-label="Settings sections">
             <button type="button" class="settings-nav-item is-active" data-target="library" role="tab" data-tooltip="Your music folders and general options" data-tooltip-pos="right">Folders &amp; general</button>
+            <button type="button" class="settings-nav-item" data-target="profiles" role="tab" data-tooltip="One profile per person: their folders, accounts and downloads" data-tooltip-pos="right">Profiles</button>
             <button type="button" class="settings-nav-item" id="settings-nav-rekordbox" data-target="rekordbox" role="tab" data-tooltip="Your Rekordbox collection, its backups and repair tools" data-tooltip-pos="right">Rekordbox</button>
             <button type="button" class="settings-nav-item" data-target="console" role="tab" data-advanced data-tooltip="Live log of what the app is doing, for troubleshooting" data-tooltip-pos="right">Console</button>
             <button type="button" class="settings-nav-item" data-target="spotify" role="tab" data-tooltip="Lets the app read Spotify playlists" data-tooltip-pos="right">Spotify</button>
@@ -1981,6 +1994,21 @@
               </div>
               <button type="button" class="btn-secondary btn-sm" id="settings-support-report">Save a report</button>
             </div>
+          </div>
+
+          <div class="settings-section" data-section="profiles" role="tabpanel" aria-label="Profiles">
+            <h4>Profiles</h4>
+            <p class="setting-desc profiles-intro">Each profile is one person's Track Lab: their library folders, their SoundCloud, Spotify and store sign-ins, the email download gates get, and what's been downloaded. Switching restarts Track Lab in that profile. The default profile is the one Track Lab opens in.</p>
+            <ul class="profile-list" id="profile-list" aria-label="Profiles"></ul>
+            <div class="setting-row">
+              <div class="setting-info">
+                <label for="profile-new-name">Add a profile</label>
+                <p class="setting-desc">Starts empty apart from the Spotify app keys and the Claude sign-in. Switch to it and the setup guide asks for that person's folders, details and accounts. Rekordbox starts off, because the Rekordbox collection on this Mac belongs to whoever set it up.</p>
+              </div>
+              <input type="text" id="profile-new-name" data-instant maxlength="40" placeholder="Their name" title="The new profile's name" />
+              <button type="button" class="btn-primary btn-sm" id="profile-add">Add</button>
+            </div>
+            <p class="setting-desc profile-error" id="profile-error" role="alert" hidden></p>
           </div>
 
           <div class="settings-section" data-section="rekordbox" role="tabpanel" aria-label="Rekordbox">
