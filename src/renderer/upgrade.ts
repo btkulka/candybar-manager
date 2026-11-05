@@ -6,6 +6,7 @@ import type {
 import type { FreeSourceHit, FreeSourceMiss, FreeUpgradeOutcome } from '../lib/freeSources';
 import { showToast, setStatus, escapeHtml, getErrorMessage, plural, formatPriceTotal, isReleaseMatch } from './shared';
 import { confirmChoice } from './confirmDialog';
+import { gateEmailFieldHtml, fillGateEmailField, commitGateEmail, savedGateEmail, knownGateEmail } from './gateEmail';
 import { fillPlaylistCard } from './playlistCard';
 import { SOURCE_KIND_ICONS } from './sourceInputTemplate';
 import {
@@ -212,7 +213,7 @@ function attemptText(a: FreeUpgradeOutcome['attempts'][number]): string {
   switch (a.status) {
     case 'lossy':
     case 'lossy-dropped': return 'the file was compressed (like an MP3), so it was deleted';
-    case 'needs-email': return 'the download page wants an email address';
+    case 'needs-email': return 'the download page wants an email address. Add yours next to "Get free downloads" and get it again';
     case 'emailed': return 'the download link was emailed';
     case 'needs-you':
     case 'stalled': return 'the download page needs a person to finish it';
@@ -618,6 +619,8 @@ function buildFreeRow(r: LosslessUpgradeRow): HTMLElement {
     ? '<span class="buy-pill"><span class="status-pill status-pill--ok">Downloaded</span></span>'
     : needsEmailOnly(r)
       ? `<span class="buy-pill"><span class="status-pill status-pill--warn" tabindex="0" data-tooltip="${escapeHtml("Bandcamp emails this free download when you're signed out, so Track Lab can't get it for you. Open it on Bandcamp to get it yourself.")}">Needs an email</span></span>`
+      : h.gateInfo?.needs.includes('email') && knownGateEmail() === ''
+        ? `<span class="buy-pill"><span class="status-pill status-pill--warn" tabindex="0" data-tooltip="${escapeHtml('This download page asks for an email address before it gives the file. Add yours next to "Get free downloads" below.')}">Needs an email</span></span>`
       : needsAccountOk(h)
         ? `<span class="buy-pill upg-needs-ok"${freeAccountActions ? ' hidden' : ''}><span class="status-pill status-pill--warn" tabindex="0" data-tooltip="${escapeHtml('This download page wants to connect your SoundCloud and leave a comment. Tick "Let download pages follow, like and comment for me" below, or it\'s skipped.')}">Needs your OK</span></span>`
         : '';
@@ -996,7 +999,9 @@ function freeActions(): HTMLElement {
     queueMicrotask(updateFetchProgress);
     return el;
   }
+  const needingEmail = freeTicked().filter(r => freeHit(r)?.gateInfo?.needs.includes('email')).length;
   el.innerHTML = `
+    ${gateEmailFieldHtml('upgrade-free-email', needingEmail)}
     <label class="upg-check">
       <input type="checkbox" id="upgrade-free-actions-ok" ${freeAccountActions ? 'checked' : ''} />
       <span><strong>Let download pages follow, like and comment for me</strong><span>Some free downloads on SoundCloud ask you to follow or like first. This does it on your SoundCloud account. Without it, those ones are skipped.</span></span>
@@ -1012,12 +1017,15 @@ function freeActions(): HTMLElement {
     groupsContainer.querySelectorAll<HTMLElement>('.upg-needs-ok').forEach(p => { p.hidden = freeAccountActions; });
   });
   el.querySelector('#upgrade-get-free')?.addEventListener('click', () => void getFreeDownloads());
+  fillGateEmailField(el, 'upgrade-free-email');
   return el;
 }
 
 async function getFreeDownloads() {
   const rows = freeTicked();
   if (rows.length === 0 || fetchingFree) return;
+  // The address in the box goes to Settings first: the downloader reads it there.
+  if (await commitGateEmail(document, 'upgrade-free-email') === null) return;
   fetchingFree = true;
   fetchLine = '';
   fetchCount = null;
@@ -1928,4 +1936,6 @@ export function initUpgrade() {
   restoreState();
   renderSteps();
   onShown();
+  // The rows' "Needs an email" pills need the saved address.
+  void savedGateEmail().then(() => { if (result) renderSteps(); });
 }

@@ -547,6 +547,14 @@
 .upg-paste-error { flex-basis: 100%; margin: 0; font-size: var(--fs-small); color: var(--danger); }
 /* A pasted link that may not be the same version. */
 .upg-warn { color: var(--warning); }
+/* "Email for download pages" above the account box, where free downloads
+   start. Warns when ticked downloads are known to ask for one and it's empty. */
+.free-email { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-sm) var(--space-md); }
+.free-email > span { display: flex; flex-direction: column; gap: 2px; flex: 1 1 260px; min-width: 0; }
+.free-email strong { color: var(--text-primary); font-weight: 600; }
+.free-email > span > span { color: var(--text-muted); font-size: var(--fs-small); line-height: var(--lh-normal); }
+.free-email input { flex: 0 1 280px; min-width: 0; }
+.free-email--warn > span > span { color: var(--warning); }
 /* A yes/no with a sentence of detail under it (same shape as the Claude page's). */
 .upg-check { display: flex; align-items: flex-start; gap: var(--space-sm); cursor: pointer; }
 .upg-check input { margin-top: 3px; flex-shrink: 0; }

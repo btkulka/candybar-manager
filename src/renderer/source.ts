@@ -5,6 +5,7 @@ import type {
   SavedSource, SavedSourceCounts, SavedSourceInput, SavedSourceKind, SourcingFinderSummary,
 } from '../types';
 import { showToast, setStatus, escapeHtml, setValue, getErrorMessage, plural, formatPriceTotal, isReleaseMatch, requestOpenSettings } from './shared';
+import { gateEmailFieldHtml, fillGateEmailField, commitGateEmail } from './gateEmail';
 import { confirmAction } from './confirmDialog';
 import { renderSourceInput, SOURCE_KIND_ICONS } from './sourceInputTemplate';
 import { fillPlaylistCard } from './playlistCard';
@@ -1057,7 +1058,7 @@ function freeFailedReason(m: QobuzCartMatch): string {
     switch (a.status) {
       case 'lossy':
       case 'lossy-dropped': return 'the file was compressed (like an MP3), so it was deleted';
-      case 'needs-email': return 'the download page wants an email address (add one in Settings → SoundCloud)';
+      case 'needs-email': return 'the download page wants an email address. Add yours next to "Get free downloads" and get it again';
       case 'emailed': return 'the download link was emailed';
       case 'needs-you':
       case 'stalled': return 'the download page needs a person to finish it';
@@ -1304,6 +1305,7 @@ function freeActionsEl(): HTMLElement {
   }
   const n = freeTicked().length;
   el.innerHTML = `
+    ${gateEmailFieldHtml('source-free-email', 0)}
     <label class="upg-check">
       <input type="checkbox" id="source-free-actions-ok" ${freeAccountActions ? 'checked' : ''} />
       <span><strong>Let download pages follow, like and comment for me</strong><span>Some free downloads on SoundCloud ask you to follow or like first. This does it on your SoundCloud account. Without it, those ones are skipped.</span></span>
@@ -1319,6 +1321,7 @@ function freeActionsEl(): HTMLElement {
     saveSourcesState();
   });
   el.querySelector('#source-get-free')?.addEventListener('click', () => void getFreeDownloads());
+  fillGateEmailField(el, 'source-free-email');
   return el;
 }
 
@@ -1330,6 +1333,8 @@ function refreshFreeActions() {
 async function getFreeDownloads() {
   const rows = freeTicked();
   if (rows.length === 0 || fetchingFree) return;
+  // The address in the box goes to Settings first: the downloader reads it there.
+  if (await commitGateEmail(document, 'source-free-email') === null) return;
   fetchingFree = true;
   freeLine = '';
   freeCount = null;
