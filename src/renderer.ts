@@ -153,6 +153,8 @@ function safeInit(name: string, fn: () => void) {
 }
 
 function initApp() {
+  // First, so the app knows the window started (it reloads one that doesn't).
+  try { window.candybar.rendererReady(); } catch (err) { console.error('[Renderer] could not reach the app:', err); }
   safeInit('initTooltips', initTooltips);
   safeInit('initNavigation', initNavigation);
   safeInit('initTagEditor', initTagEditor);

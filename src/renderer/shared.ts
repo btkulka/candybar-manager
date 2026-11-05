@@ -179,6 +179,7 @@ declare global {
   interface Window {
     candybar: {
       selectPath: (type: 'file' | 'dir') => Promise<string | null>;
+      rendererReady: () => void;
       checkLibrary: (
         source: { csvPath?: string; spotifyPlaylistUrl?: string },
         useCache?: boolean,

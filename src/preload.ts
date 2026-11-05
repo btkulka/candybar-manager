@@ -45,6 +45,8 @@ function subscribe<T>(channel: string, callback: (payload: T) => void): () => vo
 }
 
 contextBridge.exposeInMainWorld('candybar', {
+  /** The window's script started (main's startup watchdog waits for this). */
+  rendererReady: () => ipcRenderer.send('renderer:ready'),
   selectPath: (type: 'file' | 'dir') => ipcRenderer.invoke('select-path', { type }),
   /**
    * @deprecated Use `librarySourcingRun` instead (phase 1 + phase 2 combined).

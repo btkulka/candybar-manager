@@ -350,6 +350,41 @@ async function confirmInterruptWork(action: 'quit' | 'update' | 'switch'): Promi
   return response === 0;
 }
 
+/**
+ * Startup watchdog. Once, after a profile switch, a window loaded its page but
+ * its script never started: a black window that never called the app, with
+ * nothing in the log. So: log what each load was, and reload (twice at most) a
+ * window whose script hasn't said it's ready (`renderer:ready`, the first thing
+ * initApp does) within 10 s of its page loading.
+ */
+function watchWindowStart(win: BrowserWindow): void {
+  const wc = win.webContents;
+  let ready = false;
+  let reloads = 0;
+  const onReady = (event: Electron.IpcMainEvent) => { if (event.sender === wc) ready = true; };
+  ipcMain.on('renderer:ready', onReady);
+  win.on('closed', () => ipcMain.removeListener('renderer:ready', onReady));
+  wc.on('did-start-loading', () => { ready = false; });
+  wc.on('did-fail-load', (_e, code, desc, url, isMainFrame) => {
+    if (isMainFrame) mainLog.error(`The window couldn't load ${url}: ${desc} (${code})`);
+  });
+  wc.on('preload-error', (_e, preloadPath, error) => mainLog.error(`The window's preload failed (${preloadPath}):`, error));
+  wc.on('did-finish-load', () => {
+    const url = wc.getURL();
+    mainLog.info(`Window loaded ${url}`);
+    setTimeout(() => {
+      if (ready || win.isDestroyed() || wc.getURL() !== url) return;
+      const retry = reloads < 2;
+      mainLog.warn(`The window loaded ${url} but its script hasn't started after 10 s; ${retry ? 'reloading it' : 'giving up'}`);
+      recordEvent('window:stalled', { source: 'app', outcome: 'error', error: 'Page loaded but its script never started', args: { url, reloads } });
+      if (retry) {
+        reloads++;
+        wc.reloadIgnoringCache();
+      }
+    }, 10_000);
+  });
+}
+
 /** The renderer's warnings and errors, and crashes or hangs, go in the main log
  *  (the renderer has no log file of its own). */
 function recordWindowTrouble(win: BrowserWindow): void {
@@ -429,6 +464,7 @@ function createWindow() {
     if (appWindow === win) appWindow = null;
   });
   recordWindowTrouble(win);
+  watchWindowStart(win);
 
   // Harden every <webview> guest before it attaches: strip any preload, force
   // an isolated, sandboxed no-node context, bind it only to a store session
