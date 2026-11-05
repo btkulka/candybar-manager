@@ -162,6 +162,7 @@ document.getElementById('settings-support-report')?.addEventListener('click', (e
 const ADDRESS_FIELDS = [
   ['gateAddressLine1', 'setting-gate-addr-line1'], ['gateCity', 'setting-gate-addr-city'], ['gateRegion', 'setting-gate-addr-region'],
   ['gatePostcode', 'setting-gate-addr-postcode'], ['gateCountry', 'setting-gate-addr-country'],
+  ['gatePhone', 'setting-gate-phone'],
 ] as const;
 
 export async function setStoreCredentials(config: {
@@ -178,6 +179,7 @@ export async function setStoreCredentials(config: {
   gateRegion?: string;
   gatePostcode?: string;
   gateCountry?: string;
+  gatePhone?: string;
 }): Promise<void> {
   if (config.gateEmail !== undefined) setValue('setting-gate-email', config.gateEmail);
   if (config.gateComment !== undefined) setValue('setting-gate-comment', config.gateComment);

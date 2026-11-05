@@ -31,6 +31,8 @@
 //                        with the email, Settings → SoundCloud)
 //   --sc-actions LIST    account actions a gate may do for real: follow,like,comment[,repost] | none (default follow,like,comment)
 //   --first-name / --last-name   the name for gates that ask (default: the one saved with the email)
+//   --phone NUMBER       the phone number for gates with a phone box (default: the one saved with
+//                        the email, Settings → SoundCloud)
 //   --comment TEXT       the comment left when a gate asks for one (default: the one saved in
 //                        Settings → SoundCloud; none saved, gates that insist on one are left for you)
 //   --sc-account NAME    refuse to run unless the signed-in SoundCloud account is NAME (its
@@ -82,6 +84,7 @@ function parseArgs(argv) {
     else if (a === '--email') args.email = argv[++i];
     else if (a === '--no-email') args.noEmail = true;
     else if (a === '--postcode') args.postcode = argv[++i];
+    else if (a === '--phone') args.phone = argv[++i];
     else if (a === '--sc-account') args.scAccount = argv[++i];
     else if (a === '--comment') args.comment = argv[++i];
     else if (a === '--first-name') (args.name ??= { first: '', last: '' }).first = argv[++i];
@@ -109,6 +112,7 @@ function parseArgs(argv) {
     // The address saved with them; --postcode still wins for Bandcamp's ZIP.
     args.address ??= c.gateAddress;
     args.postcode ??= c.gateAddress?.postcode || undefined;
+    args.phone ??= c.gatePhone || undefined;
   }
   return args;
 }
@@ -438,7 +442,7 @@ async function main() {
             outcome = { status: 'skipped', reason: 'gates skipped by flag' };
           } else {
             const r = await runGate(browser.ctx, row, {
-              log, tmpDir: tmp, email: args.email || null, postcode: args.postcode || null, comment: args.comment, scActions: args.scActions, dropLossy: !!args.dropLossy, name: args.name, address: args.address,
+              log, tmpDir: tmp, email: args.email || null, postcode: args.postcode || null, phone: args.phone || null, comment: args.comment, scActions: args.scActions, dropLossy: !!args.dropLossy, name: args.name, address: args.address,
               assistMs: args.assist * 1000, gateTimeoutMs: args.gateTimeout * 1000,
               sc: { page: browser.page, sess },
             });

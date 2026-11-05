@@ -386,6 +386,9 @@ export type AppConfig = {
   /** ZIP or postcode. */
   gatePostcode: string;
   gateCountry: string;
+  /** The phone number download gates get when they ask (a phone or mobile
+   *  box beside the email). Asked in the setup guide; kept in secrets.json. */
+  gatePhone: string;
   floatingConsoleEnabled: boolean;
   activeTab: string;
   checkCsvPath: string;

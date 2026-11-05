@@ -78,6 +78,7 @@ const DEFAULTS: AppConfig = {
   gateRegion: '',
   gatePostcode: '',
   gateCountry: '',
+  gatePhone: '',
   floatingConsoleEnabled: true,
   activeTab: 'organize',
   checkCsvPath: '',
@@ -191,7 +192,7 @@ async function backUpCorruptConfig(configPath: string, error: string): Promise<v
 
 // Secret fields live in a separate, untracked file. Anything user-identifying
 // or auth-related goes here so the repo-level `config.json` stays shareable.
-const SECRET_STRING_KEYS = ['spotifyClientId', 'spotifyClientSecret', 'claudeOauthToken', 'gateEmail', 'gateFirstName', 'gateLastName', 'gateAddressLine1', 'gateCity', 'gateRegion', 'gatePostcode', 'gateCountry'] as const;
+const SECRET_STRING_KEYS = ['spotifyClientId', 'spotifyClientSecret', 'claudeOauthToken', 'gateEmail', 'gateFirstName', 'gateLastName', 'gateAddressLine1', 'gateCity', 'gateRegion', 'gatePostcode', 'gateCountry', 'gatePhone'] as const;
 const SECRET_ARRAY_KEYS = ['qobuzAccounts', 'beatportAccounts'] as const;
 
 // Module-level secrets path. Set once at app startup so all existing

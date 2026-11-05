@@ -362,6 +362,8 @@ const VIEWS: Record<StepId, () => StepView> = {
         <input type="text" id="setup-addr-postcode" value="${escapeHtml(config!.gatePostcode ?? '')}" placeholder="ZIP code" autocomplete="postal-code" aria-label="ZIP or postcode" />
         <input type="text" id="setup-addr-country" value="${escapeHtml(config!.gateCountry ?? '')}" placeholder="Country" autocomplete="country-name" aria-label="Country" />
       </div>
+      <div class="field"><label for="setup-phone">Phone <span class="setup-optional">(for the pages that ask for one)</span></label>
+        <input type="tel" id="setup-phone" value="${escapeHtml(config!.gatePhone ?? '')}" placeholder="Phone number" autocomplete="tel" /></div>
       <div class="field"><label for="setup-gate-comment">Comment <span class="setup-optional">(optional)</span></label>
         <input type="text" id="setup-gate-comment" value="${escapeHtml(config!.gateComment ?? '')}" maxlength="280" placeholder="What pages that want a comment get" />
         <p class="field-hint">A few pages post a comment on the SoundCloud track for you. Leave it empty and those ones wait for you instead.</p></div>
@@ -646,6 +648,7 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const SETTINGS_ADDRESS_FIELDS = [
   ['gateAddressLine1', 'setting-gate-addr-line1'], ['gateCity', 'setting-gate-addr-city'], ['gateRegion', 'setting-gate-addr-region'],
   ['gatePostcode', 'setting-gate-addr-postcode'], ['gateCountry', 'setting-gate-addr-country'],
+  ['gatePhone', 'setting-gate-phone'],
 ] as const;
 
 async function saveDetails(): Promise<void> {
@@ -658,6 +661,7 @@ async function saveDetails(): Promise<void> {
   const address = {
     gateAddressLine1: val('setup-addr-line1'), gateCity: val('setup-addr-city'), gateRegion: val('setup-addr-region'),
     gatePostcode: val('setup-addr-postcode'), gateCountry: val('setup-addr-country'),
+    gatePhone: val('setup-phone'),
   };
   if (gateEmail && !EMAIL_RE.test(gateEmail)) {
     showToast('error', 'That email doesn\'t look right', 'Check it, or leave it empty to add it later.');
