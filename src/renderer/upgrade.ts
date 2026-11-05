@@ -2,7 +2,10 @@ import { cartUrl } from '../lib/storeUrls';
 import type {
   LosslessUpgradeProgress, LosslessUpgradeResult, LosslessUpgradeRow, RekordboxPlaylistSummary, StoreMatch,
   UpgradeSwapInput, UpgradeSwapPlanItem, UpgradeSwapPreflight, UpgradeSwapProgress, UpgradeSwapResult,
+  ClaudeUpgradeReviewResult, UpgradeReviewRow, UpgradeVerdictKind,
 } from '../types';
+import { refOf } from '../lib/claude/storeFinder';
+import { startClaudeJob, ensureClaudeReady, ClaudeJobError, type ClaudeJobHandle } from './claudeJobs';
 import type { FreeSourceHit, FreeSourceMiss, FreeUpgradeOutcome } from '../lib/freeSources';
 import { showToast, setStatus, escapeHtml, getErrorMessage, plural, formatPriceTotal, isReleaseMatch } from './shared';
 import { confirmChoice } from './confirmDialog';
@@ -330,6 +333,7 @@ function openStep(s: Step, scroll = true) {
 
 function renderSteps() {
   const current = currentStep();
+  ensureClaudeButton();
   for (const s of STEPS) {
     const el = stepEl(s);
     const unlocked = stepUnlocked(s);
@@ -503,6 +507,134 @@ function wireLinks(root: HTMLElement) {
   }));
 }
 
+// ---------- Check with Claude ----------
+//
+// The playlist-sourcing skill's upgrade rules (Track Lab ships the skill and
+// loads it into the job) over the rows this check found: Claude confirms or
+// rejects each free copy and store match for being the same cut, and can name
+// a better one from its own free and store searches. Verdicts that change a
+// row go through main (a free link through the pasted-link checks, a store
+// ref through the store finder's resolver); nothing is downloaded or carted.
+
+let claudeRun: ClaudeJobHandle<ClaudeUpgradeReviewResult> | null = null;
+
+const CLAUDE_CLASS: Record<UpgradeVerdictKind, string> = { free: 'buy', store: 'buy', keep: 'buy', none: 'wrong' };
+
+/** The "Claude: …" line under a row, or ''. */
+function claudeLineHtml(r: LosslessUpgradeRow): string {
+  if (!r.claude?.note) return '';
+  return `<span class="buy-sub claude-verdict claude-verdict--${CLAUDE_CLASS[r.claude.verdict]}">Claude: ${escapeHtml(r.claude.note)}</span>`;
+}
+
+function storeForClaude(r: LosslessUpgradeRow): UpgradeReviewRow['store'] {
+  const m = r.match;
+  if (!m || m.status !== 'matched' || !m.source) return null;
+  const t = m.source === 'qobuz' ? m.qobuzTrack : m.beatportTrack;
+  if (!t) return null;
+  return { source: m.source, title: t.name, artists: t.artists, price: t.price || '', lossless: m.lossless, confidence: Math.round(m.confidence * 100) / 100, ref: refOf(m.source, t) };
+}
+
+/** Rows worth Claude's time: held lossy or streaming, no full-quality copy in
+ *  the collection, nothing landed or chosen for them yet. */
+function claudeRows(): UpgradeReviewRow[] {
+  if (!result) return [];
+  return result.rows
+    .filter(r => (r.format === 'lossy' || r.format === 'streaming') && !r.losslessCopy && r.artist && r.title
+      && !r.freeOutcome?.filePath && !newFiles[r.rbId])
+    .map(r => ({
+      rbId: r.rbId, artist: r.artist, title: r.title, duration: r.duration, formatLabel: r.formatLabel,
+      free: r.free ? { soundcloud: r.free.soundcloud, bandcamp: r.free.bandcamp, nearMisses: r.free.soundcloudMisses ?? [] } : null,
+      store: storeForClaude(r),
+    }));
+}
+
+function setClaudeButton(btn: HTMLButtonElement, busy: boolean): void {
+  btn.classList.toggle('is-busy', busy);
+  btn.innerHTML = busy ? `${CLAUDE_SPINNER}<span>Checking… stop</span>` : '<span>Check with Claude</span>';
+  btn.dataset.tooltip = busy
+    ? 'Claude is checking each track for the same cut, free first. Click to stop.'
+    : "Claude checks each free copy and store match is the same cut as yours (your cue points depend on it), and looks for free copies the search missed. Nothing is downloaded or added to a cart.";
+}
+
+/** Put the button in the toolbar over the list, beside the track search: it's
+ *  shown whenever there are results, including when nothing can be carted
+ *  (the buy bar hides then, and that's when Claude's check matters most).
+ *  Safe to call after every render. */
+function ensureClaudeButton(): void {
+  const parent = document.querySelector<HTMLElement>('#upgrade-results .buy-toolbar');
+  if (!parent) return;
+  let btn = document.getElementById('upgrade-claude-check') as HTMLButtonElement | null;
+  if (!btn) {
+    btn = document.createElement('button');
+    btn.type = 'button';
+    btn.id = 'upgrade-claude-check';
+    btn.className = 'btn-secondary btn-sm claude-review-btn upg-claude-btn';
+    btn.addEventListener('click', () => void runClaudeCheck(btn!));
+    parent.appendChild(btn);
+  }
+  setClaudeButton(btn, !!claudeRun);
+  btn.hidden = !result;
+}
+
+async function runClaudeCheck(btn: HTMLButtonElement): Promise<void> {
+  if (claudeRun) { claudeRun.cancel(); return; }
+  const rows = claudeRows();
+  if (rows.length === 0) {
+    showToast('info', 'Nothing to check', 'Every track here is already full quality, owned in full quality, or has its new file.');
+    return;
+  }
+  if (!await ensureClaudeReady()) return;
+  setClaudeButton(btn, true);
+  try {
+    claudeRun = await startClaudeJob<ClaudeUpgradeReviewResult>('claude-upgrade-review', { rows });
+    const out = await claudeRun.result;
+    const byId = new Map((result?.rows ?? []).map(r => [r.rbId, r]));
+    const changing = out.verdicts
+      .filter(v => (v.verdict === 'free' && v.freeUrl) || (v.verdict === 'store' && v.ref))
+      .map(v => { const r = byId.get(v.rbId)!; return { ...v, match: r?.match ?? null, artist: r?.artist, title: r?.title, duration: r?.duration }; })
+      .filter(v => byId.has(v.rbId));
+    const applied = changing.length ? await window.candybar.upgradeApplyClaude(changing) : { success: true, results: [] };
+    const outcome = new Map(applied.results.map(x => [x.rbId, x]));
+    for (const v of out.verdicts) {
+      const r = byId.get(v.rbId);
+      if (!r) continue;
+      const got = outcome.get(v.rbId);
+      let note = v.note;
+      if (v.verdict === 'free') {
+        if (got?.hit) {
+          r.free = { ...(r.free ?? { soundcloud: null, bandcamp: null, errors: [] }), soundcloud: got.hit, pasted: got.pasted ?? null };
+          r.freeOutcome = undefined;
+          if (fetchable(r)) selected.add(r.rbId);
+        } else if (got?.error) note = `${note} (Its link didn't check out: ${got.error})`;
+      } else if (v.verdict === 'store') {
+        if (got?.match) {
+          r.match = got.match;
+          if (storeLossless(r) && !freeHit(r)) selected.add(r.rbId);
+        } else if (got?.error) note = `${note} (${got.error})`;
+      } else if (v.verdict === 'none') {
+        // Not this cut anywhere: what the check offered comes off the row, so
+        // it can't be downloaded or bought by mistake. A link Ben pasted stays.
+        if (r.free && !r.free.pasted) r.free = { ...r.free, soundcloud: null, bandcamp: null };
+        if (r.match?.status === 'matched') r.match = { ...r.match, status: 'no_match' };
+        selected.delete(r.rbId);
+      }
+      r.claude = { verdict: v.verdict, note };
+    }
+    saveState();
+    renderSteps();
+    showToast('success', `Claude checked ${plural(out.verdicts.length, 'track')}`, `${out.summary} Nothing is downloaded or in a cart until you say so.`, 10000);
+  } catch (err) {
+    if (!(err instanceof ClaudeJobError && err.cancelled)) {
+      showToast('error', "Claude couldn't check the upgrades", err instanceof Error ? err.message : String(err));
+    }
+  } finally {
+    claudeRun = null;
+    if (btn.isConnected) setClaudeButton(btn, false);
+  }
+}
+
+const CLAUDE_SPINNER = '<svg class="claude-spinner" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="10" stroke-opacity="0.25"/><path d="M12 2a10 10 0 0 1 10 10" stroke-linecap="round"/></svg>';
+
 const NEED_TEXT: Record<string, string> = {
   email: 'your email', 'soundcloud-connect': 'a SoundCloud connect', comment: 'a comment',
   'spotify-connect': 'a Spotify connect', spotify: 'a Spotify follow', 'soundcloud-support': 'SoundCloud support (follow, like, repost)',
@@ -655,6 +787,7 @@ function buildFreeRow(r: LosslessUpgradeRow): HTMLElement {
       <span class="buy-trk">
         <span class="buy-t">${escapeHtml(rowName(r))}</span>
         <span class="buy-a">${escapeHtml(r.artist)} · <span class="upg-from">now ${escapeHtml(r.formatLabel)}</span></span>
+        ${claudeLineHtml(r)}
         <span class="buy-sub upg-free-via">${sourceChip(h)}${pasted ? '<span class="status-pill">Your link</span>' : ''}<span>${landed ? `Ready for step 4: <span class="term" tabindex="0" data-tooltip="${escapeHtml(landed)}">${escapeHtml(fileNameOf(landed))}</span>` : escapeHtml(h.reason)}</span></span>
       </span>
       ${pill}
@@ -727,6 +860,7 @@ function buildFoundRow(r: LosslessUpgradeRow): HTMLElement {
         <span class="buy-t">${escapeHtml(rowName(r))}</span>
         <span class="buy-a">${escapeHtml(r.artist)} · <span class="upg-from">now ${escapeHtml(r.formatLabel)}</span></span>
         ${freeFailed(r) ? `<span class="buy-sub">${escapeHtml(freeFailedReason(r))}</span>` : ''}
+        ${claudeLineHtml(r)}
         ${bandcampPaid(r) ? bandcampLineHtml(bandcampPaid(r)!) : ''}
       </span>
       ${needsCheck(r) ? `<span class="buy-pill">${matchPillHtml(m)}</span>` : ''}
@@ -805,6 +939,7 @@ function buildInfoRow(r: LosslessUpgradeRow, kind: Group): HTMLElement {
       <span class="buy-t">${escapeHtml(rowName(r))}</span>
       <span class="buy-a">${escapeHtml(r.artist)} · now ${escapeHtml(r.formatLabel)}</span>
       <span class="buy-sub">${escapeHtml(notFoundReason(r))}</span>
+      ${claudeLineHtml(r)}
     </span>
     ${compressedOnly ? '<span class="status-pill status-pill--warn">Compressed only</span>' : '<span class="status-pill">Not found</span>'}`;
   if (r.format === 'lossy' || r.format === 'streaming') el.querySelector('.buy-trk')!.appendChild(pasteLinkControl(r));
@@ -1824,6 +1959,23 @@ function showProgress(p: LosslessUpgradeProgress) {
   progressBar.style.width = `${pct}%`;
   progressPercent.textContent = '';
   progressCount.textContent = p.total > 0 ? `${p.current.toLocaleString()} of ${plural(p.total, 'track')}` : '';
+}
+
+/** The Claude skills page's "Upgrade a Rekordbox playlist": the usual check of
+ *  that playlist, then "Check with Claude" (the skill's upgrade rules) on its rows. */
+export async function upgradeWithClaude(playlistId: string): Promise<void> {
+  if (running || claudeRun) return;
+  if (!playlistsLoaded) await loadPlaylists();
+  playlistSelect.value = playlistId;
+  if (playlistSelect.value !== playlistId) {
+    showToast('error', "Couldn't find that playlist", 'Rekordbox may have changed. Pick it again on Upgrade quality.');
+    return;
+  }
+  await run();
+  if (!result) return;
+  ensureClaudeButton();
+  const btn = document.getElementById('upgrade-claude-check') as HTMLButtonElement | null;
+  if (btn) await runClaudeCheck(btn);
 }
 
 async function run() {

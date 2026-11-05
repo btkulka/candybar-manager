@@ -659,6 +659,8 @@ export type LosslessUpgradeRow = {
   freeOutcome?: import('./lib/freeSources').FreeUpgradeOutcome;
   /** Why a row couldn't be searched (e.g. a streaming title that couldn't be read). */
   note?: string;
+  /** What "Check with Claude" said about this row. */
+  claude?: { verdict: UpgradeVerdictKind; note: string };
 };
 
 export type LosslessUpgradeResult = {
@@ -746,7 +748,8 @@ export type JobType =
   | 'claude-sourcing-review'
   | 'claude-track-tags'
   | 'claude-soundcloud'
-  | 'claude-store-finder';
+  | 'claude-store-finder'
+  | 'claude-upgrade-review';
 
 export type JobProgress = {
   jobId: string;
@@ -824,8 +827,32 @@ export type SourcingReviewRow = {
   };
 };
 export type SourcingVerdictKind = 'buy' | 'skip' | 'wrong' | 'flag';
-export type SourcingVerdict = { id: string; verdict: SourcingVerdictKind; note: string };
+/** `ref`: on a "wrong" verdict, the right record Claude found (a search_store_catalog ref). */
+export type SourcingVerdict = { id: string; verdict: SourcingVerdictKind; note: string; ref?: string };
 export type SourcingReviewResult = { verdicts: SourcingVerdict[]; summary: string };
+
+// ---------- Upgrade quality: Claude's check (the playlist-sourcing skill's upgrade rules) ----------
+
+/** One Upgrades row as Claude sees it: the Rekordbox entry and what the app's own search found. */
+export type UpgradeReviewRow = {
+  rbId: string;
+  artist: string;
+  title: string;
+  /** Seconds. */
+  duration?: number;
+  /** What it is now: "MP3 320", "Spotify stream". */
+  formatLabel: string;
+  free: {
+    soundcloud: import('./lib/freeSources').FreeSourceHit | null;
+    bandcamp: import('./lib/freeSources').FreeSourceHit | null;
+    nearMisses: import('./lib/freeSources').FreeSourceMiss[];
+  } | null;
+  store: { source: 'qobuz' | 'beatport'; title: string; artists: string[]; price: string; lossless: boolean; confidence: number; ref: string | null } | null;
+};
+export type UpgradeVerdictKind = 'free' | 'store' | 'none' | 'keep';
+export type UpgradeVerdict = { rbId: string; verdict: UpgradeVerdictKind; note: string; freeUrl?: string; ref?: string };
+export type ClaudeUpgradeReviewParams = { rows: UpgradeReviewRow[] };
+export type ClaudeUpgradeReviewResult = { verdicts: UpgradeVerdict[]; summary: string };
 
 export type TrackTagField = 'title' | 'artist' | 'remixer' | 'album' | 'genre' | 'year' | 'bpm' | 'key' | 'label';
 export type ClaudeTrackTagsParams = { filePath: string; tags: Record<TrackTagField | 'comment', string> };

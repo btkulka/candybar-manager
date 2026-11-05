@@ -336,3 +336,17 @@ html.store-panel-open .claude-fab { right: calc(var(--store-panel-width, 0px) + 
 .claude-settings h4 { font-size: var(--fs-h3); font-weight: 600; }
 .claude-settings h4:not(:first-child) { margin-top: var(--space-lg); padding-top: var(--space-lg); border-top: 1px solid var(--border-subtle); }
 .claude-settings .card-desc { margin: 0; }
+
+/* ===== Claude skills: the picker above the SoundCloud form ===== */
+.skill-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: var(--space-lg); margin-bottom: var(--space-xl); }
+.skill-card { display: flex; flex-direction: column; gap: var(--space-md); margin: 0; }
+.skill-card-head { display: flex; gap: var(--space-md); align-items: flex-start; }
+.skill-card-head h3 { margin: 0 0 4px; }
+.skill-card-icon { flex-shrink: 0; display: grid; place-items: center; width: 36px; height: 36px; border-radius: 10px; background: var(--accent-muted); color: var(--accent); }
+.skill-card-icon svg { width: 18px; height: 18px; }
+.skill-card-form { display: flex; flex-direction: column; gap: var(--space-sm); margin-top: auto; }
+.skill-card-form input, .skill-card-form select { width: 100%; min-width: 0; }
+.skill-card-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: var(--space-sm); }
+.skill-card-form .field-help { margin: 0; font-size: var(--fs-small); color: var(--text-muted); min-height: 1.2em; }
+.skill-card-form .field-help.is-error { color: var(--danger); }
+.skill-card-foot { margin: 0; font-size: var(--fs-small); color: var(--text-muted); }

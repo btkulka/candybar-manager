@@ -28,6 +28,9 @@ files:
   - dist/**
   - lib/**
   - bin/**
+  # Track Lab's Claude skills (a plugin its Claude jobs load with --plugin-dir).
+  - claude-plugin/**
+  - "!claude-plugin/**/evals/**"
   - assets/**
   - "!**/__tests__/**"
   - "!lib/rekordbox/tests/**"

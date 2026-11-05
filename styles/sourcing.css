@@ -538,6 +538,8 @@
 .upg-free-actions .card-actions { margin-top: 0; }
 .upg-free-progress .buy-meter { margin-top: var(--space-sm); }
 .upg-free-count { margin-top: 4px; font-size: var(--fs-small); color: var(--text-muted); font-variant-numeric: tabular-nums; }
+/* "Check with Claude" at the right of the toolbar over the Upgrades list. */
+.buy-toolbar .upg-claude-btn { margin-left: auto; flex-shrink: 0; }
 /* "Found a free download?": a link that opens a one-line form for a pasted
    SoundCloud or download-page link. Sits under a row's text or in its details. */
 .upg-paste { margin-top: 4px; white-space: normal; }

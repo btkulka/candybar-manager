@@ -5,7 +5,7 @@ import type { JobContext, JobDefinition } from '../types';
 import type {
   ClaudeAskParams, ClaudeAskResult, ClaudeProfile, ClaudeSoundcloudParams, ClaudeSoundcloudResult, ClaudeStoreFinderParams,
   ClaudeStoreFinderResult, ClaudeTrackTagsParams, ClaudeTrackTagsResult, FinderPick, FinderTrack, SoundcloudReview,
-  SourcingReviewResult, SourcingReviewRow,
+  SourcingReviewResult, SourcingReviewRow, ClaudeUpgradeReviewParams, ClaudeUpgradeReviewResult, UpgradeVerdict,
 } from '../../../types';
 import {
   runClaudeCode, candybarMcpServer, candybarTools, stopProcessTree, CANDYBAR_MCP,
@@ -14,7 +14,7 @@ import {
 import {
   ASK_SYSTEM_PROMPT, SOURCING_REVIEW_SCHEMA, buildSourcingReviewPrompt, TRACK_TAGS_SCHEMA, buildTrackTagsPrompt,
   TAG_FIELDS, SOUNDCLOUD_REVIEW_SCHEMA, buildSoundcloudReviewPrompt, summarizeSoundcloudSession,
-  STORE_FINDER_SCHEMA, buildStoreFinderPrompt,
+  STORE_FINDER_SCHEMA, buildStoreFinderPrompt, buildSkillSourcingReviewPrompt, UPGRADE_REVIEW_SCHEMA, buildUpgradeReviewPrompt,
 } from '../../claude/prompts';
 import { profilePrompt } from '../../claude/userProfile';
 
@@ -29,7 +29,41 @@ export type ClaudeJobDeps = {
   /** An empty working folder for sessions that read no files, so none of the
    *  repo's project settings load into them. Defaults to appRoot. */
   scratchDir?: string;
+  /** Where Track Lab keeps the `node` its skills run on (Electron as Node). */
+  runtimeDir?: string;
 };
+
+/** Track Lab's skills ship as a Claude Code plugin in the app (claude-plugin/:
+ *  playlist-sourcing, with its upgrade rules). */
+const PLUGIN_DIR = 'claude-plugin';
+
+const shQuote = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
+
+/**
+ * What a session needs to use Track Lab's own skills: the plugin folder, where
+ * Track Lab's code is ($TRACK_LAB_ROOT, which the skill's commands use), and a
+ * `node` that runs on Track Lab itself for a Mac without Node — searched last,
+ * so a real Node always wins. Null when this build has no plugin.
+ */
+export function trackLabSkills(deps: Pick<ClaudeJobDeps, 'appRoot' | 'runtimeDir'>, execPath = process.execPath):
+  { pluginDirs: string[]; env: Record<string, string>; fallbackPathDirs: string[] } | null {
+  const pluginDir = path.join(deps.appRoot, PLUGIN_DIR);
+  if (!fs.existsSync(path.join(pluginDir, '.claude-plugin', 'plugin.json'))) return null;
+  const fallbackPathDirs: string[] = [];
+  if (deps.runtimeDir) {
+    try {
+      const bin = path.join(deps.runtimeDir, 'bin');
+      fs.mkdirSync(bin, { recursive: true });
+      const shim = path.join(bin, 'node');
+      const body = `#!/bin/sh\n# Track Lab's own Node (Electron run as Node), for the skills its Claude jobs run.\nELECTRON_RUN_AS_NODE=1 exec ${shQuote(execPath)} "$@"\n`;
+      if (!fs.existsSync(shim) || fs.readFileSync(shim, 'utf8') !== body) fs.writeFileSync(shim, body, { mode: 0o755 });
+      fallbackPathDirs.push(bin);
+    } catch {
+      // The skills still run wherever a real Node is on PATH.
+    }
+  }
+  return { pluginDirs: [pluginDir], env: { TRACK_LAB_ROOT: deps.appRoot }, fallbackPathDirs };
+}
 
 /** candybar-audio-tools tools that only read: library checks, store searches, tags, history. */
 const READ_TOOLS = candybarTools(
@@ -149,8 +183,22 @@ export function claudeSourcingReviewJob(deps: ClaudeJobDeps): JobDefinition<{ ro
       const rows = ctx.params.rows ?? [];
       if (rows.length === 0) return { verdicts: [], summary: 'Nothing to review.' };
       ctx.log(`Reviewing ${rows.length} rows`, 'status');
-      // Judgment over data the app already has: no tools, one structured answer.
-      const result = await runForJob(ctx, deps, {
+      // With Track Lab's playlist-sourcing skill loaded, Claude reviews by its
+      // rules and can check the library and search the stores (read-only) to
+      // name the right record for a wrong row. Without it (a build missing the
+      // plugin), the embedded rules and no tools, as before.
+      const skills = trackLabSkills(deps);
+      const canSearch = !!skills && !!appMcpServer(deps) && builtMcpHas(deps.appRoot, 'search_store_catalog');
+      const result = await runForJob(ctx, deps, skills ? {
+        prompt: buildSkillSourcingReviewPrompt(rows, canSearch),
+        tools: ['Skill', 'Read'],
+        allowedTools: ['Skill', 'Read', ...(canSearch ? candybarTools('check_library_for_tracks', 'search_store_catalog', 'sourcing_history') : [])],
+        mcp: canSearch,
+        ...skills,
+        cwd: deps.scratchDir && fs.existsSync(deps.scratchDir) ? deps.scratchDir : deps.appRoot,
+        jsonSchema: SOURCING_REVIEW_SCHEMA,
+        effort: 'high',
+      } : {
         prompt: buildSourcingReviewPrompt(rows),
         tools: [],
         allowedTools: [],
@@ -159,7 +207,7 @@ export function claudeSourcingReviewJob(deps: ClaudeJobDeps): JobDefinition<{ ro
       });
       const out = result.structuredOutput as SourcingReviewResult;
       const known = new Set(rows.map(r => r.id));
-      return { summary: out.summary, verdicts: out.verdicts.filter(v => known.has(v.id)) };
+      return { summary: out.summary, verdicts: out.verdicts.filter(v => known.has(v.id)).map(v => (v.ref?.trim() ? v : { id: v.id, verdict: v.verdict, note: v.note })) };
     },
   };
 }
@@ -400,6 +448,110 @@ export function claudeStoreFinderJob(deps: ClaudeJobDeps): JobDefinition<ClaudeS
   };
 }
 
+// ---------- Upgrade review ----------
+
+/** Rows per session: each may take a few searches, so fewer than the finder's. */
+export const UPGRADE_BATCH = 10;
+const UPGRADE_PARALLEL = 3;
+const UPGRADE_SESSION_MS = 15 * 60 * 1000;
+
+/**
+ * "Check with Claude" on Upgrade quality: the playlist-sourcing skill's
+ * upgrade rules (references/upgrades.md, built on its Review) over the rows
+ * the app's own check found, with read-only free and store searches. The app
+ * applies the verdicts (a free link through the pasted-link checks, a store
+ * ref through the store finder's resolver).
+ */
+export function claudeUpgradeReviewJob(deps: ClaudeJobDeps): JobDefinition<ClaudeUpgradeReviewParams, ClaudeUpgradeReviewResult> {
+  return {
+    type: 'claude-upgrade-review',
+    lane: 'claude-upgrade-review',
+    dependencies: [],
+    timeoutMs: 2 * 60 * 60 * 1000,
+    run: async (ctx) => {
+      const rows = ctx.params.rows ?? [];
+      if (rows.length === 0) return { verdicts: [], summary: 'Nothing to check.' };
+      const skills = trackLabSkills(deps);
+      if (!skills) throw new Error("This copy of Track Lab doesn't have its Claude skills. Update Track Lab and try again.");
+      const tools = appMcpServer(deps)
+        ? ['find_free_sources', 'search_store_catalog', 'check_library_for_tracks', 'sourcing_history'].filter(t => builtMcpHas(deps.appRoot, t))
+        : [];
+      if (!tools.includes('find_free_sources')) ctx.log("The app's free-download search tool isn't built (run `npm run build:mcp`), so Claude judges what the check found without searching again.", 'stderr');
+      const cwd = deps.scratchDir && fs.existsSync(deps.scratchDir) ? deps.scratchDir : deps.appRoot;
+      const batches = finderBatches(rows, UPGRADE_BATCH);
+      const verdicts: UpgradeVerdict[] = [];
+      let next = 0, done = 0, firstError: string | null = null, stopped = false;
+      ctx.log(`Checking ${rows.length} rows with the playlist-sourcing skill, in ${batches.length} session${batches.length === 1 ? '' : 's'}`, 'status');
+      ctx.progress({ phase: 'checking', current: 0, total: rows.length, message: 'Starting Claude Code…' });
+
+      const runBatch = async (batch: typeof rows, n: number) => {
+        const timer = new AbortController();
+        const onAbort = () => timer.abort();
+        ctx.signal.addEventListener('abort', onAbort, { once: true });
+        const timeout = setTimeout(() => timer.abort(), UPGRADE_SESSION_MS);
+        try {
+          const result = await runForJob(ctx, deps, {
+            prompt: buildUpgradeReviewPrompt(batch),
+            tools: ['Skill', 'Read'],
+            allowedTools: ['Skill', 'Read', ...candybarTools(...tools)],
+            mcp: tools.length > 0,
+            ...skills,
+            cwd,
+            jsonSchema: UPGRADE_REVIEW_SCHEMA,
+            effort: 'medium',
+            signal: timer.signal,
+            label: batches.length > 1 ? `[${n}]` : undefined,
+            quiet: true,
+          });
+          const ids = new Set(batch.map(r => r.rbId));
+          const out = (result.structuredOutput as { verdicts?: UpgradeVerdict[] })?.verdicts ?? [];
+          for (const v of out) {
+            if (!ids.delete(String(v.rbId))) continue;
+            verdicts.push({
+              rbId: String(v.rbId), verdict: v.verdict, note: v.note,
+              ...(v.verdict === 'free' && v.freeUrl?.trim() ? { freeUrl: v.freeUrl.trim() } : {}),
+              ...(v.verdict === 'store' && v.ref?.trim() ? { ref: v.ref.trim() } : {}),
+            });
+          }
+        } catch (err) {
+          if (ctx.signal.aborted) throw err;
+          const message = timer.signal.aborted ? 'a session ran out of time' : err instanceof Error ? err.message : String(err);
+          firstError ??= message;
+          if (stopsTheRest(message)) stopped = true;
+          ctx.log(`[${n}] couldn't check these rows: ${message}`, 'stderr');
+        } finally {
+          clearTimeout(timeout);
+          ctx.signal.removeEventListener('abort', onAbort);
+        }
+      };
+      const worker = async () => {
+        while (!stopped && next < batches.length) {
+          const n = next++;
+          await runBatch(batches[n], n + 1);
+          done += batches[n].length;
+          ctx.progress({ phase: 'checking', current: done, total: rows.length, message: `Claude checked ${done} of ${rows.length}` });
+        }
+      };
+      await Promise.all(Array.from({ length: Math.min(UPGRADE_PARALLEL, batches.length) }, worker));
+      if (verdicts.length === 0 && firstError) throw new Error(firstError);
+      return { verdicts, summary: upgradeReviewSummary(verdicts, rows.length, firstError) };
+    },
+  };
+}
+
+/** One line for the toast: what Claude found, across every session. */
+export function upgradeReviewSummary(verdicts: UpgradeVerdict[], total: number, firstError: string | null): string {
+  const n = (k: UpgradeVerdict['verdict']) => verdicts.filter(v => v.verdict === k).length;
+  const parts = [
+    n('free') && `${n('free')} free`,
+    n('store') && `${n('store')} from a store`,
+    n('none') && `${n('none')} with no full-quality copy of that cut`,
+    n('keep') && `${n('keep')} as the check had ${n('keep') === 1 ? 'it' : 'them'}`,
+  ].filter(Boolean);
+  const unchecked = total - verdicts.length;
+  return `${parts.length ? `Claude says: ${parts.join(', ')}.` : 'Claude had nothing to change.'}${unchecked > 0 ? ` ${unchecked} not checked${firstError ? ` (${firstError.replace(/\.$/, '')})` : ''}.` : ''}`;
+}
+
 export function claudeJobs(deps: ClaudeJobDeps): JobDefinition<any, any>[] {
-  return [claudeAskJob(deps), claudeSourcingReviewJob(deps), claudeTrackTagsJob(deps), claudeSoundcloudJob(deps), claudeStoreFinderJob(deps)];
+  return [claudeAskJob(deps), claudeSourcingReviewJob(deps), claudeTrackTagsJob(deps), claudeSoundcloudJob(deps), claudeStoreFinderJob(deps), claudeUpgradeReviewJob(deps)];
 }

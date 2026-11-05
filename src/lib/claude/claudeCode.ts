@@ -48,6 +48,14 @@ export type ClaudeRunOptions = {
   /** Keep the session on disk so it can be resumed. Off for one-shot jobs. */
   persistSession?: boolean;
   addDirs?: string[];
+  /** Plugin folders loaded for this session only (`--plugin-dir`): Track
+   *  Lab's own skills ship as one. */
+  pluginDirs?: string[];
+  /** Extra environment for the session and the commands it runs. */
+  env?: Record<string, string>;
+  /** Searched after everything else on PATH: Track Lab's own `node`, for a
+   *  Mac without Node, never shadowing a real one. */
+  fallbackPathDirs?: string[];
   oauthToken?: string;
   signal?: AbortSignal;
   onEvent?: (event: ClaudeEvent) => void;
@@ -74,7 +82,7 @@ const API_KEY_ENV = new Set(['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'ELECT
 
 export function buildClaudeEnv(
   base: NodeJS.ProcessEnv,
-  opts: { oauthToken?: string; pathDirs?: string[] } = {}
+  opts: { oauthToken?: string; pathDirs?: string[]; fallbackPathDirs?: string[]; extra?: Record<string, string> } = {}
 ): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {};
   for (const [key, value] of Object.entries(base)) {
@@ -85,7 +93,8 @@ export function buildClaudeEnv(
   // Print mode otherwise starts the first turn while MCP servers are still
   // connecting ("pending" at init), and the job runs without the app's tools.
   env.MCP_CONNECTION_NONBLOCKING = 'false';
-  const dirs = [...(opts.pathDirs ?? []), ...(env.PATH ?? '').split(path.delimiter)].filter(Boolean);
+  for (const [key, value] of Object.entries(opts.extra ?? {})) env[key] = value;
+  const dirs = [...(opts.pathDirs ?? []), ...(env.PATH ?? '').split(path.delimiter), ...(opts.fallbackPathDirs ?? [])].filter(Boolean);
   env.PATH = [...new Set(dirs)].join(path.delimiter);
   return env;
 }
@@ -140,10 +149,13 @@ export async function findClaudeBinary(): Promise<string | null> {
   ]) ?? look(await loginShellPath());
 }
 
-async function claudeEnv(binary: string, oauthToken?: string): Promise<NodeJS.ProcessEnv> {
+async function claudeEnv(binary: string, oauthToken?: string, extra?: { env?: Record<string, string>; fallbackPathDirs?: string[] }): Promise<NodeJS.ProcessEnv> {
   // The binary's own directory first: an npm/nvm install is a node script, and
   // its `node` sits beside it.
-  return buildClaudeEnv(process.env, { oauthToken, pathDirs: [path.dirname(binary), ...await loginShellPath()] });
+  return buildClaudeEnv(process.env, {
+    oauthToken, pathDirs: [path.dirname(binary), ...await loginShellPath()],
+    fallbackPathDirs: extra?.fallbackPathDirs, extra: extra?.env,
+  });
 }
 
 // ---------- Status ----------
@@ -234,7 +246,7 @@ function shellQuote(s: string): string {
 
 // ---------- Running ----------
 
-export function buildClaudeArgs(o: Omit<ClaudeRunOptions, 'prompt' | 'cwd' | 'signal' | 'onEvent' | 'oauthToken'>): string[] {
+export function buildClaudeArgs(o: Omit<ClaudeRunOptions, 'prompt' | 'cwd' | 'signal' | 'onEvent' | 'oauthToken' | 'env' | 'fallbackPathDirs'>): string[] {
   const args = [
     '-p', '--output-format', 'stream-json', '--verbose',
     // Headless: anything not allowed below is refused, never asked about.
@@ -253,6 +265,7 @@ export function buildClaudeArgs(o: Omit<ClaudeRunOptions, 'prompt' | 'cwd' | 'si
   if (o.resumeSessionId) args.push('--resume', o.resumeSessionId);
   if (!o.persistSession && !o.resumeSessionId) args.push('--no-session-persistence');
   for (const dir of o.addDirs ?? []) args.push('--add-dir', dir);
+  for (const dir of o.pluginDirs ?? []) args.push('--plugin-dir', dir);
   return args;
 }
 
@@ -313,7 +326,7 @@ export async function runClaudeCode(opts: ClaudeRunOptions): Promise<ClaudeRunRe
   const args = buildClaudeArgs(opts);
   const child = spawn(binary, args, {
     cwd: opts.cwd,
-    env: await claudeEnv(binary, opts.oauthToken),
+    env: await claudeEnv(binary, opts.oauthToken, { env: opts.env, fallbackPathDirs: opts.fallbackPathDirs }),
     stdio: ['pipe', 'pipe', 'pipe'],
     shell: binary.endsWith('.cmd'),
     // Its own process group, so a cancel also stops the MCP servers and any

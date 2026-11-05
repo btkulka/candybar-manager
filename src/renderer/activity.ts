@@ -14,7 +14,8 @@ const JOB_LABELS: Record<JobType, string> = {
   'claude-sourcing-review': 'Claude is reviewing matches',
   'claude-track-tags': 'Claude is looking up tags',
   'claude-soundcloud': 'Getting SoundCloud downloads',
-  'claude-store-finder': 'Claude is finding store matches'
+  'claude-store-finder': 'Claude is finding store matches',
+  'claude-upgrade-review': 'Claude is checking upgrades'
 };
 
 // Track visible jobs and their removal timers

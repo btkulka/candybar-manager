@@ -165,3 +165,17 @@ echo '{"type":"result","subtype":"success","is_error":false,"result":"done","str
     await expect(run).rejects.toThrow(/cancelled/);
   }, 20000);
 });
+
+describe("Track Lab's skills in a session", () => {
+  it('loads each plugin folder for the session', () => {
+    const args = buildClaudeArgs({ tools: ['Skill', 'Read'], allowedTools: ['Skill'], pluginDirs: ['/App/claude-plugin'] });
+    expect(args.slice(args.indexOf('--plugin-dir'), args.indexOf('--plugin-dir') + 2)).toEqual(['--plugin-dir', '/App/claude-plugin']);
+    expect(args).toContain('Skill,Read');
+  });
+
+  it("puts Track Lab's own node after everything else on PATH, and sets the extra env", () => {
+    const env = buildClaudeEnv({ PATH: `/usr/bin${path.delimiter}/bin` }, { pathDirs: ['/nvm/bin'], fallbackPathDirs: ['/UD/runtime/bin'], extra: { TRACK_LAB_ROOT: '/App' } });
+    expect(env.PATH!.split(path.delimiter)).toEqual(['/nvm/bin', '/usr/bin', '/bin', '/UD/runtime/bin']);
+    expect(env.TRACK_LAB_ROOT).toBe('/App');
+  });
+});

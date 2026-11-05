@@ -102,11 +102,11 @@
           </button>
 
           <div class="nav-section-label">Assistant</div>
-          <button class="nav-link" data-page="claude" data-tooltip-pos="right" data-tooltip="Fetch the free downloads from your SoundCloud likes or a set; Claude checks what landed. Ask Claude anything from the round button at the bottom right.">
+          <button class="nav-link" data-page="claude" data-tooltip-pos="right" data-tooltip="Let Claude run a job with Track Lab's own skills: source a playlist, upgrade a Rekordbox playlist to lossless, or fetch SoundCloud free downloads. Ask Claude anything from the round button at the bottom right.">
             <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
+              <path d="M12 3l1.9 4.6L18.5 9.5l-4.6 1.9L12 16l-1.9-4.6L5.5 9.5l4.6-1.9z"/><path d="M19 15l.9 2.1L22 18l-2.1.9L19 21l-.9-2.1L16 18l2.1-.9z"/>
             </svg>
-            <span>SoundCloud downloads</span>
+            <span>Claude skills</span>
           </button>
         </nav>
 
@@ -1529,14 +1529,15 @@
         </div>
         <!-- ===== END SPLICE RECOVERY PAGE ===== -->
 
-        <!-- ===== SOUNDCLOUD DOWNLOADS PAGE (src/renderer/claude.ts, styles/claude.css) =====
-             Ask Claude itself is the round button and its chat drawer, below the layout. -->
+        <!-- ===== CLAUDE SKILLS PAGE (src/renderer/claude.ts, styles/claude.css) =====
+             Jobs Claude runs with Track Lab's own skills (claude-plugin/). Ask
+             Claude itself is the round button and its chat drawer, below the layout. -->
         <div class="page" id="page-claude">
           <header class="page-header">
             <div class="page-header-text">
               <p class="page-eyebrow">Assistant</p>
-              <h2>SoundCloud downloads</h2>
-              <p>Let Track Lab fetch the free downloads from your SoundCloud likes or a set, then Claude tells you what landed and what needs you. It runs on your Claude subscription and can't buy or delete anything.</p>
+              <h2>Claude skills</h2>
+              <p>Pick a job and Claude runs it with Track Lab's own skills, the same ones it uses in a terminal. It runs on your Claude subscription, and it can't buy, delete or download anything without you.</p>
             </div>
             <div class="page-header-actions">
               <button type="button" class="btn-ghost btn-sm" data-claude-open="settings" data-tooltip="Claude's connection and model live in the Ask Claude chat" data-tooltip-pos="bottom">Claude settings</button>
@@ -1545,17 +1546,60 @@
 
           <ol class="how-steps" data-how="claude" aria-label="How it works">
             <li><span class="how-step-num">1</span><div><strong>Connect Claude</strong><span>Open Ask Claude (bottom right) and sign in once. Jobs use your plan, not extra credits.</span></div></li>
-            <li><span class="how-step-num">2</span><div><strong>Start the run</strong><span>From your likes, or paste a set's link.</span></div></li>
-            <li><span class="how-step-num">3</span><div><strong>Read what Claude found</strong><span>It says what landed and what's left for you. You decide what changes.</span></div></li>
+            <li><span class="how-step-num">2</span><div><strong>Pick a skill</strong><span>Source a playlist, upgrade a Rekordbox playlist, or get SoundCloud downloads.</span></div></li>
+            <li><span class="how-step-num">3</span><div><strong>Read what Claude found</strong><span>Its notes land on each track. You tick, buy and download.</span></div></li>
             <button type="button" class="how-steps-close" aria-label="Hide these steps" data-tooltip="Hide these steps">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
             </button>
           </ol>
 
+          <div class="skill-grid" role="list" aria-label="Claude skills">
+            <section class="card skill-card" role="listitem" id="skill-source">
+              <div class="skill-card-head">
+                <span class="skill-card-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg></span>
+                <div><h3>Source a playlist</h3><p class="card-desc">What's missing from your library, and the full-quality copy to get. Track Lab checks it, then Claude reviews every match: tracks you already have, wrong records, other versions.</p></div>
+              </div>
+              <div class="skill-card-form">
+                <input type="text" id="skill-source-link" placeholder="Spotify playlist or SoundCloud set link" spellcheck="false" aria-label="Playlist link" />
+                <div class="skill-card-actions">
+                  <button type="button" class="btn-ghost btn-sm" id="skill-source-csv" data-tooltip="Use a spreadsheet (CSV) instead, like an Exportify export">Use a spreadsheet…</button>
+                  <button type="button" class="btn-primary btn-sm" id="skill-source-run">Source it</button>
+                </div>
+                <p class="field-help" id="skill-source-help"></p>
+              </div>
+              <p class="skill-card-foot">Results land in Find &amp; buy. Nothing goes in a cart until you add it.</p>
+            </section>
+            <section class="card skill-card" role="listitem" id="skill-upgrade">
+              <div class="skill-card-head">
+                <span class="skill-card-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><polyline points="8 12 12 8 16 12"/><line x1="12" y1="16" x2="12" y2="8"/></svg></span>
+                <div><h3>Upgrade a Rekordbox playlist</h3><p class="card-desc">Lossless copies of its MP3s and streams, free first. Track Lab checks the playlist, then Claude makes sure every copy is the same cut as yours, since your cue points depend on it.</p></div>
+              </div>
+              <div class="skill-card-form">
+                <select id="skill-upgrade-playlist" aria-label="Rekordbox playlist"><option value="">Reading your Rekordbox playlists…</option></select>
+                <div class="skill-card-actions">
+                  <button type="button" class="btn-primary btn-sm" id="skill-upgrade-run" disabled>Upgrade it</button>
+                </div>
+              </div>
+              <p class="skill-card-foot">Results land in Upgrade quality. Downloads and swaps wait for you.</p>
+            </section>
+            <section class="card skill-card" role="listitem" id="skill-soundcloud">
+              <div class="skill-card-head">
+                <span class="skill-card-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg></span>
+                <div><h3>SoundCloud downloads</h3><p class="card-desc">The free downloads from your likes or a set, full-quality files only. Then Claude says what landed and what needs you.</p></div>
+              </div>
+              <div class="skill-card-form">
+                <div class="skill-card-actions">
+                  <button type="button" class="btn-primary btn-sm" id="skill-soundcloud-open">Set up a run</button>
+                </div>
+              </div>
+              <p class="skill-card-foot">A Chrome window opens while it works.</p>
+            </section>
+          </div>
+
           <section class="card" id="claude-sc-card">
             <div class="card-header">
               <div>
-                <h3>Get SoundCloud free downloads</h3>
+                <h3>SoundCloud downloads</h3>
                 <p class="card-desc">Track Lab fetches the free downloads from your likes or a set and keeps only full-quality files. Then Claude checks what landed and what needs you. A Chrome window opens while it works.</p>
               </div>
             </div>

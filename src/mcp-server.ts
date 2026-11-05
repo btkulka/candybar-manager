@@ -425,6 +425,32 @@ tool(
 );
 
 tool(
+  'find_free_sources',
+  'Look for free or cheap copies of tracks the way Upgrade quality does: a SoundCloud upload with a download (its own button, or a gate like Hypeddit, Droploud or Influence Planner, read signed out to say what the page gives — WAV or MP3 — and asks for), then Bandcamp (free, name your price, or a price). Read-only and signed out: nothing is downloaded, followed or bought. Each track gets its best SoundCloud hit, its Bandcamp copy, and its near misses (close uploads passed over, with why: no download, another version or length, an MP3-only gate). Give `duration` in seconds whenever you know it: a copy of another length is another cut.',
+  {
+    tracks: z.array(z.object({
+      artist: z.string(),
+      title: z.string(),
+      duration: z.number().optional().describe('Seconds'),
+    })).min(1).max(20).describe('Up to 20 tracks'),
+  },
+  async ({ tracks }) => {
+    const m = await sourcingModule('freeSources');
+    const strip = (h: any) => {
+      if (!h) return null;
+      const { fetchRow: _fetchRow, ...rest } = h;
+      return rest;
+    };
+    const out: unknown[] = [];
+    for (const t of tracks) {
+      const found = await m.findFreeSources(t);
+      out.push({ want: t, soundcloud: strip(found.soundcloud), bandcamp: strip(found.bandcamp), nearMisses: found.soundcloudMisses ?? [], errors: found.errors });
+    }
+    return { content: [{ type: 'text' as const, text: JSON.stringify(out, null, 1) }] };
+  }
+);
+
+tool(
   'list_purchases',
   'List tracks already purchased on Qobuz and/or Beatport, across every account signed in to Track Lab (Settings → Qobuz / Beatport). Runs in the Track Lab app, which is started if it is closed; no browser window. An account that couldn\'t be read is reported as such rather than counted as owning nothing — an empty result and a signed-out account are very different answers.',
   {

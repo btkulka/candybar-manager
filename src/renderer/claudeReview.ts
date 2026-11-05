@@ -15,6 +15,8 @@ export type SourcingReviewHost = {
   rows: () => { match: QobuzCartMatch; probable?: LibraryProbableRow }[];
   /** Untick skip / wrong / flag rows and tick confirmed full-quality buys, then re-render. */
   apply: (items: { match: QobuzCartMatch; verdict: SourcingVerdict }[]) => void;
+  /** Swap a row's match for the right record Claude found (before apply). */
+  replace?: (oldMatch: QobuzCartMatch, newMatch: QobuzCartMatch) => void;
 };
 
 const STORAGE_KEY = 'candybar-claude-verdicts';
@@ -121,9 +123,22 @@ async function runReview(btn: HTMLButtonElement): Promise<void> {
     running = await startClaudeJob<SourcingReviewResult>('claude-sourcing-review', { rows });
     const result = await running.result;
     const applied: { match: QobuzCartMatch; verdict: SourcingVerdict }[] = [];
+    let replaced = 0;
     for (const v of result.verdicts) {
       const match = byId.get(v.id);
       if (!match) continue;
+      // A wrong record with the right one named: swap it in, as a confirmed buy.
+      if (v.verdict === 'wrong' && v.ref && host.replace) {
+        const res = await window.candybar.librarySourcingResolvePick(match, v.ref, v.note).catch(() => null);
+        if (res?.success && res.changed && res.match && res.match.lossless) {
+          const fixed: SourcingVerdict = { id: v.id, verdict: 'buy', note: v.note ? `Found the right record. ${v.note}` : 'Found the right record.' };
+          host.replace(match, res.match);
+          verdicts.set(rowKey(res.match), fixed);
+          applied.push({ match: res.match, verdict: fixed });
+          replaced++;
+          continue;
+        }
+      }
       verdicts.set(rowKey(match), v);
       applied.push({ match, verdict: v });
     }
@@ -134,7 +149,7 @@ async function runReview(btn: HTMLButtonElement): Promise<void> {
     showToast(
       'success',
       `Claude checked ${plural(applied.length, 'track')}`,
-      `${result.summary}${unticked ? ` ${plural(unticked, 'track')} unticked.` : ''} Nothing is in a cart until you add it.`,
+      `${result.summary}${replaced ? ` ${plural(replaced, 'wrong record')} swapped for the right one.` : ''}${unticked ? ` ${plural(unticked, 'track')} unticked.` : ''} Nothing is in a cart until you add it.`,
       10000,
     );
   } catch (err) {
@@ -163,6 +178,13 @@ export function ensureSourcingReviewButton(): void {
     btn.addEventListener('click', () => void runReview(btn!));
   }
   anchor.parentElement.insertBefore(btn, anchor);
+}
+
+/** Start "Check with Claude" from code (the Claude skills page), as if pressed. */
+export function startSourcingReview(): void {
+  ensureSourcingReviewButton();
+  const btn = document.getElementById('source-claude-review') as HTMLButtonElement | null;
+  if (btn && !running) void runReview(btn);
 }
 
 /** Called once by Find & buy to hand over its rows. */

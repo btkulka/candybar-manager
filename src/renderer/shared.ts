@@ -297,6 +297,8 @@ declare global {
       upgradeFetchFreeStop: () => Promise<void>;
       upgradeUseLink: (rbId: string, url: string) => Promise<{ success: boolean; hit?: import('../lib/freeSources').FreeSourceHit; pasted?: { url: string; warning: string | null }; error?: string }>;
       upgradeForgetLink: (rbId: string) => Promise<{ success: boolean; forgotten?: boolean; error?: string }>;
+      upgradeApplyClaude: (items: Array<{ rbId: string; verdict: import('../types').UpgradeVerdictKind; note: string; freeUrl?: string; ref?: string; match?: import('../lib/qobuzCart').QobuzCartMatch | null; artist?: string; title?: string; duration?: number }>) => Promise<{ success: boolean; results: Array<{ rbId: string; hit?: import('../lib/freeSources').FreeSourceHit; pasted?: { url: string; warning: string | null }; match?: import('../lib/qobuzCart').QobuzCartMatch; error?: string }> }>;
+      librarySourcingResolvePick: (match: import('../lib/qobuzCart').QobuzCartMatch, ref: string, note?: string) => Promise<{ success: boolean; match?: import('../lib/qobuzCart').QobuzCartMatch; changed?: boolean; error?: string }>;
 
       // Find & buy: saved playlists (check again in one click)
       savedSourcesList: () => Promise<{ success: boolean; sources?: import('../types').SavedSource[]; error?: string }>;

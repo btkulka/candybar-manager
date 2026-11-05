@@ -16,7 +16,8 @@ export type JobType =
   | 'claude-sourcing-review'
   | 'claude-track-tags'
   | 'claude-soundcloud'
-  | 'claude-store-finder';
+  | 'claude-store-finder'
+  | 'claude-upgrade-review';
 
 // Shared result keys and their data shapes
 export type SharedResultKey = 'library-file-list';

@@ -306,6 +306,11 @@ contextBridge.exposeInMainWorld('candybar', {
     ipcRenderer.invoke('lossless-upgrade:use-link', { rbId, url }),
   upgradeForgetLink: (rbId: string): Promise<{ success: boolean; forgotten?: boolean; error?: string }> =>
     ipcRenderer.invoke('lossless-upgrade:forget-link', { rbId }),
+  // "Check with Claude": apply the verdicts that change a row (free links, store refs).
+  upgradeApplyClaude: (items: Array<{ rbId: string; verdict: import('./types').UpgradeVerdictKind; note: string; freeUrl?: string; ref?: string; match?: import('./lib/qobuzCart').QobuzCartMatch | null; artist?: string; title?: string; duration?: number }>): Promise<{ success: boolean; results: Array<{ rbId: string; hit?: import('./lib/freeSources').FreeSourceHit; pasted?: { url: string; warning: string | null }; match?: import('./lib/qobuzCart').QobuzCartMatch; error?: string }> }> =>
+    ipcRenderer.invoke('lossless-upgrade:apply-claude', { items }),
+  librarySourcingResolvePick: (match: import('./lib/qobuzCart').QobuzCartMatch, ref: string, note?: string): Promise<{ success: boolean; match?: import('./lib/qobuzCart').QobuzCartMatch; changed?: boolean; error?: string }> =>
+    ipcRenderer.invoke('library-sourcing:resolve-pick', { match, ref, note }),
 
   // Lossless swap: put a downloaded lossless file in place of a Rekordbox
   // entry's file, keeping the entry (cues, Date Added, play count, playlists).

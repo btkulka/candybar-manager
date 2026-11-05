@@ -700,6 +700,7 @@ app.whenReady().then(async () => {
         fs.mkdirSync(dir, { recursive: true });
         return dir;
       })(),
+      runtimeDir: path.join(app.getPath('userData'), 'runtime'),
     });
     recordJobOps();
     mainLog.info('Job queue initialized');
@@ -3317,23 +3318,81 @@ async function applyPastedLinks(rows: import('./types').LosslessUpgradeRow[], fe
   return out;
 }
 
+/** Set a free download link for one Upgrades row: checked against the entry's
+ *  tags, kept across checks, and put first among the row's downloader rows.
+ *  Throws with a sentence for the UI when the link is no use. */
+async function usePastedLink(rbId: string, url: string): Promise<{ hit: import('./lib/freeSources').FreeSourceHit; pasted: { url: string; warning: string | null } }> {
+  const link = url.trim();
+  if (!rbId || !link) throw new Error('Paste a link first.');
+  const state = await loadFreeFetchState();
+  const want = state?.wants?.[String(rbId)];
+  if (!state || !want) throw new Error('Check the playlist again, then paste the link.');
+  const key = `rb:${rbId}`;
+  const { hit, fetchRow, warning } = await freeFromLink(key, want, link);
+  const links = await readPastedLinks();
+  links[String(rbId)] = link;
+  await writePastedLinks(links);
+  await saveFreeFetchRows(state.playlistId, withPastedRow(state.rows, key, fetchRow));
+  return { hit, pasted: { url: link, warning } };
+}
+
 handleIpc('lossless-upgrade:use-link', async (_event, { rbId, url }: { rbId: string; url: string }) => {
   try {
-    if (!rbId || typeof url !== 'string' || !url.trim()) return { success: false, error: 'Paste a link first.' };
-    const state = await loadFreeFetchState();
-    const want = state?.wants?.[String(rbId)];
-    if (!state || !want) return { success: false, error: 'Check the playlist again, then paste the link.' };
-    const key = `rb:${rbId}`;
-    const { hit, fetchRow, warning } = await freeFromLink(key, want, url.trim());
-    const links = await readPastedLinks();
-    links[String(rbId)] = url.trim();
-    await writePastedLinks(links);
-    await saveFreeFetchRows(state.playlistId, withPastedRow(state.rows, key, fetchRow));
-    return { success: true, hit, pasted: { url: url.trim(), warning } };
+    if (typeof url !== 'string') return { success: false, error: 'Paste a link first.' };
+    return { success: true, ...(await usePastedLink(String(rbId), url)) };
   } catch (error) {
     mainLog.warn('IPC lossless-upgrade:use-link failed:', error);
     return { success: false, error: error instanceof Error ? error.message : "Track Lab couldn't use that link" };
   }
+});
+
+// ---------- Applying "Check with Claude" ----------
+//
+// Claude's verdicts come back to the renderer, which hands the ones that
+// change something here: a free link goes through the same checks as one Ben
+// pastes; a store ref (one the app handed out in a search) becomes a full
+// match through the store finder's resolver. A ref the app never handed out
+// leaves the row as it was.
+
+async function resolveStoreRef(match: QobuzCartMatch, ref: string, note: string): Promise<QobuzCartMatch> {
+  const [picked] = await applyFinderPicks([match], [{ key: match.trackInput.key, ref, confidence: 'high', note }], resolveQobuzHit);
+  return picked;
+}
+
+handleIpc('library-sourcing:resolve-pick', async (_event, { match, ref, note }: { match: QobuzCartMatch; ref: string; note?: string }) => {
+  try {
+    if (!match?.trackInput || !ref) return { success: false, error: 'Nothing to resolve.' };
+    const picked = await resolveStoreRef(match, ref, note ?? '');
+    const changed = picked !== match && picked.status === 'matched';
+    return { success: true, match: picked, changed };
+  } catch (error) {
+    mainLog.warn('IPC library-sourcing:resolve-pick failed:', error);
+    return { success: false, error: error instanceof Error ? error.message : "Couldn't use Claude's pick" };
+  }
+});
+
+type UpgradeApplyItem = { rbId: string; verdict: import('./types').UpgradeVerdictKind; note: string; freeUrl?: string; ref?: string; match?: QobuzCartMatch | null; artist?: string; title?: string; duration?: number };
+
+handleIpc('lossless-upgrade:apply-claude', async (_event, { items }: { items: UpgradeApplyItem[] }) => {
+  const results: Array<{ rbId: string; hit?: import('./lib/freeSources').FreeSourceHit; pasted?: { url: string; warning: string | null }; match?: QobuzCartMatch; error?: string }> = [];
+  for (const it of Array.isArray(items) ? items : []) {
+    const rbId = String(it.rbId);
+    try {
+      if (it.verdict === 'free' && it.freeUrl) {
+        results.push({ rbId, ...(await usePastedLink(rbId, it.freeUrl)) });
+      } else if (it.verdict === 'store' && it.ref) {
+        const base: QobuzCartMatch = it.match ?? {
+          trackInput: { key: `rb:${rbId}`, artist: it.artist ?? '', title: it.title ?? '', duration: it.duration },
+          qobuzTrack: null, beatportTrack: null, confidence: 0, source: null, lossless: false, status: 'no_match',
+        };
+        const picked = await resolveStoreRef(base, it.ref, it.note);
+        results.push(picked === base ? { rbId, error: "Claude's store pick wasn't one the app could find again" } : { rbId, match: picked });
+      }
+    } catch (error) {
+      results.push({ rbId, error: error instanceof Error ? error.message : String(error) });
+    }
+  }
+  return { success: true, results };
 });
 
 handleIpc('lossless-upgrade:forget-link', async (_event, { rbId }: { rbId: string }) => {

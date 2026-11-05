@@ -1,5 +1,5 @@
 import path from 'path';
-import type { ClaudeTrackTagsParams, FinderTrack, SourcingReviewRow, TrackTagField } from '../../types';
+import type { ClaudeTrackTagsParams, FinderTrack, SourcingReviewRow, TrackTagField, UpgradeReviewRow } from '../../types';
 
 // Prompts and result schemas for the Claude jobs. The review rules come from
 // the playlist-sourcing skill's past reviews, so they hold for anyone running
@@ -30,6 +30,7 @@ export const SOURCING_REVIEW_SCHEMA = {
           id: { type: 'string' },
           verdict: { type: 'string', enum: [...VERDICTS] },
           note: { type: 'string' },
+          ref: { type: 'string', description: 'On a "wrong" row: the right record\'s ref from search_store_catalog, when you found it.' },
         },
         required: ['id', 'verdict', 'note'],
         additionalProperties: false,
@@ -65,6 +66,59 @@ How to judge, from past reviews:
 
 Each note is one short sentence the DJ can act on, like "Same remix; the library has 'Title (X Remix)'." Use "" for a plain buy.
 The summary is at most two sentences: how many to buy, and what needed judgment.
+
+Rows:
+${JSON.stringify(rows, null, 1)}`;
+}
+
+/**
+ * The same review with the playlist-sourcing skill loaded (Track Lab ships it
+ * as a plugin): Claude reads the skill's Review section and references, and
+ * can check the library and search the stores to name the right record for a
+ * wrong row. The embedded rules stay as the floor.
+ */
+export function buildSkillSourcingReviewPrompt(rows: SourcingReviewRow[], canSearch: boolean): string {
+  return `First load the playlist-sourcing skill and read its "When Track Lab runs you" and "Review" sections (and references/scoring.md when a score puzzles you). Then do this review by those rules.
+${canSearch ? `\nYou have read-only tools: check_library_for_tracks (is it in Rekordbox?), search_store_catalog (Beatport/Qobuz listings, each with a ref) and sourcing_history. When a row's store link is the wrong record and a search finds the right one (lossless, same artist and version), give its ref in "ref" with verdict "wrong"; the app swaps it in. Never fill a cart.\n` : ''}
+${buildSourcingReviewPrompt(rows)}`;
+}
+
+// ---------- Upgrade review ----------
+
+export const UPGRADE_REVIEW_SCHEMA = {
+  type: 'object',
+  properties: {
+    verdicts: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          rbId: { type: 'string' },
+          verdict: { type: 'string', enum: ['free', 'store', 'none', 'keep'] },
+          note: { type: 'string' },
+          freeUrl: { type: 'string', description: 'For "free": the SoundCloud track page or download page of the exact copy.' },
+          ref: { type: 'string', description: 'For "store": the exact record\'s ref (the row\'s own store.ref to confirm it, or one from search_store_catalog).' },
+        },
+        required: ['rbId', 'verdict', 'note'],
+        additionalProperties: false,
+      },
+    },
+    summary: { type: 'string' },
+  },
+  required: ['verdicts', 'summary'],
+  additionalProperties: false,
+};
+
+export function buildUpgradeReviewPrompt(rows: UpgradeReviewRow[]): string {
+  return `First load the playlist-sourcing skill: read "When Track Lab runs you", then references/upgrades.md, which builds on the skill's Review rules. Then check these Upgrade quality rows by those rules and return one verdict per rbId.
+
+Each row is a Rekordbox entry held as a lossy file or a stream, with what the app's own search found: a free copy on SoundCloud or Bandcamp (with what its download page gives and asks for, when known), the close SoundCloud uploads it passed over and why, and the store match. The swap that follows keeps the entry's cue points, so only the exact same version and length is an upgrade.
+
+Your read-only tools: find_free_sources (SoundCloud and Bandcamp, for a better reading of the tags), search_store_catalog (Beatport/Qobuz, each listing with a ref), check_library_for_tracks and sourcing_history. Never download, follow, comment, fill a cart or buy.
+
+${HOUSE_RULES}
+
+Verdicts: "free" with freeUrl, "store" with ref, "none", or "keep" (the app's result stands). Each note is one sentence the DJ can act on. The summary is at most two sentences: how many can be upgraded free, how many from a store, and what needed judgment.
 
 Rows:
 ${JSON.stringify(rows, null, 1)}`;

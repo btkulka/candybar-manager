@@ -1,6 +1,8 @@
 import type { ClaudeAskResult, ClaudeProfile, ClaudeSoundcloudParams, ClaudeSoundcloudResult, ClaudeStatus, ClaudeTrackTagsResult, TrackTagField } from '../types';
 import { PROFILE_QUESTIONS } from '../lib/claude/userProfile';
-import { escapeHtml, showToast, plural } from './shared';
+import { escapeHtml, showToast, plural, setActiveTab } from './shared';
+import { sourceWithClaude } from './source';
+import { upgradeWithClaude } from './upgrade';
 import {
   claudeBridge, startClaudeJob, getClaudeStatus, describeClaudeStatus, ensureClaudeReady, ClaudeJobError,
   type ClaudeJobHandle, type JobLogEntry,
@@ -8,7 +10,7 @@ import {
 import { ensureSourcingReviewButton, SPINNER_SVG } from './claudeReview';
 
 // Ask Claude (the round button and its chat drawer: first-run questions, the
-// chat, and Claude's settings behind the gear), the SoundCloud downloads page,
+// chat, and Claude's settings behind the gear), the Claude skills page (its skill picker and the SoundCloud downloads form),
 // and the "Ask Claude" button in the track info editor. Every job runs
 // headless Claude Code on the user's Claude subscription.
 
@@ -819,8 +821,99 @@ function ensureInjected(): void {
   });
 }
 
+// ---------- Claude skills: the picker ----------
+//
+// Each card hands a job to the page that owns its results, then has Claude
+// review them there with Track Lab's skill: Find & buy for a playlist,
+// Upgrade quality for a Rekordbox playlist. The SoundCloud card opens the
+// downloads form below.
+
+const SPOTIFY_PLAYLIST_RE = /open\.spotify\.com\/(?:intl-[a-z-]+\/)?playlist\/[A-Za-z0-9]+|^spotify:playlist:[A-Za-z0-9]+/i;
+const SOUNDCLOUD_SET_RE = /(?:^|\/\/)(?:www\.|m\.)?soundcloud\.com\/[^/\s]+\/sets\/[^/\s?]+|on\.soundcloud\.com\//i;
+
+let skillCsv: string | null = null;
+let skillPlaylistsLoaded = false;
+
+/** What the "Source a playlist" card would check, or null with why. */
+function skillSourceSpec(): { spec: { kind: 'spotify' | 'soundcloud' | 'csv'; ref: string } | null; help: string } {
+  if (skillCsv) return { spec: { kind: 'csv', ref: skillCsv }, help: `Spreadsheet: ${skillCsv.split('/').pop()}` };
+  const link = ($<HTMLInputElement>('skill-source-link')?.value ?? '').trim();
+  if (!link) return { spec: null, help: '' };
+  if (SPOTIFY_PLAYLIST_RE.test(link)) return { spec: { kind: 'spotify', ref: link }, help: 'A Spotify playlist.' };
+  if (SOUNDCLOUD_SET_RE.test(link)) return { spec: { kind: 'soundcloud', ref: link }, help: 'A SoundCloud set.' };
+  return { spec: null, help: "That isn't a Spotify playlist or a SoundCloud set link." };
+}
+
+function refreshSkillSource(): void {
+  const { spec, help } = skillSourceSpec();
+  const run = $<HTMLButtonElement>('skill-source-run');
+  if (run) run.disabled = !spec;
+  const el = $('skill-source-help');
+  if (el) { el.textContent = help; el.classList.toggle('is-error', !spec && !!help); }
+}
+
+async function loadSkillPlaylists(): Promise<void> {
+  if (skillPlaylistsLoaded) return;
+  const select = $<HTMLSelectElement>('skill-upgrade-playlist');
+  const run = $<HTMLButtonElement>('skill-upgrade-run');
+  if (!select) return;
+  try {
+    const res = await window.candybar.upgradeListPlaylists();
+    if (!res.success || !res.playlists) throw new Error(res.error || "Couldn't read Rekordbox");
+    const usable = res.playlists.filter(p => !p.unreadable && (p.count > 0 || p.countUnknown));
+    select.innerHTML = `<option value="">Choose a Rekordbox playlist…</option>${usable.map(p =>
+      `<option value="${escapeHtml(p.id)}">${escapeHtml(p.path ? `${p.path} / ${p.name}` : p.name)}${p.count ? ` (${p.count})` : ''}</option>`).join('')}`;
+    skillPlaylistsLoaded = true;
+  } catch (err) {
+    select.innerHTML = `<option value="">${escapeHtml(err instanceof Error ? err.message : String(err))}</option>`;
+  }
+  if (run) run.disabled = !select.value;
+}
+
+function initSkillsPage(): void {
+  const page = document.getElementById('page-claude');
+  if (!page) return;
+  const onShown = () => { if (page.classList.contains('active')) void loadSkillPlaylists(); };
+  new MutationObserver(onShown).observe(page, { attributes: true, attributeFilter: ['class'] });
+  onShown();
+
+  $<HTMLInputElement>('skill-source-link')?.addEventListener('input', () => { skillCsv = null; refreshSkillSource(); });
+  $('skill-source-csv')?.addEventListener('click', async () => {
+    const picked = await window.candybar.selectPath('file').catch(() => null);
+    if (typeof picked !== 'string' || !picked) return;
+    if (!/\.csv$/i.test(picked)) { showToast('warning', 'Choose a CSV file', 'A spreadsheet saved as CSV, like an Exportify export.'); return; }
+    skillCsv = picked;
+    const link = $<HTMLInputElement>('skill-source-link');
+    if (link) link.value = '';
+    refreshSkillSource();
+  });
+  $('skill-source-run')?.addEventListener('click', () => {
+    const { spec } = skillSourceSpec();
+    if (!spec) return;
+    setActiveTab('source');
+    void sourceWithClaude(spec);
+  });
+  $<HTMLSelectElement>('skill-upgrade-playlist')?.addEventListener('change', (e) => {
+    const run = $<HTMLButtonElement>('skill-upgrade-run');
+    if (run) run.disabled = !(e.target as HTMLSelectElement).value;
+  });
+  $('skill-upgrade-run')?.addEventListener('click', () => {
+    const id = $<HTMLSelectElement>('skill-upgrade-playlist')?.value;
+    if (!id) return;
+    setActiveTab('upgrade');
+    void upgradeWithClaude(id);
+  });
+  $('skill-soundcloud-open')?.addEventListener('click', () => {
+    const card = document.getElementById('claude-sc-card');
+    card?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    card?.querySelector<HTMLElement>('input, select, button')?.focus({ preventScroll: true });
+  });
+  refreshSkillSource();
+}
+
 export function initClaude(): void {
   window.addEventListener('claude-status-changed', (e) => renderStatus((e as CustomEvent<ClaudeStatus>).detail));
+  initSkillsPage();
 
   loadAsk();
   renderAsk();

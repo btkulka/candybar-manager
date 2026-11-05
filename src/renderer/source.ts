@@ -18,7 +18,7 @@ import {
 import { isStoreCheckoutStep } from '../lib/mainGuards';
 import { exportM3u8, exportRekordbox, exportCsv } from './libraryExport';
 import { isArtistHeader, isTitleHeader } from '../lib/csvHeaders';
-import { attachSourcingReview, claudeVerdictHtml, SPINNER_SVG } from './claudeReview';
+import { attachSourcingReview, claudeVerdictHtml, startSourcingReview, SPINNER_SVG } from './claudeReview';
 
 // Find and buy tracks: a Spotify playlist, SoundCloud set or spreadsheet is
 // checked against the Rekordbox collection, the rest is searched on Qobuz and
@@ -1851,6 +1851,16 @@ function currentSpec(): SourceSpec | null {
   return soundcloudUrlValid ? { kind: 'soundcloud', ref: soundcloudSetUrl } : null;
 }
 
+/** The Claude skills page's "Source a playlist": the usual check of a link or
+ *  spreadsheet, then Claude's review with the playlist-sourcing skill, all in
+ *  this page's list. Resolves once the check is done (the review runs on). */
+export async function sourceWithClaude(spec: { kind: SourceType; ref: string }): Promise<boolean> {
+  appendMode = false;
+  const ok = await runSearch(spec);
+  if (ok) startSourcingReview();
+  return ok;
+}
+
 /** Check one source: the library check, then the store search. Returns true
  *  when results landed. With no `spec`, checks what's in the picker. */
 async function runSearch(spec?: SourceSpec): Promise<boolean> {
@@ -2689,6 +2699,13 @@ export function initSource() {
       }
       renderResults();
       updateBuyBar();
+    },
+    replace: (oldMatch, newMatch) => {
+      const i = matches.indexOf(oldMatch);
+      if (i < 0) return;
+      const oldId = oldMatch.source === 'qobuz' ? oldMatch.qobuzTrack?.id : oldMatch.beatportTrack?.id;
+      if (oldId) (oldMatch.source === 'qobuz' ? selectedQobuzIds : selectedBeatportIds).delete(oldId);
+      matches[i] = newMatch;
     },
   });
 }

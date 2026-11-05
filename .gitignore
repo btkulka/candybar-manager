@@ -37,3 +37,6 @@ sourcing-sessions/
 
 # packaged app output (npm run dist)
 release/
+
+# The skill's evals name Ben's own (some private) playlists: kept on his machine only.
+claude-plugin/skills/*/evals/

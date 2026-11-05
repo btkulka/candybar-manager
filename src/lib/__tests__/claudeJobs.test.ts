@@ -1,7 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { soundcloudArgs } from '../jobQueue/jobs/claude';
-import { summarizeSoundcloudSession, buildSourcingReviewPrompt, buildTrackTagsPrompt, TRACK_TAGS_SCHEMA, TAG_FIELDS } from '../claude/prompts';
-import type { SourcingReviewRow } from '../../types';
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
+import { soundcloudArgs, trackLabSkills, upgradeReviewSummary } from '../jobQueue/jobs/claude';
+import { summarizeSoundcloudSession, buildSourcingReviewPrompt, buildTrackTagsPrompt, TRACK_TAGS_SCHEMA, TAG_FIELDS, buildUpgradeReviewPrompt, buildSkillSourcingReviewPrompt, UPGRADE_REVIEW_SCHEMA, SOURCING_REVIEW_SCHEMA } from '../claude/prompts';
+import type { SourcingReviewRow, UpgradeReviewRow } from '../../types';
 
 describe('soundcloudArgs', () => {
   it('keeps account actions off unless asked', () => {
@@ -72,5 +75,54 @@ describe('prompts', () => {
     expect(prompt).toContain('A - T.aiff');
     expect(prompt).toContain('"key":"Am"');
     expect(TRACK_TAGS_SCHEMA.properties.fields.required).toEqual(TAG_FIELDS);
+  });
+});
+
+describe("Track Lab's skills for a job", () => {
+  const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'tl-skills-'));
+
+  it('finds the bundled plugin and writes a node that runs on Track Lab itself', () => {
+    const appRoot = tmp();
+    const runtimeDir = tmp();
+    fs.mkdirSync(path.join(appRoot, 'claude-plugin', '.claude-plugin'), { recursive: true });
+    fs.writeFileSync(path.join(appRoot, 'claude-plugin', '.claude-plugin', 'plugin.json'), '{"name":"track-lab"}');
+    const s = trackLabSkills({ appRoot, runtimeDir }, "/Applications/Track Lab.app/Contents/MacOS/Track Lab");
+    expect(s).toEqual({ pluginDirs: [path.join(appRoot, 'claude-plugin')], env: { TRACK_LAB_ROOT: appRoot }, fallbackPathDirs: [path.join(runtimeDir, 'bin')] });
+    const shim = fs.readFileSync(path.join(runtimeDir, 'bin', 'node'), 'utf8');
+    expect(shim).toContain(`ELECTRON_RUN_AS_NODE=1 exec '/Applications/Track Lab.app/Contents/MacOS/Track Lab' "$@"`);
+    expect(fs.statSync(path.join(runtimeDir, 'bin', 'node')).mode & 0o111).toBeTruthy();
+  });
+
+  it('is off for a build without the plugin', () => {
+    expect(trackLabSkills({ appRoot: tmp() })).toBeNull();
+  });
+});
+
+describe('the upgrade review', () => {
+  const row: UpgradeReviewRow = {
+    rbId: '42', artist: 'John Summit & Sub Focus', title: 'Go Back (Shizz Lo Flip)', duration: 197, formatLabel: 'MP3 320',
+    free: { soundcloud: null, bandcamp: null, nearMisses: [] }, store: null,
+  };
+
+  it('sends Claude to the skill and its upgrade rules, with the rows', () => {
+    const p = buildUpgradeReviewPrompt([row]);
+    expect(p).toMatch(/playlist-sourcing skill/);
+    expect(p).toMatch(/references\/upgrades\.md/);
+    expect(p).toMatch(/find_free_sources/);
+    expect(p).toContain('"rbId": "42"');
+    expect(UPGRADE_REVIEW_SCHEMA.properties.verdicts.items.properties.verdict.enum).toEqual(['free', 'store', 'none', 'keep']);
+  });
+
+  it("sums up what Claude found across its sessions", () => {
+    expect(upgradeReviewSummary([
+      { rbId: '1', verdict: 'free', note: '', freeUrl: 'x' }, { rbId: '2', verdict: 'store', note: '', ref: 'bp:1' },
+      { rbId: '3', verdict: 'none', note: '' }, { rbId: '4', verdict: 'keep', note: '' },
+    ], 5, 'a session ran out of time')).toBe('Claude says: 1 free, 1 from a store, 1 with no full-quality copy of that cut, 1 as the check had it. 1 not checked (a session ran out of time).');
+  });
+
+  it('lets the Find & buy review name the right record, when it can search', () => {
+    expect(SOURCING_REVIEW_SCHEMA.properties.verdicts.items.properties).toHaveProperty('ref');
+    expect(buildSkillSourcingReviewPrompt([], true)).toMatch(/search_store_catalog/);
+    expect(buildSkillSourcingReviewPrompt([], false)).not.toMatch(/search_store_catalog \(Beatport/);
   });
 });

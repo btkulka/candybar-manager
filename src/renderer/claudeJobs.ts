@@ -5,7 +5,7 @@ import { showToast } from './shared';
 // the job queue; this enqueues one, streams its log lines, and settles with
 // its result.
 
-export type ClaudeJobType = 'claude-ask' | 'claude-sourcing-review' | 'claude-track-tags' | 'claude-soundcloud';
+export type ClaudeJobType = 'claude-ask' | 'claude-sourcing-review' | 'claude-track-tags' | 'claude-soundcloud' | 'claude-upgrade-review';
 export type JobLogEntry = { jobId: string; text: string; stream: 'stdout' | 'stderr' | 'status' };
 
 // The Claude-specific bridge calls, typed here so the shared Window typing
