@@ -62,8 +62,12 @@ export type GateInfo = {
   format: string | null;
   /** true for WAV/AIFF/FLAC, false for MP3 &c, null when unknown. */
   lossless: boolean | null;
-  /** What it asks for, in order: 'email', 'soundcloud-connect', 'comment'. */
+  /** What it insists on, in order: 'email', 'soundcloud-connect', 'comment',
+   *  'spotify-connect', 'instagram', 'soundcloud-support'… (gates/inspect.mjs). */
   needs: string[];
+  /** Steps it lets you skip (Droploud's Spotify and Droploud follow); the
+   *  walkers skip them. */
+  optional?: string[];
   active: boolean;
 };
 

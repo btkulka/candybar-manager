@@ -70,6 +70,7 @@ const DEFAULTS: AppConfig = {
   claudeFindMatches: true,
   claudeProfile: null,
   gateEmail: '',
+  gateComment: '',
   floatingConsoleEnabled: true,
   activeTab: 'organize',
   checkCsvPath: '',

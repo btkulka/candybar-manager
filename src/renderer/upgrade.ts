@@ -502,7 +502,13 @@ function wireLinks(root: HTMLElement) {
   }));
 }
 
-const NEED_TEXT: Record<string, string> = { email: 'your email', 'soundcloud-connect': 'a SoundCloud connect', comment: 'a comment' };
+const NEED_TEXT: Record<string, string> = {
+  email: 'your email', 'soundcloud-connect': 'a SoundCloud connect', comment: 'a comment',
+  'spotify-connect': 'a Spotify connect', spotify: 'a Spotify follow', 'soundcloud-support': 'SoundCloud support (follow, like, repost)',
+  instagram: 'an Instagram follow', tiktok: 'a TikTok follow', youtube: 'a YouTube follow', facebook: 'a Facebook follow',
+  x: 'an X follow', beatport: 'a Beatport follow', mixcloud: 'a Mixcloud follow', 'droploud-follow': 'a Droploud follow',
+  disclaimer: 'a rights checkbox', 'apple-music': 'an Apple Music connect', deezer: 'a Deezer follow',
+};
 const listText = (xs: string[]) => (xs.length < 2 ? xs.join('') : `${xs.slice(0, -1).join(', ')} and ${xs[xs.length - 1]}`);
 
 /** The download page wants to act on the SoundCloud account (connect, comment). */
@@ -628,9 +634,14 @@ function buildFreeRow(r: LosslessUpgradeRow): HTMLElement {
     : h.source === 'soundcloud'
       ? `The download page says the file is ${h.gateInfo?.format ? `a ${escapeHtml(h.gateInfo.format)}` : 'full quality'}, so it's full quality.`
       : 'Bandcamp gives you the full-quality file (WAV, AIFF or FLAC).';
-  const needs = h.gateInfo?.needs.length
-    ? `<p>The download page asks for ${escapeHtml(listText(h.gateInfo.needs.map(n => NEED_TEXT[n] || n)))}.${needsAccountOk(h) ? ' Track Lab does those for you only when the box below is ticked; your saved email is used for the email.' : ''}</p>`
+  const gi = h.gateInfo;
+  const needs = gi?.needs.length
+    ? `<p>The download page asks for ${escapeHtml(listText(gi.needs.map(n => NEED_TEXT[n] || n)))}.${
+      needsAccountOk(h) ? ' Track Lab does the SoundCloud part only when the box below is ticked, with the comment saved in Settings.' : ''}${
+      gi.needs.includes('email') ? ' Your saved email is used for the email.' : ''}${
+      gi.needs.includes('spotify-connect') ? ' The Spotify connect uses the Spotify account signed in to the download window.' : ''}</p>`
     : '';
+  const skipped = gi?.optional?.length ? `<p>It also offers ${escapeHtml(listText(gi.optional.map(n => NEED_TEXT[n] || n)))}, which Track Lab skips.</p>` : '';
   const link = (hit: FreeSourceHit | null | undefined) => hit
     ? `<button type="button" class="btn-ghost btn-sm upg-link" data-url="${escapeHtml(hit.url)}" data-tooltip="Open it on ${SOURCE_NAME[hit.source]} in your browser, to listen first.">Open on ${SOURCE_NAME[hit.source]}</button>`
     : '';
@@ -653,6 +664,7 @@ function buildFreeRow(r: LosslessUpgradeRow): HTMLElement {
         : `<p>The free copy: <b>${escapeHtml(h.listedAs)}</b>, uploaded by ${escapeHtml(h.uploader)}. Track Lab is ${Math.round(h.confidence * 100)}% sure it's the same version.</p>`}
       <p>${arrival}</p>
       ${needs}
+      ${skipped}
       ${h.gateNote ? `<p>${escapeHtml(h.gateNote)}</p>` : ''}
       <div class="buy-row-facts">${link(sc)}${link(bc)}${pasted ? '<button type="button" class="btn-ghost btn-sm upg-forget">Forget this link</button>' : ''}</div>
     </div>`;

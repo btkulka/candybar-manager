@@ -19,7 +19,6 @@ import ffmpegPath from 'ffmpeg-static';
 import { parseFile } from 'music-metadata';
 import { planUpgradeSwap, applyUpgradeSwap, _resetSwapState, type SwapDeps } from '../rekordboxUpgradeSwap';
 import { setManualTrashDir } from '../safeDelete';
-import { normalizeArtist } from '../organizeByArtist';
 
 const REPO = path.resolve(__dirname, '..', '..', '..');
 const APP_ROOT = process.env.RBX_SWAP_APPROOT || REPO;
@@ -168,8 +167,8 @@ describe.skipIf(!enabled)('lossless swap, plan + apply on a copy of master.db', 
     expect(plan.alignment.offsetMs).toBeCloseTo(-25.06, 0);
     expect(plan.cueShiftMs).toBe(-25);
     expect(plan.checkBeatgrid).toBe(true);
-    // <library>/<the entry's artist>/<original basename, hash prefix dropped>.aif
-    expect(plan.after.path).toBe(path.join(deps.libraryRoot, normalizeArtist(setup.artist), 'Original Track (Extended Mix).aif'));
+    // Beside the original: its folder, its basename (hash prefix dropped) with .aif.
+    expect(plan.after.path).toBe(path.join(path.dirname(origMp3), 'Original Track (Extended Mix).aif'));
     expect(plan.keeps.dateAdded).toMatch(/^\d{4}-\d{2}-\d{2}$/);
     expect(plan.after).toMatchObject({ format: 'AIFF 16/44.1', sampleRate: 44100, bitDepth: 16, fileSize: null });
     expect(plan.oldFileGoesTo).toBe(path.join(deps.archiveRoot, 'upgraded-originals', 'Old Rips', path.basename(origMp3)));

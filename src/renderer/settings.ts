@@ -139,8 +139,10 @@ export async function setStoreCredentials(config: {
   spotifyClientId?: string;
   spotifyClientSecret?: string;
   gateEmail?: string;
+  gateComment?: string;
 }): Promise<void> {
   if (config.gateEmail !== undefined) setValue('setting-gate-email', config.gateEmail);
+  if (config.gateComment !== undefined) setValue('setting-gate-comment', config.gateComment);
   let statuses: { qobuzAccounts: Record<string, boolean>; beatportAccounts: Record<string, boolean> } = {
     qobuzAccounts: {}, beatportAccounts: {}
   };
@@ -527,6 +529,7 @@ async function saveSettings(): Promise<void> {
     const spotifyClientId = getValue('setting-spotify-client-id');
     const spotifyClientSecret = getValue('setting-spotify-client-secret');
     const gateEmail = getValue('setting-gate-email').trim();
+    const gateComment = getValue('setting-gate-comment').trim();
     // Blank keeps the default next to the library rather than saving "".
     const rekordboxBackupDir = getValue('setting-rekordbox-backup-dir').trim();
 
@@ -542,6 +545,7 @@ async function saveSettings(): Promise<void> {
       spotifyClientId,
       spotifyClientSecret,
       gateEmail,
+      gateComment,
       ...(rekordboxBackupDir ? { rekordboxBackupDir } : {}),
     } as Partial<AppConfigWithBackups>);
 

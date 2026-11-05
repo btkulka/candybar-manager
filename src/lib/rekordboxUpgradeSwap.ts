@@ -179,9 +179,13 @@ export function folderKey(name: string): string {
   return name.normalize('NFC').toLowerCase();
 }
 
-/** <libraryRoot>/<Artist>/<name>, joining an artist folder that already exists
+/** Where the new file goes: beside the file it replaces (its folder, its
+ *  basename with .aif), so the library keeps the layout it has. Only when that
+ *  folder isn't there (a streaming entry, a drive that isn't connected) does it
+ *  go to <libraryRoot>/<Artist>/, joining an artist folder that already exists
  *  under another case or Unicode form. `existingFolders` maps folderKey → name. */
-export function swapTargetBase(libraryRoot: string, artist: string, originalPath: string, existingFolders: Map<string, string>): string {
+export function swapTargetBase(libraryRoot: string, artist: string, originalPath: string, existingFolders: Map<string, string>, originalDirExists = false): string {
+  if (originalDirExists && path.isAbsolute(originalPath)) return path.join(path.dirname(originalPath), swapFileName(originalPath));
   const folder = normalizeArtist(artist || '');
   const dir = existingFolders.get(folderKey(folder)) ?? folder;
   return path.join(libraryRoot, dir, swapFileName(originalPath));
@@ -582,7 +586,8 @@ export async function planUpgradeSwap(inputs: UpgradeSwapInput[], deps: SwapDeps
   for (const w of wanted) {
     const row = first.rows[w.rbId];
     if (!row) continue;
-    candidates.set(w.rbId, numberedVariants(swapTargetBase(deps.libraryRoot, row.artist, row.FolderPath, folders), VARIANTS));
+    const originalDirExists = !!row.FolderPath && path.isAbsolute(row.FolderPath) && await exists(path.dirname(row.FolderPath));
+    candidates.set(w.rbId, numberedVariants(swapTargetBase(deps.libraryRoot, row.artist, row.FolderPath, folders, originalDirExists), VARIANTS));
   }
   const paths = wanted.flatMap(w => [w.newFilePath, first.rows[w.rbId]?.FolderPath ?? '', ...(candidates.get(w.rbId) ?? [])]).filter(Boolean);
   const { pathOwners } = await runSwapScript<{ pathOwners: Record<string, string[]> }>(deps, ['read'], { input: { ids: [], paths }, timeoutMs: 120_000 });

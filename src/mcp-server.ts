@@ -675,7 +675,7 @@ tool(
     assistSeconds: z.number().optional().describe('When a gate stalls, wait this long for the user to finish it in the Chrome window (default 0 = record it and move on)'),
     email: z.string().optional().describe('Email address to give gates that demand one. Defaults to the one the user saved in Track Lab\'s Settings → SoundCloud (saving it is their go-ahead for every run); with none saved and none given, email gates are skipped'),
     scActions: z.string().optional().describe('Account actions a gate may perform for real: "follow,like,comment" (default), add "repost" to allow reposts, or "none"'),
-    comment: z.string().optional().describe('Comment text for gates that ask for one (default "dis shit nasty" — the user\'s standing choice)'),
+    comment: z.string().optional().describe('Comment text for gates that ask for one, for this run only (default: the gateComment saved in Settings)'),
     resume: z.string().optional().describe('Path of an earlier session JSON; its pending rows are fetched and gates that stalled are retried'),
   },
   async ({ user, set, limit, since, listOnly, noGates, dropLossy, dest, assistSeconds, email, scActions, comment, resume }) => oneAtATime(async () => {

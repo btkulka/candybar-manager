@@ -29,7 +29,8 @@
 //   --no-email           give gates no email this run, even if one is saved
 //   --postcode ZIP       the zip code Bandcamp asks for alongside the address
 //   --sc-actions LIST    account actions a gate may do for real: follow,like,comment[,repost] | none (default follow,like,comment)
-//   --comment TEXT       the comment left when a gate asks for one (default "dis shit nasty" — always that, by request)
+//   --comment TEXT       the comment left when a gate asks for one (default: the one saved in
+//                        Settings → SoundCloud; none saved, gates that insist on one are left for you)
 //   --sc-account NAME    refuse to run unless the signed-in SoundCloud account is NAME (its
 //                        permalink, e.g. nhi-dj) — for runs done on someone else's behalf
 //   --login-timeout SEC  when the profile is signed out, wait this long for you to sign in on the window (default 300; 0 = fail instead)
@@ -60,7 +61,7 @@ const RATE_LIMIT_MS = 400;
 const MIN_FREE_BYTES = 1024 * 1024 * 1024; // gate zips of 200 MB+ unpack to more than that
 
 function parseArgs(argv) {
-  const args = { scActions: ['follow', 'like', 'comment'], assist: 0, gateTimeout: 90, comment: 'dis shit nasty', loginTimeout: 300 };
+  const args = { scActions: ['follow', 'like', 'comment'], assist: 0, gateTimeout: 90, comment: undefined, loginTimeout: 300 };
   for (let i = 2; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--user') args.user = argv[++i];
@@ -95,6 +96,8 @@ function parseArgs(argv) {
   // overrides it and --no-email holds it back for this one.
   if (args.noEmail) delete args.email;
   else if (!args.email) args.email = loadConfig().gateEmail || undefined;
+  // The comment saved in Settings, unless --comment gives one for this run.
+  if (args.comment === undefined) args.comment = loadConfig().gateComment || null;
   return args;
 }
 

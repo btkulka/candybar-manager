@@ -91,7 +91,14 @@ describe('paths', () => {
     expect(swapFileName('/m/A/Track.m4a')).toBe('Track.aif');
   });
 
-  it('files under <library>/<Artist>, joining an existing folder whatever its case', () => {
+  it('puts the new file beside the one it replaces', () => {
+    expect(swapTargetBase('/lib', 'Dom Dolla', '/V/Music/Old Rips/16686306_Miracle Maker.mp3', new Map(), true))
+      .toBe(path.join('/V/Music/Old Rips', 'Miracle Maker.aif'));
+    // A streaming entry has no folder of its own.
+    expect(path.dirname(swapTargetBase('/lib', 'Dom Dolla', 'spotify:track:0juH', new Map(), true))).toBe(path.join('/lib', 'Dom Dolla'));
+  });
+
+  it("falls back to <library>/<Artist> when the original's folder isn't there, joining an existing folder whatever its case", () => {
     const existing = new Map([['dj koze', 'DJ Koze']]);
     expect(swapTargetBase('/lib', 'Dj Koze', '/old/x.mp3', existing)).toBe(path.join('/lib', 'DJ Koze', 'x.aif'));
     expect(swapTargetBase('/lib', 'AC/DC', '/old/y.mp3', new Map())).toBe(path.join('/lib', 'AC-DC', 'y.aif'));

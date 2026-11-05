@@ -368,6 +368,10 @@ export type AppConfig = {
    *  without an email. Saving it is the go-ahead for every run (the app's,
    *  Claude's and the CLI's); empty skips those gates. Kept in secrets.json. */
   gateEmail: string;
+  /** What a download gate's comment box gets (Hypeddit, Droploud, Influence
+   *  Planner: some post it to SoundCloud for you). Every run uses it — the
+   *  app's, Claude's and the CLI's. Empty skips gates that insist on one. */
+  gateComment: string;
   floatingConsoleEnabled: boolean;
   activeTab: string;
   checkCsvPath: string;
