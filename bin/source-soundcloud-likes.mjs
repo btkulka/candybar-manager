@@ -29,6 +29,7 @@
 //   --no-email           give gates no email this run, even if one is saved
 //   --postcode ZIP       the zip code Bandcamp asks for alongside the address
 //   --sc-actions LIST    account actions a gate may do for real: follow,like,comment[,repost] | none (default follow,like,comment)
+//   --first-name / --last-name   the name for gates that ask (default: the one saved with the email)
 //   --comment TEXT       the comment left when a gate asks for one (default: the one saved in
 //                        Settings → SoundCloud; none saved, gates that insist on one are left for you)
 //   --sc-account NAME    refuse to run unless the signed-in SoundCloud account is NAME (its
@@ -82,6 +83,8 @@ function parseArgs(argv) {
     else if (a === '--postcode') args.postcode = argv[++i];
     else if (a === '--sc-account') args.scAccount = argv[++i];
     else if (a === '--comment') args.comment = argv[++i];
+    else if (a === '--first-name') (args.name ??= { first: '', last: '' }).first = argv[++i];
+    else if (a === '--last-name') (args.name ??= { first: '', last: '' }).last = argv[++i];
     else if (a === '--login-timeout') args.loginTimeout = Number(argv[++i]);
     else if (a === '--sc-actions') {
       const v = argv[++i];
@@ -98,6 +101,8 @@ function parseArgs(argv) {
   else if (!args.email) args.email = loadConfig().gateEmail || undefined;
   // The comment saved in Settings, unless --comment gives one for this run.
   if (args.comment === undefined) args.comment = loadConfig().gateComment || null;
+  // The name saved with the email, for gates that ask for one.
+  { const c = loadConfig(); args.name ??= { first: c.gateFirstName || '', last: c.gateLastName || '' }; }
   return args;
 }
 
@@ -151,7 +156,7 @@ function flagText(r) {
 async function main() {
   const args = parseArgs(process.argv);
   if (args.help) {
-    log('usage: source-soundcloud-likes.mjs [--user NAME] [--set URL]... [--tracks PATH] [--limit N] [--since DATE] [--list-only] [--no-gates] [--drop-lossy] [--dest DIR] [--out PATH] [--resume PATH] [--assist SEC] [--gate-timeout SEC] [--email ADDR | --no-email] [--postcode ZIP] [--sc-account NAME] [--comment TEXT] [--sc-actions follow,like,comment,repost|none] [--headless] [--no-library] [--ledger PATH]');
+    log('usage: source-soundcloud-likes.mjs [--user NAME] [--set URL]... [--tracks PATH] [--limit N] [--since DATE] [--list-only] [--no-gates] [--drop-lossy] [--dest DIR] [--out PATH] [--resume PATH] [--assist SEC] [--gate-timeout SEC] [--email ADDR | --no-email] [--first-name X --last-name Y] [--postcode ZIP] [--sc-account NAME] [--comment TEXT] [--sc-actions follow,like,comment,repost|none] [--headless] [--no-library] [--ledger PATH]');
     process.exit(0);
   }
   const fromSets = !!args.sets?.length;
@@ -426,7 +431,7 @@ async function main() {
             outcome = { status: 'skipped', reason: 'gates skipped by flag' };
           } else {
             const r = await runGate(browser.ctx, row, {
-              log, tmpDir: tmp, email: args.email || null, postcode: args.postcode || null, comment: args.comment, scActions: args.scActions, dropLossy: !!args.dropLossy,
+              log, tmpDir: tmp, email: args.email || null, postcode: args.postcode || null, comment: args.comment, scActions: args.scActions, dropLossy: !!args.dropLossy, name: args.name,
               assistMs: args.assist * 1000, gateTimeoutMs: args.gateTimeout * 1000,
               sc: { page: browser.page, sess },
             });

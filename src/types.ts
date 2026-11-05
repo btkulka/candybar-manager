@@ -372,6 +372,11 @@ export type AppConfig = {
    *  Planner: some post it to SoundCloud for you). Every run uses it — the
    *  app's, Claude's and the CLI's. Empty skips gates that insist on one. */
   gateComment: string;
+  /** The name download gates get when they ask for one (Hypeddit's first-name
+   *  box, a "your name" field). Asked in the setup guide with the email; kept
+   *  in secrets.json. */
+  gateFirstName: string;
+  gateLastName: string;
   floatingConsoleEnabled: boolean;
   activeTab: string;
   checkCsvPath: string;

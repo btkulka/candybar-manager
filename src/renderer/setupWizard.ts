@@ -1,8 +1,8 @@
 /**
  * Setup guide.
  *
- * Walks someone through everything Track Lab needs before it's useful: where
- * their music lives, where new downloads land and set-aside tracks go,
+ * Walks someone through everything Track Lab needs before it's useful: their
+ * name and email for free-download pages that ask, where their music lives, where new downloads land and set-aside tracks go,
  * whether they use Rekordbox (and where its safety backups go), Spotify, and
  * the Qobuz/Beatport sign-ins. Every step can be skipped, and each one saves
  * as soon as you move on, so closing halfway keeps what's done.
@@ -18,13 +18,14 @@ import { setCurrentArchivePath, setLibraryRootDisplay, setRekordboxBackupDir, se
 import { autoRefreshLibrary } from './library';
 import { startTour } from './tour';
 
-type StepId = 'welcome' | 'library' | 'folders' | 'rekordbox' | 'spotify' | 'stores' | 'done';
+type StepId = 'welcome' | 'details' | 'library' | 'folders' | 'rekordbox' | 'spotify' | 'stores' | 'done';
 type Store = 'qobuz' | 'beatport';
 /** The backup folder is added by the Rekordbox swap engine; read it either way. */
 type SetupConfig = AppConfig & { rekordboxBackupDir?: string };
 
 const STEPS: Array<{ id: StepId; label: string }> = [
   { id: 'welcome', label: 'Welcome' },
+  { id: 'details', label: 'Your details' },
   { id: 'library', label: 'Your music' },
   { id: 'folders', label: 'Folders' },
   { id: 'rekordbox', label: 'Rekordbox' },
@@ -144,6 +145,8 @@ export async function refreshSetupBadge(cfg?: AppConfig): Promise<void> {
   const missing: string[] = [];
   if (!c.spotifyClientId || !c.spotifyClientSecret) missing.push('Spotify');
   if ((c.qobuzAccounts?.length ?? 0) === 0 && (c.beatportAccounts?.length ?? 0) === 0) missing.push('a store sign-in');
+  // Free downloads stop at every page that wants an email until there's one.
+  if (!c.gateEmail) missing.push('your name and email');
   // Counts only what's genuinely not set up, so someone who's set up but never
   // opened the guide isn't nagged.
   badge.textContent = missing.length ? String(missing.length) : '';
@@ -223,8 +226,8 @@ function render(): void {
       state === 'done' ? 'is-done' : '',
       state === 'skipped' ? 'is-skipped' : '',
     ].filter(Boolean).join(' ');
-    // Welcome and "All set" bracket the five numbered steps, so the rail's
-    // numbers match the "Step 2 of 5" over each question.
+    // Welcome and "All set" bracket the six numbered steps, so the rail's
+    // numbers match the "Step 2 of 6" over each question.
     const bracket = s.id === 'welcome' || s.id === 'done';
     const mark = state === 'done' ? ICON.check : bracket ? '' : String(i);
     return `<li class="${cls}${bracket ? ' is-bracket' : ''}"><button type="button" data-goto="${s.id}" ${i === at ? 'aria-current="step"' : ''}>
@@ -316,6 +319,7 @@ const VIEWS: Record<StepId, () => StepView> = {
       <div class="setup-hero" aria-hidden="true"></div>
       ${heading('Setup guide', 'Welcome to Track Lab', 'Track Lab looks after your DJ library: it sorts new downloads, finds the tracks you\'re missing, swaps low-quality files for full-quality ones and checks your USB sticks before a gig.')}
       <ul class="setup-checklist">
+        <li>${ICON.shield}<div><strong>Your name and email</strong><span>For the free-download pages that ask, so downloads don't stop for them</span></div></li>
         <li>${ICON.music}<div><strong>Tell Track Lab where your music lives</strong><span>Your library folder, and where new downloads land</span></div></li>
         <li>${ICON.yes.replace('class="choice-icon" ', '')}<div><strong>Connect Rekordbox, if you use it</strong><span>So Track Lab can read your playlists and keep your cue points safe</span></div></li>
         <li>${ICON.external}<div><strong>Connect Spotify and your music stores</strong><span>Optional — for checking playlists and buying full-quality copies</span></div></li>
@@ -328,12 +332,31 @@ const VIEWS: Record<StepId, () => StepView> = {
     ],
   }),
 
+  details: () => ({
+    html: `
+      ${heading('Step 1 of 6', 'Your details', 'Some free-download pages won\'t give you the file until you type in your name and email. Track Lab fills them in for you, so a batch of downloads doesn\'t stop to ask.')}
+      <div class="setup-two-up setup-two-up--plain">
+        <div class="field"><label for="setup-first-name">First name</label>
+          <input type="text" id="setup-first-name" value="${escapeHtml(config!.gateFirstName ?? '')}" autocomplete="given-name" /></div>
+        <div class="field"><label for="setup-last-name">Last name</label>
+          <input type="text" id="setup-last-name" value="${escapeHtml(config!.gateLastName ?? '')}" autocomplete="family-name" /></div>
+      </div>
+      <div class="field"><label for="setup-gate-email">Email</label>
+        <input type="email" id="setup-gate-email" value="${escapeHtml(config!.gateEmail ?? '')}" placeholder="you@example.com" autocomplete="email" spellcheck="false" /></div>
+      <div class="field"><label for="setup-gate-comment">Comment <span class="setup-optional">(optional)</span></label>
+        <input type="text" id="setup-gate-comment" value="${escapeHtml(config!.gateComment ?? '')}" maxlength="280" placeholder="What pages that want a comment get" />
+        <p class="field-hint">A few pages post a comment on the SoundCloud track for you. Leave it empty and those ones wait for you instead.</p></div>
+      <p class="setup-note">${ICON.shield}<span>Only typed into download pages that ask, never sent anywhere else. Change them any time in Settings → SoundCloud.</span></p>
+    `,
+    buttons: [skipButton('details'), button('btn-primary', 'Continue', () => void saveDetails())],
+  }),
+
   library: () => {
     const root = config!.libraryRoot;
     const isDefault = /\/Music\/?$/.test(root);
     return {
       html: `
-        ${heading('Step 1 of 5', 'Where\'s your music?', 'Pick the folder that holds your DJ music — the one Rekordbox plays your tracks from. A folder on an external drive is fine.')}
+        ${heading('Step 2 of 6', 'Where\'s your music?', 'Pick the folder that holds your DJ music — the one Rekordbox plays your tracks from. A folder on an external drive is fine.')}
         ${pathField('setup-library-root', 'Library folder', 'Track Lab checks this folder for problems, and new music gets sorted into it, one folder per artist.', root,
           isDefault ? 'This is your Mac\'s Music folder. Change it if your tracks live somewhere else.' : 'Saved as soon as you pick a folder.')}
         <p class="setup-note">${ICON.shield}<span>Choosing a folder doesn't move or change anything in it.</span></p>
@@ -356,7 +379,7 @@ const VIEWS: Record<StepId, () => StepView> = {
 
   folders: () => ({
     html: `
-      ${heading('Step 2 of 5', 'New music and set-aside tracks', 'Two more folders. The suggestions sit next to your library and work for most people.')}
+      ${heading('Step 3 of 6', 'New music and set-aside tracks', 'Two more folders. The suggestions sit next to your library and work for most people.')}
       ${pathField('setup-organize-source', 'New downloads folder', 'Where your new downloads land. "Sort new music" takes tracks from here and files them into your library.', config!.organizeSourceDir)}
       ${pathField('setup-archive', 'Set-aside folder', 'When you set a track aside, or swap it for a better copy, the old file is moved here instead of being deleted.', config!.archivePath)}
     `,
@@ -375,7 +398,7 @@ const VIEWS: Record<StepId, () => StepView> = {
     }
     return {
       html: `
-        ${heading('Step 3 of 5', 'Do you use Rekordbox?', 'Track Lab can read your Rekordbox playlists to find tracks worth upgrading, and swap in better copies without losing your cue points, play counts or date added.')}
+        ${heading('Step 4 of 6', 'Do you use Rekordbox?', 'Track Lab can read your Rekordbox playlists to find tracks worth upgrading, and swap in better copies without losing your cue points, play counts or date added.')}
         <div class="choice-grid setup-choice" role="radiogroup" aria-label="Do you use Rekordbox?">
           <button type="button" class="choice-card" role="radio" aria-checked="${enabled}" data-rekordbox="on">${ICON.yes}<strong>Yes, I use Rekordbox</strong><span>Show Upgrade quality and Restore library</span></button>
           <button type="button" class="choice-card" role="radio" aria-checked="${!enabled}" data-rekordbox="off">${ICON.no}<strong>No, I don't</strong><span>Hide the Rekordbox-only pages</span></button>
@@ -408,7 +431,7 @@ const VIEWS: Record<StepId, () => StepView> = {
     const connected = spotifyCheck.state === 'ok';
     return {
       html: `
-        ${heading('Step 4 of 5', 'Connect Spotify', 'Optional. Track Lab reads Spotify playlists so you can see which tracks you don\'t have yet. Spotify asks for a free "app" key to allow that — here\'s how to get one.')}
+        ${heading('Step 5 of 6', 'Connect Spotify', 'Optional. Track Lab reads Spotify playlists so you can see which tracks you don\'t have yet. Spotify asks for a free "app" key to allow that — here\'s how to get one.')}
         ${status}
         <details class="disclosure setup-howto-wrap" ${connected ? '' : 'open'}>
         <summary>${connected ? 'Use different keys' : 'How to get your Spotify keys'}<span class="disclosure-hint">about 2 minutes</span></summary>
@@ -442,7 +465,7 @@ const VIEWS: Record<StepId, () => StepView> = {
 
   stores: () => ({
     html: `
-      ${heading('Step 5 of 5', 'Sign in to your music stores', 'Optional. Sign in to Qobuz and Beatport to search them, fill your carts and re-download what you\'ve bought, and to SoundCloud for your likes, private sets and free downloads. You can add more store accounts later in Settings.')}
+      ${heading('Step 6 of 6', 'Sign in to your music stores', 'Optional. Sign in to Qobuz and Beatport to search them, fill your carts and re-download what you\'ve bought, and to SoundCloud for your likes, private sets and free downloads. You can add more store accounts later in Settings.')}
       <div class="setup-stores">
         ${storeCard('qobuz', 'Qobuz', 'Full-quality downloads of almost everything.')}
         ${storeCard('beatport', 'Beatport', 'The DJ store: club mixes, extended versions and remixes.')}
@@ -465,6 +488,7 @@ const VIEWS: Record<StepId, () => StepView> = {
 
   done: () => {
     const rows: Array<{ id: StepId; label: string; later: string }> = [
+      { id: 'details', label: 'Your name and email for download pages', later: 'Add them in Settings → SoundCloud' },
       { id: 'library', label: 'Your music library', later: 'Choose it in Settings → Library' },
       { id: 'folders', label: 'New downloads and set-aside folders', later: 'Change them in Settings → Library' },
       { id: 'rekordbox', label: 'Rekordbox', later: 'Turn it on or off in Settings → Library' },
@@ -595,6 +619,37 @@ async function testSpotify(): Promise<boolean> {
   if (current === 'spotify') render();
   void checkSpotifyConnection(false);
   return ok;
+}
+
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+async function saveDetails(): Promise<void> {
+  const body = root?.querySelector<HTMLElement>('#setup-body');
+  const val = (id: string) => body?.querySelector<HTMLInputElement>(`#${id}`)?.value.trim() ?? '';
+  const gateFirstName = val('setup-first-name');
+  const gateLastName = val('setup-last-name');
+  const gateEmail = val('setup-gate-email');
+  const gateComment = val('setup-gate-comment');
+  if (gateEmail && !EMAIL_RE.test(gateEmail)) {
+    showToast('error', 'That email doesn\'t look right', 'Check it, or leave it empty to add it later.');
+    body?.querySelector<HTMLInputElement>('#setup-gate-email')?.focus();
+    return;
+  }
+  try {
+    config = { ...config!, ...(await window.candybar.updateConfig({ gateFirstName, gateLastName, gateEmail, gateComment })) };
+    setValue('setting-gate-first-name', gateFirstName);
+    setValue('setting-gate-last-name', gateLastName);
+    setValue('setting-gate-email', gateEmail);
+    setValue('setting-gate-comment', gateComment);
+    // The download pages' email box reads the saved address again.
+    window.dispatchEvent(new CustomEvent('store-account-changed', { detail: { service: 'all' } }));
+    void refreshSetupBadge(config);
+  } catch (err) {
+    showToast('error', 'Couldn\'t save your details', getErrorMessage(err));
+    return;
+  }
+  outcome.details = gateEmail ? 'done' : 'skipped';
+  next();
 }
 
 async function saveSpotify(andContinue: boolean): Promise<void> {

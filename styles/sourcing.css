@@ -547,6 +547,9 @@
 .upg-paste-error { flex-basis: 100%; margin: 0; font-size: var(--fs-small); color: var(--danger); }
 /* A pasted link that may not be the same version. */
 .upg-warn { color: var(--warning); }
+/* Settings → SoundCloud: first and last name side by side. */
+.setting-name-pair { display: flex; gap: var(--space-sm); flex-wrap: wrap; }
+.setting-name-pair input { flex: 1 1 120px; min-width: 0; }
 /* "Email for download pages" above the account box, where free downloads
    start. Warns when ticked downloads are known to ask for one and it's empty. */
 .free-email { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-sm) var(--space-md); }

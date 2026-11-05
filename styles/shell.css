@@ -253,6 +253,11 @@
 .setup-field .input-row input { font-family: var(--font-mono); font-size: var(--fs-small); }
 .setup-two-up { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin: 20px 0 16px; }
 .setup-two-up input { font-family: var(--font-mono); font-size: var(--fs-small); }
+/* Your details: names and an email, not keys. */
+.setup-two-up--plain input { font-family: inherit; font-size: inherit; }
+.setup-two-up--plain + .field, .setup-two-up--plain ~ .field + .field { margin-top: 14px; }
+.setup-main .field-hint { margin-top: 6px; font-size: var(--fs-small); color: var(--text-muted); line-height: var(--lh-normal); }
+.setup-optional { font-weight: 400; color: var(--text-muted); }
 .setup-choice { margin-bottom: 20px; }
 .setup-choice .choice-card { min-height: 112px; }
 
