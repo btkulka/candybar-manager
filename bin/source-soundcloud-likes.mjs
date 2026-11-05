@@ -440,6 +440,10 @@ async function main() {
             }
           } else if (args.noGates) {
             outcome = { status: 'skipped', reason: 'gates skipped by flag' };
+          } else if (sess?.actionsBlocked && /(^|\.)(hypeddit\.com|droploud\.com|influenceplanner\.com|ipln\.io|toneden\.io|sublair\.com)$/i.test(row.free?.gate?.host || '')) {
+            // SoundCloud refused an account action earlier in this run: gates
+            // that want follows/likes/reposts/comments wait for another day.
+            outcome = { status: 'deferred', reason: 'SoundCloud is refusing account actions from this account for now (HTTP 403: a write limit); run it again later' };
           } else {
             const r = await runGate(browser.ctx, row, {
               log, tmpDir: tmp, email: args.email || null, postcode: args.postcode || null, phone: args.phone || null, comment: args.comment, scActions: args.scActions, dropLossy: !!args.dropLossy, name: args.name, address: args.address,
