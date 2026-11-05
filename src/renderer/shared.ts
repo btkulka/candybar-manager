@@ -56,6 +56,7 @@ import type {
   UsbHealthResult,
   UsbHealthProgress,
   SoundCloudSignIn,
+  SpotifySignIn,
   ProfilesState,
   TrackLabProfile,
 } from '../types';
@@ -201,6 +202,8 @@ declare global {
       onMigrateProgress: (callback: (payload: { current: number; total: number; file: string }) => void) => void;
       checkSpotify: () => Promise<boolean>;
       soundcloudSignInStatus: () => Promise<SoundCloudSignIn | null>;
+      spotifySignInStatus: () => Promise<SpotifySignIn | null>;
+      spotifySignIn: () => Promise<{ success: boolean; status?: SpotifySignIn; error?: string }>;
       soundcloudSignIn: () => Promise<{ success: boolean; status?: SoundCloudSignIn; error?: string }>;
       searchMusic: (query: string, sources: ('spotify' | 'soundcloud' | 'beatport' | 'qobuz')[]) =>
         Promise<MusicSearchResult>;
@@ -1174,21 +1177,31 @@ export async function checkSpotifyConnection(showToasts = false) {
   setServiceState(spotifyStatus, spotifyStatusText, 'checking', 'checking', 'Spotify: checking the connection…');
 
   try {
+    // The account first: a sign-in reads private playlists and passes the
+    // Spotify-connect download gates. The API key alone reads public ones.
+    const signIn = await window.candybar.spotifySignInStatus().catch(() => null);
+    if (signIn?.signedIn) {
+      const who = signIn.name || signIn.username || 'your account';
+      setServiceState(spotifyStatus, spotifyStatusText, 'ok', 'signed in',
+        `Spotify: signed in as ${who}. Playlists (private ones too) and Spotify-connect download gates use this sign-in. Click to check again.`);
+      if (showToasts) showToast('success', `Spotify: signed in as ${who}`, 'Playlists, private ones too, are read through this sign-in.');
+      return;
+    }
     const connected = await window.candybar.checkSpotify();
     if (connected) {
-      setServiceState(spotifyStatus, spotifyStatusText, 'ok', 'connected',
-        'Spotify is connected, so Track Lab can read your playlists. Click to check again.');
-      if (showToasts) showToast('success', 'Spotify is connected', 'Track Lab can read your playlists.');
+      setServiceState(spotifyStatus, spotifyStatusText, 'ok', 'API key',
+        'Spotify: reading public playlists with the API key. Sign in to read private playlists and pass Spotify-connect download gates. Click to sign in.');
+      if (showToasts) showToast('info', 'Spotify works for public playlists', 'Sign in with the Spotify account to read private playlists and pass Spotify-connect gates.', 7000, { label: 'Sign in', onClick: () => void signInToSpotifyFlow() });
     } else {
-      setServiceState(spotifyStatus, spotifyStatusText, 'off', 'not set up',
-        'Spotify isn\'t set up yet. Track Lab needs it to read Spotify playlists. Click to set it up.');
+      setServiceState(spotifyStatus, spotifyStatusText, 'off', 'not signed in',
+        'Spotify: not signed in. Track Lab needs it to read Spotify playlists. Click to sign in.');
       if (showToasts) {
         showToast(
           'warning',
-          'Spotify isn\'t set up yet',
-          'It takes about two minutes, and Track Lab needs it to read your playlists.',
-          6000,
-          { label: 'Set up Spotify', onClick: () => requestOpenSetup('spotify') }
+          'Spotify isn\'t signed in',
+          'Sign in with the Spotify account to read playlists, private ones too.',
+          7000,
+          { label: 'Sign in', onClick: () => void signInToSpotifyFlow() }
         );
       }
     }
@@ -1201,6 +1214,27 @@ export async function checkSpotifyConnection(showToasts = false) {
     }
   } finally {
     isCheckingSpotify = false;
+  }
+}
+
+/**
+ * Sign in to Spotify: Track Lab opens Chrome on this profile's gate browser at
+ * Spotify's login; the person signs in and closes that window.
+ */
+export async function signInToSpotifyFlow(): Promise<SpotifySignIn | null> {
+  showToast('info', 'Sign in to Spotify in the Chrome window', 'Log in with the Spotify account, then close that window. Track Lab checks the sign-in when it closes.', 12000);
+  try {
+    const res = await window.candybar.spotifySignIn();
+    if (!res.success) throw new Error(res.error ?? 'Sign-in failed');
+    const who = res.status?.name || res.status?.username;
+    if (res.status?.signedIn) showToast('success', `Signed in to Spotify as ${who ?? 'your account'}`, 'Playlists, private ones too, now come through this sign-in.');
+    else showToast('warning', 'Not signed in to Spotify', 'The window closed before the sign-in finished.');
+    document.dispatchEvent(new CustomEvent('spotify-sign-in-changed', { detail: res.status ?? null }));
+    void checkSpotifyConnection(false);
+    return res.status ?? null;
+  } catch (err) {
+    showToast('error', 'Couldn\'t sign in to Spotify', getErrorMessage(err));
+    return null;
   }
 }
 

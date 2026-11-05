@@ -29,7 +29,8 @@ import type {
   UpdateState,
   VolumeInfo,
   ProfilesState,
-  TrackLabProfile
+  TrackLabProfile,
+  SpotifySignIn
 } from './types';
 
 /**
@@ -82,6 +83,9 @@ contextBridge.exposeInMainWorld('candybar', {
     ipcRenderer.invoke('search-music', { query, sources }),
   checkSpotify: () => ipcRenderer.invoke('check-spotify'),
   soundcloudSignInStatus: (): Promise<SoundCloudSignIn | null> => ipcRenderer.invoke('soundcloud-sign-in-status'),
+  // Spotify, signed in through the profile's gate browser (no API key needed).
+  spotifySignInStatus: (): Promise<SpotifySignIn | null> => ipcRenderer.invoke('spotify-sign-in-status'),
+  spotifySignIn: (): Promise<{ success: boolean; status?: SpotifySignIn; error?: string }> => ipcRenderer.invoke('spotify-sign-in'),
   soundcloudSignIn: (): Promise<{ success: boolean; status?: SoundCloudSignIn; error?: string }> =>
     ipcRenderer.invoke('soundcloud-sign-in'),
   onOutput: (callback: (payload: ScriptOutput) => void): (() => void) =>

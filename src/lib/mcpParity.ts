@@ -46,8 +46,10 @@ export const PARITY: Record<string, readonly string[] | string> = {
   'store-login-account': ['connections'],
   'store-logout-account': ['connections'],
   'soundcloud-sign-in-status': ['connections'],
+  'spotify-sign-in-status': ['connections'],
   'store-login': ['store_login'],
   'soundcloud-sign-in': ['store_login'],
+  'spotify-sign-in': ['store_login'],
   'get-update-state': ['app_status'],
   'check-for-updates': W('shows the update dialog, where Ben chooses Update & Restart himself'),
 

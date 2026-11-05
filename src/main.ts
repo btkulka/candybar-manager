@@ -44,7 +44,7 @@ process.on('unhandledRejection', (reason) => {
 const QUIET_CHANNELS: ReadonlySet<string> = new Set([
   'get-track-album-art', 'get-track-info', 'list-volumes', 'store-panel-status', 'job-list', 'claude-status',
   'get-config', 'get-config-path', 'get-library-root', 'get-cache-status', 'get-ignored-tracks', 'get-dismissed-issues',
-  'saved-sources:list', 'store-login-status', 'soundcloud-sign-in-status', 'splice-login-status',
+  'saved-sources:list', 'store-login-status', 'soundcloud-sign-in-status', 'spotify-sign-in-status', 'splice-login-status',
   'get-organize-state', 'update-organize-state', 'update-check-result', 'update-health-result',
   'restore-list-volumes', 'diagnose-aiff-header',
 ]);
@@ -69,7 +69,8 @@ import {
   type ProfileView, type Profile,
 } from './lib/profiles';
 import { readConfig, writeConfig, AppConfig, DEFAULT_LIBRARY_ROOT, getDefaultArchivePath, getDefaultRestoreStageDir, setSecretsPath, getConfigWarnings, resolveRekordboxBackupDir } from './lib/config';
-import { searchSpotify, testSpotifyConnection, SpotifySearchResult, getPlaylistTracks, getSpotifyTracksByIds } from './lib/spotify';
+import { searchSpotify, testSpotifyConnection, SpotifySearchResult, getSpotifyTracksByIds } from './lib/spotify';
+import { getPlaylistTracksAny, readSpotifySignIn, signInToSpotify } from './lib/spotifySignIn';
 import { fetchSoundCloudSet } from './lib/soundcloudSets';
 import { readSoundCloudSignIn, signInToSoundCloud } from './lib/soundcloudSession';
 import { startStoreBridge, type BridgeHandler, type BridgeMeta } from './lib/storeBridge';
@@ -103,7 +104,7 @@ import {
 import { closeStoreBrowsers } from './lib/storeBrowser';
 import { restoreLibrary, type RestoreOptions, type RestoreReport, type RestoreProgress } from './lib/restoreLibrary';
 import { listExternalVolumes } from './lib/usbScan';
-import type { StoreMatch, StoreAccount, StoreCartCheck, SoundCloudSignIn, UpdateState } from './types';
+import type { StoreMatch, StoreAccount, StoreCartCheck, SoundCloudSignIn, SpotifySignIn, UpdateState } from './types';
 import { scanTracks, updateTags, getAlbumArtFromFile, TrackInfo, UpdateTagsParams } from './lib/trackScanner';
 import { readDjTags } from './lib/djTags';
 import { diagnoseAiffHeader, repairAiffHeader, type AiffHeaderDiagnosis } from './lib/aiffRepair';
@@ -1915,7 +1916,7 @@ handleIpc(
           return { id: runId, success: false, error: 'Spotify credentials not configured. Go to Settings to add your Spotify Client ID and Secret.' };
         }
         progress({ phase: 'playlist', current: 0, total: 1, message: 'Fetching Spotify playlist…' });
-        const { tracks: spotifyTracks } = await getPlaylistTracks(
+        const { tracks: spotifyTracks } = await getPlaylistTracksAny(
           spotifyPlaylistUrl,
           { clientId: config.spotifyClientId, clientSecret: config.spotifyClientSecret },
           (loaded, total) => progress({ phase: 'playlist', current: loaded, total, message: `Fetching playlist: ${loaded}/${total}` })
@@ -2849,6 +2850,27 @@ handleIpc('soundcloud-sign-in', async (): Promise<{ success: boolean; status?: S
   }
 });
 
+// Spotify, signed in: the profile's gate browser, read through the web player
+// (src/lib/spotifySignIn.ts). The status never opens Chrome.
+handleIpc('spotify-sign-in-status', async (): Promise<SpotifySignIn | null> => {
+  try {
+    return await readSpotifySignIn();
+  } catch (error) {
+    mainLog.error('IPC spotify-sign-in-status failed:', error);
+    return null;
+  }
+});
+
+handleIpc('spotify-sign-in', async (): Promise<{ success: boolean; status?: SpotifySignIn; error?: string }> => {
+  try {
+    const status = await signInToSpotify(() => mainLog.info('Spotify sign-in window open; waiting for it to close'));
+    return { success: true, status };
+  } catch (error) {
+    mainLog.error('IPC spotify-sign-in failed:', error);
+    return { success: false, error: error instanceof Error ? error.message : String(error) };
+  }
+});
+
 // Source export: write source search results to CSV
 handleIpc(
   'source-export-csv',
@@ -2878,7 +2900,7 @@ handleIpc(
 
         safeSend(event.sender, 'qobuz-cart-search-progress', { current: 0, total: 1, currentTrack: 'Fetching Spotify playlist...' });
 
-        const { playlist, tracks: spotifyTracks } = await getPlaylistTracks(
+        const { playlist, tracks: spotifyTracks } = await getPlaylistTracksAny(
           spotifyPlaylistUrl,
           { clientId: config.spotifyClientId, clientSecret: config.spotifyClientSecret },
           (loaded, total) => {
@@ -3084,7 +3106,7 @@ handleIpc(
           return { success: false, error: 'Spotify credentials not configured. Go to Settings to add your Spotify Client ID and Secret.' };
         }
         safeSend(event.sender, 'library-sourcing:phase1-progress', { phase: 'parsing', current: 0, total: 1, message: 'Fetching Spotify playlist…' });
-        const { playlist, tracks: spotifyTracks } = await getPlaylistTracks(
+        const { playlist, tracks: spotifyTracks } = await getPlaylistTracksAny(
           spotifyPlaylistUrl,
           { clientId: config.spotifyClientId, clientSecret: config.spotifyClientSecret },
           (loaded, total) => {

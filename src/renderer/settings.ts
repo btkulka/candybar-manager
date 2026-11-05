@@ -613,7 +613,37 @@ async function saveSettings(): Promise<void> {
 
 // ========== Init ==========
 
+/** Settings → Spotify: who the account sign-in is, and the button to sign in. */
+async function refreshSpotifySignIn(status?: import('../types').SpotifySignIn | null): Promise<void> {
+  const text = document.getElementById('settings-spotify-signin-status');
+  const btn = document.getElementById('settings-spotify-signin') as HTMLButtonElement | null;
+  if (!text || !btn) return;
+  const s = status === undefined ? await window.candybar.spotifySignInStatus().catch(() => null) : status;
+  if (s?.signedIn) {
+    text.textContent = `Signed in as ${s.name || s.username || 'your account'}. Playlists, private ones too, and Spotify-connect download gates use it.`;
+    btn.textContent = 'Sign in again';
+    btn.classList.replace('btn-primary', 'btn-secondary');
+  } else {
+    text.textContent = 'Not signed in. Sign in with the Spotify account to read its playlists, private ones too.';
+    btn.textContent = 'Sign in';
+    btn.classList.replace('btn-secondary', 'btn-primary');
+  }
+}
+
 export function initSettings(): void {
+  document.getElementById('settings-spotify-signin')?.addEventListener('click', async (e) => {
+    const btn = e.currentTarget as HTMLButtonElement;
+    btn.disabled = true;
+    try {
+      const { signInToSpotifyFlow } = await import('./shared');
+      await refreshSpotifySignIn(await signInToSpotifyFlow());
+    } finally {
+      btn.disabled = false;
+    }
+  });
+  document.addEventListener('spotify-sign-in-changed', (e) => void refreshSpotifySignIn((e as CustomEvent).detail));
+  document.querySelector('.settings-nav-item[data-target="spotify"]')?.addEventListener('click', () => void refreshSpotifySignIn());
+  void refreshSpotifySignIn();
   openSettingsBtn?.addEventListener('click', () => {
     showSettingsModal();
     void refreshAccountConnectionStates();

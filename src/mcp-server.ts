@@ -501,13 +501,17 @@ tool(
 
 tool(
   'store_login',
-  'Sign the user in to a store once. Qobuz and Beatport sign in through Track Lab (started if closed), which opens its own sign-in window for each of its accounts — making the first account if there is none — and every later call, the app and the cart fill use that sign-in. SoundCloud opens its saved Chrome profile, which every SoundCloud run uses. Blocks until sign-in is detected, the window closes, or the timeout passes.',
+  'Sign the user in to a store once. Qobuz and Beatport sign in through Track Lab (started if closed), which opens its own sign-in window for each of its accounts — making the first account if there is none — and every later call, the app and the cart fill use that sign-in. SoundCloud opens its saved Chrome profile, which every SoundCloud run uses. Spotify opens plain Chrome on the profile\'s gate browser at Spotify\'s login (the person signs in and closes the window); playlists, private ones too, are then read through that sign-in, and Spotify-connect gates use it. Blocks until sign-in is detected, the window closes, or the timeout passes.',
   {
-    store: z.enum(['qobuz', 'beatport', 'soundcloud']).describe('Which store to sign in to'),
+    store: z.enum(['qobuz', 'beatport', 'soundcloud', 'spotify']).describe('Which store or service to sign in to'),
     timeoutSeconds: z.number().optional().describe('How long to wait for sign-in (default 300)'),
   },
   async ({ store, timeoutSeconds }) => {
     const timeoutMs = (timeoutSeconds || 300) * 1000;
+    if (store === 'spotify') {
+      const r = await invokeApp('spotify-sign-in', [], timeoutMs + 60_000).catch((err: Error) => ({ result: { success: false, error: err.message } }));
+      return { content: [{ type: 'text' as const, text: JSON.stringify({ store, ...(r.result as object) }) }] };
+    }
     if (store !== 'soundcloud') {
       const reply = (body: unknown) => ({ content: [{ type: 'text' as const, text: JSON.stringify(body) }] });
       try {
@@ -1017,14 +1021,15 @@ tool(
   async ({ action, store, accountId }) => guarded(async () => {
     if (action === 'status') {
       const settle = async (p: Promise<{ result: unknown }>) => p.then((r) => r.result, (e: Error) => ({ error: e.message }));
-      const [stores, soundcloud, spotify, claude, splice] = await Promise.all([
+      const [stores, soundcloud, spotify, spotifySignIn, claude, splice] = await Promise.all([
         askApp('status', {}).catch((e: Error) => ({ error: e.message })),
         settle(invokeApp('soundcloud-sign-in-status')),
         settle(invokeApp('check-spotify')),
+        settle(invokeApp('spotify-sign-in-status')),
         settle(invokeApp('claude-status')),
         settle(invokeApp('splice-login-status')),
       ]);
-      return reply({ stores, soundcloud, spotifyCredentialsWork: spotify, claude, splice });
+      return reply({ stores, soundcloud, spotifySignIn, spotifyCredentialsWork: spotify, claude, splice });
     }
     const s = need(store, 'store');
     const id = need(accountId, 'accountId');

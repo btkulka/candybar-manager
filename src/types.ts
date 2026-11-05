@@ -330,6 +330,16 @@ export type SoundCloudSignIn = {
   reason?: string | null;
 };
 
+/** Who the profile's Spotify sign-in (its gate browser, read through the web
+ *  player) belonged to at the last check. Never holds a token. */
+export type SpotifySignIn = {
+  signedIn: boolean;
+  name: string | null;
+  username: string | null;
+  checkedAt: string;
+  reason?: string | null;
+};
+
 /** Ask Claude's first-run questions (src/lib/claude/userProfile.ts). A
  *  skipped question stays unset. */
 export type ClaudeProfile = {

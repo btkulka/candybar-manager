@@ -2062,11 +2062,18 @@
 
           <div class="settings-section" data-section="spotify" role="tabpanel" aria-label="Spotify">
             <h4>Spotify</h4>
+            <div class="setting-row">
+              <div class="setting-info">
+                <span class="setting-label">Your Spotify account<span class="help-tip" tabindex="0" role="img" aria-label="Help" data-tooltip="Track Lab opens Chrome at Spotify's login. Sign in and close the window. Playlists, private ones too, are then read through this sign-in, and download gates that ask for a Spotify connect use it. No token is saved: Chrome keeps the login."></span></span>
+                <p class="setting-desc" id="settings-spotify-signin-status">Checking…</p>
+              </div>
+              <button type="button" class="btn-primary btn-sm" id="settings-spotify-signin">Sign in</button>
+            </div>
             <div class="callout callout--info settings-spotify-help">
               <svg class="callout-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
               <div class="callout-body">
-                <strong>Lets Track Lab read Spotify playlists</strong>
-                <p>Spotify needs a free "app" key for this. The setup guide shows you how to get one in about two minutes.</p>
+                <strong>App key (optional)</strong>
+                <p>With the account signed in, no key is needed. A free Spotify "app" key reads public playlists without a sign-in, and is the fallback.</p>
               </div>
               <div class="callout-actions"><button type="button" class="btn-secondary btn-sm" id="settings-spotify-guide">Show me how</button></div>
             </div>

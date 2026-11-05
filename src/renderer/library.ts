@@ -16,6 +16,7 @@ import {
   openTagEditor, getErrorMessage, plural, trapDialogFocus, captureFocusReturn,
   requestOpenSettings, requestOpenSetup,
   checkSpotifyConnection as checkSpotifyConnectionFn,
+  signInToSpotifyFlow,
   checkSoundCloudConnection as checkSoundCloudConnectionFn
 } from './shared';
 import { openSettingsTo } from './settings';
@@ -2452,8 +2453,11 @@ export function initLibrary(): void {
   document.getElementById('lib-guide-start')?.addEventListener('click', startGuide);
 
   // Service status click handlers
-  document.getElementById('spotify-status')?.addEventListener('click', () => {
-    void checkSpotifyConnectionFn(true);
+  document.getElementById('spotify-status')?.addEventListener('click', async () => {
+    // Signed in: check again. Otherwise go straight to the sign-in.
+    const s = await window.candybar.spotifySignInStatus().catch(() => null);
+    if (s?.signedIn) void checkSpotifyConnectionFn(true);
+    else void signInToSpotifyFlow();
   });
   document.getElementById('soundcloud-status')?.addEventListener('click', () => {
     void checkSoundCloudConnectionFn(true);
