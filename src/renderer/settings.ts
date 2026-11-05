@@ -133,6 +133,37 @@ function applyFloatingConsoleVisibility(): void {
   consoleEl.style.display = enabled ? 'flex' : 'none';
 }
 
+/** Settings → Library → Save a report: one zip on the Desktop to send along. */
+async function saveSupportReport(btn: HTMLButtonElement): Promise<void> {
+  btn.disabled = true;
+  const label = btn.textContent;
+  btn.textContent = 'Saving…';
+  try {
+    const read = (k: string) => { try { return localStorage.getItem(k); } catch { return null; } };
+    const res = await window.candybar.supportSaveReport({
+      upgrade: read('candybar:upgrade-state:v1'),
+      findAndBuy: read('candybar:sources-state:v1'),
+    });
+    if (!res.success || !res.path) throw new Error(res.error || "Couldn't save the report");
+    const file = res.path;
+    showToast('success', 'Report saved to your Desktop', `${file.split('/').pop()}: send it along with what went wrong.`, 10000,
+      { label: 'Show in Finder', onClick: () => void window.candybar.showInFinder(file) });
+  } catch (err) {
+    showToast('error', "Couldn't save the report", getErrorMessage(err));
+  } finally {
+    btn.disabled = false;
+    btn.textContent = label;
+  }
+}
+
+document.getElementById('settings-support-report')?.addEventListener('click', (e) => void saveSupportReport(e.currentTarget as HTMLButtonElement));
+
+/** Settings → SoundCloud's address boxes, by config key. */
+const ADDRESS_FIELDS = [
+  ['gateAddressLine1', 'setting-gate-addr-line1'], ['gateCity', 'setting-gate-addr-city'], ['gateRegion', 'setting-gate-addr-region'],
+  ['gatePostcode', 'setting-gate-addr-postcode'], ['gateCountry', 'setting-gate-addr-country'],
+] as const;
+
 export async function setStoreCredentials(config: {
   qobuzAccounts?: StoreAccount[];
   beatportAccounts?: StoreAccount[];
@@ -142,11 +173,17 @@ export async function setStoreCredentials(config: {
   gateComment?: string;
   gateFirstName?: string;
   gateLastName?: string;
+  gateAddressLine1?: string;
+  gateCity?: string;
+  gateRegion?: string;
+  gatePostcode?: string;
+  gateCountry?: string;
 }): Promise<void> {
   if (config.gateEmail !== undefined) setValue('setting-gate-email', config.gateEmail);
   if (config.gateComment !== undefined) setValue('setting-gate-comment', config.gateComment);
   if (config.gateFirstName !== undefined) setValue('setting-gate-first-name', config.gateFirstName);
   if (config.gateLastName !== undefined) setValue('setting-gate-last-name', config.gateLastName);
+  for (const [key, id] of ADDRESS_FIELDS) if (config[key] !== undefined) setValue(id, config[key] ?? '');
   let statuses: { qobuzAccounts: Record<string, boolean>; beatportAccounts: Record<string, boolean> } = {
     qobuzAccounts: {}, beatportAccounts: {}
   };
@@ -536,6 +573,7 @@ async function saveSettings(): Promise<void> {
     const gateComment = getValue('setting-gate-comment').trim();
     const gateFirstName = getValue('setting-gate-first-name').trim();
     const gateLastName = getValue('setting-gate-last-name').trim();
+    const address = Object.fromEntries(ADDRESS_FIELDS.map(([key, id]) => [key, getValue(id).trim()]));
     // Blank keeps the default next to the library rather than saving "".
     const rekordboxBackupDir = getValue('setting-rekordbox-backup-dir').trim();
 
@@ -554,6 +592,7 @@ async function saveSettings(): Promise<void> {
       gateComment,
       gateFirstName,
       gateLastName,
+      ...address,
       ...(rekordboxBackupDir ? { rekordboxBackupDir } : {}),
     } as Partial<AppConfigWithBackups>);
 

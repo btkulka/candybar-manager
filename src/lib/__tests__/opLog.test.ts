@@ -35,6 +35,19 @@ describe('summarize', () => {
     expect(out.empty).toBe('');
   });
 
+  it("never writes the name, email or address download gates get, or account emails", () => {
+    const out = summarize({
+      gateEmail: 'her@example.com', gateFirstName: 'Sam', gateLastName: 'Rivera', gateAddressLine1: '1 Main St', gateCity: 'Austin',
+      gateRegion: 'TX', gatePostcode: '78701', gateCountry: 'United States', gateComment: 'dis shit nasty',
+      qobuzAccounts: [{ id: 'a1', email: 'her@example.com', label: 'Primary' }],
+    }) as any;
+    for (const k of ['gateEmail', 'gateFirstName', 'gateLastName', 'gateAddressLine1', 'gateCity', 'gateRegion', 'gatePostcode', 'gateCountry']) {
+      expect(out[k], k).toBe('[redacted]');
+    }
+    expect(out.qobuzAccounts[0]).toEqual({ id: 'a1', email: '[redacted]', label: 'Primary' });
+    expect(out.gateComment).toBe('dis shit nasty'); // not personal, and useful when a gate fails
+  });
+
   it('cuts long strings, samples long lists, and survives cycles', () => {
     const cyclic: any = { name: 'a' };
     cyclic.self = cyclic;

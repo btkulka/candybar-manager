@@ -27,7 +27,8 @@
 //   --email ADDR         fill gates that demand an email address (default: the one saved in
 //                        Track Lab's Settings → SoundCloud)
 //   --no-email           give gates no email this run, even if one is saved
-//   --postcode ZIP       the zip code Bandcamp asks for alongside the address
+//   --postcode ZIP       the zip code Bandcamp asks for alongside the address (default: the one saved
+//                        with the email, Settings → SoundCloud)
 //   --sc-actions LIST    account actions a gate may do for real: follow,like,comment[,repost] | none (default follow,like,comment)
 //   --first-name / --last-name   the name for gates that ask (default: the one saved with the email)
 //   --comment TEXT       the comment left when a gate asks for one (default: the one saved in
@@ -102,7 +103,13 @@ function parseArgs(argv) {
   // The comment saved in Settings, unless --comment gives one for this run.
   if (args.comment === undefined) args.comment = loadConfig().gateComment || null;
   // The name saved with the email, for gates that ask for one.
-  { const c = loadConfig(); args.name ??= { first: c.gateFirstName || '', last: c.gateLastName || '' }; }
+  {
+    const c = loadConfig();
+    args.name ??= { first: c.gateFirstName || '', last: c.gateLastName || '' };
+    // The address saved with them; --postcode still wins for Bandcamp's ZIP.
+    args.address ??= c.gateAddress;
+    args.postcode ??= c.gateAddress?.postcode || undefined;
+  }
   return args;
 }
 
@@ -431,7 +438,7 @@ async function main() {
             outcome = { status: 'skipped', reason: 'gates skipped by flag' };
           } else {
             const r = await runGate(browser.ctx, row, {
-              log, tmpDir: tmp, email: args.email || null, postcode: args.postcode || null, comment: args.comment, scActions: args.scActions, dropLossy: !!args.dropLossy, name: args.name,
+              log, tmpDir: tmp, email: args.email || null, postcode: args.postcode || null, comment: args.comment, scActions: args.scActions, dropLossy: !!args.dropLossy, name: args.name, address: args.address,
               assistMs: args.assist * 1000, gateTimeoutMs: args.gateTimeout * 1000,
               sc: { page: browser.page, sess },
             });

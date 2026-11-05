@@ -4,6 +4,8 @@ import fs from 'fs';
 import path from 'path';
 import { pathToFileURL } from 'url';
 import { spawn, execFile } from 'child_process';
+import os from 'os';
+import { scrubForReport } from './lib/supportReport';
 import { Readable, Transform } from 'stream';
 import { pipeline } from 'stream/promises';
 import { initOpLog, getOpLogDir, currentOp, withOp, startOp, runInOp, recordEvent, flushOpLog, flushOpLogSync, type Op, type OpSource } from './lib/opLog';
@@ -3343,6 +3345,67 @@ handleIpc('lossless-upgrade:use-link', async (_event, { rbId, url }: { rbId: str
   } catch (error) {
     mainLog.warn('IPC lossless-upgrade:use-link failed:', error);
     return { success: false, error: error instanceof Error ? error.message : "Track Lab couldn't use that link" };
+  }
+});
+
+// ---------- Support report ----------
+//
+// One zip on the Desktop to send when something doesn't work on someone
+// else's Mac: the version and setup, the recent activity log (personal and
+// secret values are redacted as they're written), and the last checks'
+// results (the renderer hands over its saved pages). Never secrets.json,
+// candybar.db or any music.
+handleIpc('support:save-report', async (_event, { pages }: { pages?: Record<string, string | null> }) => {
+  try {
+    const userData = app.getPath('userData');
+    const stamp = new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-');
+    const dir = path.join(app.getPath('temp'), `Track Lab report ${stamp}`);
+    await fs.promises.rm(dir, { recursive: true, force: true });
+    await fs.promises.mkdir(path.join(dir, 'logs'), { recursive: true });
+    const copyIfThere = async (from: string, to: string) => { await fs.promises.copyFile(from, to).catch(() => {}); };
+
+    // The text log's last 4 MB, and the last three days of the activity log.
+    const mainLog = path.join(userData, 'logs', 'main.log');
+    try {
+      const stat = await fs.promises.stat(mainLog);
+      const fh = await fs.promises.open(mainLog, 'r');
+      const len = Math.min(stat.size, 4 * 1024 * 1024);
+      const buf = Buffer.alloc(len);
+      await fh.read(buf, 0, len, stat.size - len);
+      await fh.close();
+      await fs.promises.writeFile(path.join(dir, 'logs', 'main.log'), scrubForReport(buf.toString('utf8')));
+    } catch { /* no log yet */ }
+    const opsDir = path.join(userData, 'logs', 'ops');
+    const cutoff = Date.now() - 3 * 24 * 3600 * 1000;
+    for (const f of await fs.promises.readdir(opsDir).catch(() => [] as string[])) {
+      const full = path.join(opsDir, f);
+      const st = await fs.promises.stat(full).catch(() => null);
+      if (st && st.mtimeMs >= cutoff) {
+        const text = await fs.promises.readFile(full, 'utf8').catch(() => null);
+        if (text !== null) await fs.promises.writeFile(path.join(dir, 'logs', f), scrubForReport(text));
+      }
+    }
+    for (const f of ['upgrade-free-rows.json', 'upgrade-free-links.json', 'sourcing-free-rows.json']) await copyIfThere(path.join(userData, f), path.join(dir, f));
+
+    const config = await readConfig(CONFIG_PATH, CONFIG_DEFAULTS_PATH);
+    const shareable = Object.fromEntries(Object.entries(config).filter(([k]) => !/^(gate(Email|FirstName|LastName|AddressLine1|City|Region|Postcode)|spotifyClient(Id|Secret)|claudeOauthToken)$/.test(k)));
+    const claude = await getClaudeStatus(config.claudeOauthToken || undefined).catch(() => null);
+    await fs.promises.writeFile(path.join(dir, 'about.json'), JSON.stringify({
+      version: app.getVersion(), platform: process.platform, arch: process.arch, os: os.release(),
+      savedAt: new Date().toISOString(), userData,
+      claude: claude ? { installed: claude.installed, version: claude.version, signedIn: claude.loggedIn, subscription: claude.subscription } : null,
+      gateDetails: { email: !!config.gateEmail, name: !!config.gateFirstName, postcode: !!config.gatePostcode, comment: !!config.gateComment },
+      settings: { ...shareable, qobuzAccounts: (config.qobuzAccounts ?? []).length, beatportAccounts: (config.beatportAccounts ?? []).length },
+    }, null, 2));
+    if (pages) await fs.promises.writeFile(path.join(dir, 'pages.json'), scrubForReport(JSON.stringify(pages)));
+
+    const zip = path.join(app.getPath('desktop'), `Track Lab report ${stamp}.zip`);
+    await new Promise<void>((resolve, reject) => execFile('ditto', ['-c', '-k', '--keepParent', dir, zip], (err) => (err ? reject(err) : resolve())));
+    await fs.promises.rm(dir, { recursive: true, force: true }).catch(() => {});
+    return { success: true, path: zip };
+  } catch (error) {
+    mainLog.error('IPC support:save-report failed:', error);
+    return { success: false, error: error instanceof Error ? error.message : "Couldn't save the report" };
   }
 });
 

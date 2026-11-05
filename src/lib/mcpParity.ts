@@ -91,6 +91,7 @@ export const PARITY: Record<string, readonly string[] | string> = {
   'lossless-upgrade:fetch-free-stop': ['lossless_upgrade'],
   'lossless-upgrade:use-link': ['lossless_upgrade'],
   'lossless-upgrade:forget-link': ['lossless_upgrade'],
+  'support:save-report': I('a file for a person to send; over MCP, Claude reads the logs itself (app_logs, list_operations)'),
   'lossless-upgrade:apply-claude': I('applies the verdicts of Claude\'s own upgrade check; over MCP, Claude is the one checking and uses use_link'),
   'library-sourcing:resolve-pick': I('applies a ref from Claude\'s own Find & buy review; over MCP, Claude searches with search_store_catalog itself'),
   'upgrade-swap:preflight': ['upgrade_swap'],

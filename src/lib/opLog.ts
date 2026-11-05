@@ -89,6 +89,9 @@ export function resetOpLog(): void {
 /** Keys whose values are never written. Matched at the end of the key, so
  *  spotifyClientSecret, claudeOauthToken and lalalApiKey all count. */
 const SECRET_KEY = /(pass(word|wd)?|secrets?|tokens?|cookies?|authori[sz]ation|api[-_]?key|credentials?|bearer)$/i;
+/** Personal details, never written either: the name, email and address download
+ *  gates get, and account emails. Logs end up in support reports. */
+const PERSONAL_KEY = /^(gate(Email|FirstName|LastName|AddressLine1|City|Region|Postcode|Country)|e-?mail)$/i;
 
 export type SummarizeOptions = { maxString?: number; maxItems?: number; maxDepth?: number; maxKeys?: number };
 
@@ -134,7 +137,7 @@ export function summarize(value: unknown, opts: SummarizeOptions = {}): unknown 
           break;
         }
         const x = (obj as Record<string, unknown>)[k];
-        out[k] = SECRET_KEY.test(k) && x !== null && x !== undefined && x !== '' ? '[redacted]' : walk(x, depth + 1);
+        out[k] = (SECRET_KEY.test(k) || PERSONAL_KEY.test(k)) && x !== null && x !== undefined && x !== '' ? '[redacted]' : walk(x, depth + 1);
       }
       return out;
     } finally {

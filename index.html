@@ -1974,6 +1974,13 @@
               </div>
               <button type="button" class="btn-secondary btn-sm" id="settings-start-tour">Take the tour</button>
             </div>
+            <div class="setting-row">
+              <div class="setting-info">
+                <span class="setting-label">Support report</span>
+                <p class="setting-desc">When something doesn't work, this saves one file to your Desktop to send along: the app's version, what it did lately and your last checks' results. No passwords, tokens, email or address.</p>
+              </div>
+              <button type="button" class="btn-secondary btn-sm" id="settings-support-report">Save a report</button>
+            </div>
           </div>
 
           <div class="settings-section" data-section="rekordbox" role="tabpanel" aria-label="Rekordbox">
@@ -2117,6 +2124,23 @@
               <div class="setting-name-pair">
                 <input type="text" id="setting-gate-first-name" placeholder="First name" autocomplete="given-name" />
                 <input type="text" id="setting-gate-last-name" placeholder="Last name" autocomplete="family-name" />
+              </div>
+            </div>
+            <div class="setting-row">
+              <div class="setting-info">
+                <label for="setting-gate-addr-line1">Your address for download gates<span class="help-tip" tabindex="0" role="img" aria-label="Help" data-tooltip="Bandcamp asks for a ZIP code with the email; some pages want a country or a full address. It's only typed into those pages."></span></label>
+                <p class="setting-desc">Only what you fill in is used.</p>
+              </div>
+              <div class="setting-address">
+                <input type="text" id="setting-gate-addr-line1" placeholder="Street address" autocomplete="address-line1" />
+                <div class="setting-name-pair">
+                  <input type="text" id="setting-gate-addr-city" placeholder="City" autocomplete="address-level2" aria-label="City" />
+                  <input type="text" id="setting-gate-addr-region" placeholder="State" autocomplete="address-level1" aria-label="State, province or region" />
+                </div>
+                <div class="setting-name-pair">
+                  <input type="text" id="setting-gate-addr-postcode" placeholder="ZIP code" autocomplete="postal-code" aria-label="ZIP or postcode" />
+                  <input type="text" id="setting-gate-addr-country" placeholder="Country" autocomplete="country-name" aria-label="Country" />
+                </div>
               </div>
             </div>
             <div class="setting-row">

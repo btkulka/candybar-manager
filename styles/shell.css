@@ -258,6 +258,8 @@
 .setup-two-up--plain + .field, .setup-two-up--plain ~ .field + .field { margin-top: 14px; }
 .setup-main .field-hint { margin-top: 6px; font-size: var(--fs-small); color: var(--text-muted); line-height: var(--lh-normal); }
 .setup-optional { font-weight: 400; color: var(--text-muted); }
+.setup-address-grid { display: grid; grid-template-columns: 2fr 1fr 1fr 1.4fr; gap: 10px; margin-top: 8px; }
+@media (max-width: 720px) { .setup-address-grid { grid-template-columns: 1fr 1fr; } }
 .setup-choice { margin-bottom: 20px; }
 .setup-choice .choice-card { min-height: 112px; }
 

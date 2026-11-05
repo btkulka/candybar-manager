@@ -377,6 +377,15 @@ export type AppConfig = {
    *  in secrets.json. */
   gateFirstName: string;
   gateLastName: string;
+  /** The address download gates get when they ask (Bandcamp's ZIP, a gate's
+   *  country or full address form). Asked in the setup guide; kept in secrets.json. */
+  gateAddressLine1: string;
+  gateCity: string;
+  /** State, province or region. */
+  gateRegion: string;
+  /** ZIP or postcode. */
+  gatePostcode: string;
+  gateCountry: string;
   floatingConsoleEnabled: boolean;
   activeTab: string;
   checkCsvPath: string;

@@ -306,6 +306,9 @@ contextBridge.exposeInMainWorld('candybar', {
     ipcRenderer.invoke('lossless-upgrade:use-link', { rbId, url }),
   upgradeForgetLink: (rbId: string): Promise<{ success: boolean; forgotten?: boolean; error?: string }> =>
     ipcRenderer.invoke('lossless-upgrade:forget-link', { rbId }),
+  // Settings → Save a report: one zip on the Desktop to send when something doesn't work.
+  supportSaveReport: (pages: Record<string, string | null>): Promise<{ success: boolean; path?: string; error?: string }> =>
+    ipcRenderer.invoke('support:save-report', { pages }),
   // "Check with Claude": apply the verdicts that change a row (free links, store refs).
   upgradeApplyClaude: (items: Array<{ rbId: string; verdict: import('./types').UpgradeVerdictKind; note: string; freeUrl?: string; ref?: string; match?: import('./lib/qobuzCart').QobuzCartMatch | null; artist?: string; title?: string; duration?: number }>): Promise<{ success: boolean; results: Array<{ rbId: string; hit?: import('./lib/freeSources').FreeSourceHit; pasted?: { url: string; warning: string | null }; match?: import('./lib/qobuzCart').QobuzCartMatch; error?: string }> }> =>
     ipcRenderer.invoke('lossless-upgrade:apply-claude', { items }),

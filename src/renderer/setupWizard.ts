@@ -334,7 +334,7 @@ const VIEWS: Record<StepId, () => StepView> = {
 
   details: () => ({
     html: `
-      ${heading('Step 1 of 6', 'Your details', 'Some free-download pages won\'t give you the file until you type in your name and email. Track Lab fills them in for you, so a batch of downloads doesn\'t stop to ask.')}
+      ${heading('Step 1 of 6', 'Your details', 'Some free-download pages won\'t give you the file until you type in your name, email or address. Track Lab fills them in for you, so a batch of downloads doesn\'t stop to ask.')}
       <div class="setup-two-up setup-two-up--plain">
         <div class="field"><label for="setup-first-name">First name</label>
           <input type="text" id="setup-first-name" value="${escapeHtml(config!.gateFirstName ?? '')}" autocomplete="given-name" /></div>
@@ -343,6 +343,14 @@ const VIEWS: Record<StepId, () => StepView> = {
       </div>
       <div class="field"><label for="setup-gate-email">Email</label>
         <input type="email" id="setup-gate-email" value="${escapeHtml(config!.gateEmail ?? '')}" placeholder="you@example.com" autocomplete="email" spellcheck="false" /></div>
+      <div class="field"><label for="setup-addr-line1">Address <span class="setup-optional">(for the pages that ask: Bandcamp wants a ZIP code, some want a country)</span></label>
+        <input type="text" id="setup-addr-line1" value="${escapeHtml(config!.gateAddressLine1 ?? '')}" placeholder="Street address" autocomplete="address-line1" /></div>
+      <div class="setup-address-grid">
+        <input type="text" id="setup-addr-city" value="${escapeHtml(config!.gateCity ?? '')}" placeholder="City" autocomplete="address-level2" aria-label="City" />
+        <input type="text" id="setup-addr-region" value="${escapeHtml(config!.gateRegion ?? '')}" placeholder="State" autocomplete="address-level1" aria-label="State, province or region" />
+        <input type="text" id="setup-addr-postcode" value="${escapeHtml(config!.gatePostcode ?? '')}" placeholder="ZIP code" autocomplete="postal-code" aria-label="ZIP or postcode" />
+        <input type="text" id="setup-addr-country" value="${escapeHtml(config!.gateCountry ?? '')}" placeholder="Country" autocomplete="country-name" aria-label="Country" />
+      </div>
       <div class="field"><label for="setup-gate-comment">Comment <span class="setup-optional">(optional)</span></label>
         <input type="text" id="setup-gate-comment" value="${escapeHtml(config!.gateComment ?? '')}" maxlength="280" placeholder="What pages that want a comment get" />
         <p class="field-hint">A few pages post a comment on the SoundCloud track for you. Leave it empty and those ones wait for you instead.</p></div>
@@ -622,6 +630,11 @@ async function testSpotify(): Promise<boolean> {
 }
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+/** The address fields and their twins in Settings → SoundCloud. */
+const SETTINGS_ADDRESS_FIELDS = [
+  ['gateAddressLine1', 'setting-gate-addr-line1'], ['gateCity', 'setting-gate-addr-city'], ['gateRegion', 'setting-gate-addr-region'],
+  ['gatePostcode', 'setting-gate-addr-postcode'], ['gateCountry', 'setting-gate-addr-country'],
+] as const;
 
 async function saveDetails(): Promise<void> {
   const body = root?.querySelector<HTMLElement>('#setup-body');
@@ -630,17 +643,22 @@ async function saveDetails(): Promise<void> {
   const gateLastName = val('setup-last-name');
   const gateEmail = val('setup-gate-email');
   const gateComment = val('setup-gate-comment');
+  const address = {
+    gateAddressLine1: val('setup-addr-line1'), gateCity: val('setup-addr-city'), gateRegion: val('setup-addr-region'),
+    gatePostcode: val('setup-addr-postcode'), gateCountry: val('setup-addr-country'),
+  };
   if (gateEmail && !EMAIL_RE.test(gateEmail)) {
     showToast('error', 'That email doesn\'t look right', 'Check it, or leave it empty to add it later.');
     body?.querySelector<HTMLInputElement>('#setup-gate-email')?.focus();
     return;
   }
   try {
-    config = { ...config!, ...(await window.candybar.updateConfig({ gateFirstName, gateLastName, gateEmail, gateComment })) };
+    config = { ...config!, ...(await window.candybar.updateConfig({ gateFirstName, gateLastName, gateEmail, gateComment, ...address })) };
     setValue('setting-gate-first-name', gateFirstName);
     setValue('setting-gate-last-name', gateLastName);
     setValue('setting-gate-email', gateEmail);
     setValue('setting-gate-comment', gateComment);
+    for (const [key, id] of SETTINGS_ADDRESS_FIELDS) setValue(id, address[key]);
     // The download pages' email box reads the saved address again.
     window.dispatchEvent(new CustomEvent('store-account-changed', { detail: { service: 'all' } }));
     void refreshSetupBadge(config);
