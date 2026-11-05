@@ -1,6 +1,6 @@
 {
   "name": "candybar-manager",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "private": true,
   "main": "dist/main/main.js",
   "scripts": {
