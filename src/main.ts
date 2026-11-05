@@ -1742,7 +1742,7 @@ async function switchProfile(idOrName: unknown): Promise<{ switched: boolean; pr
 handleIpc('profiles:list', async () => profilesState());
 
 handleIpc('profiles:create', async (_event, { name, switchTo }: { name: string; switchTo?: boolean }) => {
-  // Starts with the app's own keys (Spotify app, Claude sign-in); a person's
+  // Starts with only the Claude sign-in; a person's Spotify keys,
   // accounts, gate details and library are filled in by the setup guide.
   const profile = createProfile(PROFILES_ROOT, name, { sharedSecrets: sharedSecretsFrom(SECRETS_PATH) });
   mainLog.info(`Profile added: ${profile.name} (${profile.id})`);

@@ -32,10 +32,11 @@ const REGISTRY_FILE = 'profiles.json';
 const ID_RE = /^[a-z0-9][a-z0-9-]{0,39}$/;
 const MAX_NAME = 40;
 
-/** Secrets a new profile starts with: the app's own keys, not a person's
- *  sign-ins. Store accounts, the gate email and the gate name/address are
- *  each person's own and start empty. */
-export const SHARED_SECRET_KEYS = ['spotifyClientId', 'spotifyClientSecret', 'claudeOauthToken'] as const;
+/** Secrets a new profile starts with: only the Claude sign-in (Claude jobs
+ *  run on the Mac's one subscription). Everything else is each person's own
+ *  and starts empty: Spotify API keys, store accounts, the gate email, name
+ *  and address. */
+export const SHARED_SECRET_KEYS = ['claudeOauthToken'] as const;
 
 export interface Profile {
   id: string;
@@ -171,7 +172,7 @@ function newId(reg: ProfileRegistry, name: string): string {
   }
 }
 
-/** Only the app's own keys, picked out of a secrets.json. */
+/** Only the shared keys (SHARED_SECRET_KEYS), picked out of a secrets.json. */
 export function sharedSecretsFrom(secretsPath: string): Record<string, string> {
   try {
     const all = JSON.parse(fs.readFileSync(secretsPath, 'utf8')) as Record<string, unknown>;
@@ -187,7 +188,7 @@ export function sharedSecretsFrom(secretsPath: string): Record<string, string> {
  * Add a profile: its folder, a config.json that sends it through the setup
  * guide with Rekordbox off (the Rekordbox collection on this Mac belongs to
  * whoever set it up; turn it on in the new profile only if it's theirs too),
- * and a secrets.json holding only the shared app keys.
+ * and a secrets.json holding only the shared keys (the Claude sign-in).
  */
 export function createProfile(
   root: string,

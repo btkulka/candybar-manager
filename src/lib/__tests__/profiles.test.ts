@@ -84,13 +84,13 @@ describe('createProfile', () => {
 });
 
 describe('sharedSecretsFrom', () => {
-  it('copies only the app keys, never accounts or gate details', () => {
+  it('copies only the Claude sign-in: never Spotify keys, accounts or gate details', () => {
     const f = path.join(root, 'secrets.json');
     fs.writeFileSync(f, JSON.stringify({
       spotifyClientId: 'a', spotifyClientSecret: 'b', claudeOauthToken: 'c',
       gateEmail: 'me@example.com', qobuzAccounts: [{ id: 'q' }], beatportAccounts: [{ id: 'b' }],
     }));
-    expect(sharedSecretsFrom(f)).toEqual({ spotifyClientId: 'a', spotifyClientSecret: 'b', claudeOauthToken: 'c' });
+    expect(sharedSecretsFrom(f)).toEqual({ claudeOauthToken: 'c' });
     expect(sharedSecretsFrom(path.join(root, 'missing.json'))).toEqual({});
   });
 });
