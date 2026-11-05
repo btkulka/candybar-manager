@@ -89,6 +89,8 @@ export const PARITY: Record<string, readonly string[] | string> = {
   'lossless-upgrade:run': ['lossless_upgrade'],
   'lossless-upgrade:fetch-free': ['lossless_upgrade'],
   'lossless-upgrade:fetch-free-stop': ['lossless_upgrade'],
+  'lossless-upgrade:use-link': ['lossless_upgrade'],
+  'lossless-upgrade:forget-link': ['lossless_upgrade'],
   'upgrade-swap:preflight': ['upgrade_swap'],
   'upgrade-swap:plan': ['upgrade_swap'],
   'upgrade-swap:apply': ['upgrade_swap'],

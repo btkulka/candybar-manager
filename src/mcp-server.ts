@@ -1146,16 +1146,20 @@ tool(
 
 tool(
   'lossless_upgrade',
-  'The Lossless Upgrades page: list Rekordbox playlists; check one ("check_playlist") for lossy tracks with a lossless copy on disk, free (SoundCloud / Bandcamp) or in a store; fetch the free downloads for chosen tracks ("fetch_free", by Rekordbox id); or stop a fetch. Swapping the new files in is upgrade_swap.',
+  'The Lossless Upgrades page: list Rekordbox playlists; check one ("check_playlist") for lossy tracks with a lossless copy on disk, free (SoundCloud / Bandcamp) or in a store; fetch the free downloads for chosen tracks ("fetch_free", by Rekordbox id); or stop a fetch. A row\'s free.soundcloudMisses say why a close SoundCloud upload was passed over (no download, another version, another length); free.soundcloud.gateInfo says what a download page gives (WAV/MP3) and asks for. "use_link" sets a free download link Ben found himself for one row (a SoundCloud page or the download page, e.g. an ipln.io link): it is checked against his copy, kept across checks, and fetched first; "forget_link" drops it. Swapping the new files in is upgrade_swap.',
   {
-    action: z.enum(['list_playlists', 'check_playlist', 'fetch_free', 'stop_fetch']),
+    action: z.enum(['list_playlists', 'check_playlist', 'fetch_free', 'stop_fetch', 'use_link', 'forget_link']),
     playlistId: z.string().optional().describe('For check_playlist, from list_playlists'),
     rbIds: z.array(z.string()).optional().describe('For fetch_free: Rekordbox track ids from check_playlist'),
+    rbId: z.string().optional().describe('For use_link / forget_link: one Rekordbox track id from check_playlist'),
+    url: z.string().optional().describe('For use_link: the SoundCloud track page or download page link'),
     accountActions: z.boolean().optional().describe('For fetch_free: let gates follow/like/comment with the SoundCloud account'),
   },
-  async ({ action, playlistId, rbIds, accountActions }) => guarded(async () => {
+  async ({ action, playlistId, rbIds, rbId, url, accountActions }) => guarded(async () => {
     if (action === 'list_playlists') return runApp('lossless-upgrade:list-playlists');
     if (action === 'stop_fetch') return runApp('lossless-upgrade:fetch-free-stop');
+    if (action === 'use_link') return runApp('lossless-upgrade:use-link', [{ rbId: need(rbId, 'rbId'), url: need(url, 'url') }], { timeoutMs: 60_000 });
+    if (action === 'forget_link') return runApp('lossless-upgrade:forget-link', [{ rbId: need(rbId, 'rbId') }]);
     if (action === 'check_playlist') return runApp('lossless-upgrade:run', [{ playlistId: need(playlistId, 'playlistId') }], { timeoutMs: 60 * 60_000 });
     return runApp('lossless-upgrade:fetch-free', [{ rbIds: need(rbIds, 'rbIds'), accountActions }], { timeoutMs: 2 * 60 * 60_000 });
   })

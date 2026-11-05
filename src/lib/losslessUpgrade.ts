@@ -155,7 +155,8 @@ function fold(s: string): string {
 // The tags that name a VERSION ("(Extended Mix)", "- Radio Edit", "(feat. X)").
 // Only those come off a title for the loose comparison: a bracket that names a
 // different song ("Home (Nobody Is Not Loved)") stays put.
-const VERSION_WORDS = 'feat|ft|featuring|remix|edit|mix|version|original|extended|radio|club|instrumental|dub|vip|bootleg|remaster';
+// Flips, reworks, refixes and mashups are versions too, as in stringUtils' normalizeLoose.
+const VERSION_WORDS = 'feat|ft|featuring|remix|edit|mix|version|original|extended|radio|club|instrumental|dub|vip|bootleg|remaster|flip|rework|refix|mashup';
 const VERSION_BRACKET_RE = new RegExp(`\\s*[\\(\\[][^\\)\\]]*\\b(${VERSION_WORDS})\\b[^\\)\\]]*[\\)\\]]`, 'gi');
 const VERSION_DASH_RE = new RegExp(`\\s+[-–—]\\s+.*\\b(${VERSION_WORDS})\\b.*$`, 'gi');
 const FEAT_RE = /\b(feat\.?|ft\.?|featuring)\s.*?(?=\s*[-–—\(\[]|$)/gi;
@@ -238,4 +239,19 @@ export function needsStoreSearch(row: LosslessUpgradeRow): boolean {
   return (row.format === 'lossy' || row.format === 'streaming')
     && !row.losslessCopy
     && !!row.artist && !!row.title;
+}
+
+/** The downloader rows with `key`'s SoundCloud rows swapped for `row`, in
+ *  their place in the playlist order (its Bandcamp row, if any, stays behind
+ *  it as the fallback). A null `row` just drops them. */
+export function withPastedRow(rows: import('./freeSources').FreeFetchRow[], key: string, row: import('./freeSources').FreeFetchRow | null): import('./freeSources').FreeFetchRow[] {
+  const mine = [...(row ? [row] : []), ...rows.filter(r => r.upgradeKey === key && r.source === 'bandcamp')];
+  const out: import('./freeSources').FreeFetchRow[] = [];
+  let placed = false;
+  for (const r of rows) {
+    if (r.upgradeKey !== key) { out.push(r); continue; }
+    if (!placed) { out.push(...mine); placed = true; }
+  }
+  if (!placed) out.push(...mine);
+  return out;
 }

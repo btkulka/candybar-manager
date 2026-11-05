@@ -3,7 +3,7 @@ import type {
   LosslessUpgradeProgress, LosslessUpgradeResult, LosslessUpgradeRow, RekordboxPlaylistSummary, StoreMatch,
   UpgradeSwapInput, UpgradeSwapPlanItem, UpgradeSwapPreflight, UpgradeSwapProgress, UpgradeSwapResult,
 } from '../types';
-import type { FreeSourceHit, FreeUpgradeOutcome } from '../lib/freeSources';
+import type { FreeSourceHit, FreeSourceMiss, FreeUpgradeOutcome } from '../lib/freeSources';
 import { showToast, setStatus, escapeHtml, getErrorMessage, plural, formatPriceTotal, isReleaseMatch } from './shared';
 import { confirmChoice } from './confirmDialog';
 import { fillPlaylistCard } from './playlistCard';
@@ -245,7 +245,18 @@ function notFoundReason(r: LosslessUpgradeRow): string {
   else if (m.status === 'matched' && !m.lossless) store = `${m.source ? STORE_LABEL[m.source] : 'The store'} only sells a compressed copy, so it stays out of your cart.`;
   else if (r.free && !free) store = 'Nothing free on SoundCloud or Bandcamp, and not for sale in full quality on Qobuz or Beatport.';
   else store = 'Not found in full quality on Qobuz or Beatport.';
-  return free ? `${free} ${store}` : store;
+  const near = !free && !freeHit(r) ? nearMissSentence(r.free?.soundcloudMisses) : '';
+  return [free, store, near].filter(Boolean).join(' ');
+}
+
+/** The closest SoundCloud upload the search passed over, and why: "On
+ *  SoundCloud, "Go Back (Shizz Lo Flip)" by Shizz Lo is the closest, but it
+ *  offers no free download." Another version is only worth a mention when
+ *  nothing closer was passed over. */
+function nearMissSentence(misses: FreeSourceMiss[] | undefined): string {
+  const m = misses?.[0];
+  if (!m) return '';
+  return `On SoundCloud, "${m.listedAs}" by ${m.uploader} is the closest, but ${m.why.text}.`;
 }
 
 function matchesFilter(r: LosslessUpgradeRow): boolean {
@@ -491,6 +502,80 @@ function wireLinks(root: HTMLElement) {
   }));
 }
 
+const NEED_TEXT: Record<string, string> = { email: 'your email', 'soundcloud-connect': 'a SoundCloud connect', comment: 'a comment' };
+const listText = (xs: string[]) => (xs.length < 2 ? xs.join('') : `${xs.slice(0, -1).join(', ')} and ${xs[xs.length - 1]}`);
+
+/** The download page wants to act on the SoundCloud account (connect, comment). */
+function needsAccountOk(h: FreeSourceHit): boolean {
+  return !!h.gateInfo?.needs.some(n => n === 'soundcloud-connect' || n === 'comment');
+}
+
+/** "Found a free download?": paste a SoundCloud page or the download page for
+ *  this track. Track Lab checks it against the copy it would replace, keeps it
+ *  across checks, and fetches it with the other free downloads. */
+function pasteLinkControl(r: LosslessUpgradeRow, label = 'Found a free download?'): HTMLElement {
+  const wrap = document.createElement('div');
+  wrap.className = 'upg-paste';
+  wrap.innerHTML = `
+    <button type="button" class="btn-link upg-paste-open" data-tooltip="Found a free download yourself? Paste its SoundCloud page or its download page. Track Lab checks it's the same version and gets it with the other free downloads.">${escapeHtml(label)}</button>
+    <form class="upg-paste-form" hidden>
+      <input type="url" required placeholder="SoundCloud page or download page link" aria-label="Free download link for ${escapeHtml(rowName(r))}" />
+      <button type="submit" class="btn-secondary btn-sm">Use this link</button>
+      <button type="button" class="btn-ghost btn-sm upg-paste-cancel">Cancel</button>
+      <p class="upg-paste-error" role="alert" hidden></p>
+    </form>`;
+  const open = wrap.querySelector<HTMLButtonElement>('.upg-paste-open')!;
+  const form = wrap.querySelector<HTMLFormElement>('.upg-paste-form')!;
+  const input = form.querySelector<HTMLInputElement>('input')!;
+  const submit = form.querySelector<HTMLButtonElement>('button[type=submit]')!;
+  const error = form.querySelector<HTMLElement>('.upg-paste-error')!;
+  const stop = (e: Event) => e.stopPropagation();
+  wrap.addEventListener('click', stop);
+  wrap.addEventListener('keydown', stop);
+  open.addEventListener('click', () => { open.hidden = true; form.hidden = false; input.focus(); });
+  form.querySelector('.upg-paste-cancel')!.addEventListener('click', () => { form.hidden = true; open.hidden = false; error.hidden = true; });
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const url = input.value.trim();
+    if (!url) return;
+    submit.disabled = true;
+    submit.textContent = 'Checking…';
+    error.hidden = true;
+    try {
+      const res = await window.candybar.upgradeUseLink(r.rbId, url);
+      if (!res.success || !res.hit) throw new Error(res.error || "Track Lab couldn't use that link");
+      r.free = { ...(r.free ?? { soundcloud: null, bandcamp: null, errors: [] }), soundcloud: res.hit, pasted: res.pasted ?? { url, warning: null } };
+      r.freeOutcome = undefined;
+      if (fetchable(r)) selected.add(r.rbId);
+      openRows.add(r.rbId);
+      saveState();
+      renderSteps();
+      const warning = res.pasted?.warning;
+      showToast(warning ? 'warning' : 'success', warning ? 'Link added. Check it first' : 'Link added', warning || `${rowName(r)}: ${res.hit.reason}. It's under Free downloads.`, warning ? 9000 : 5000);
+    } catch (err) {
+      error.textContent = getErrorMessage(err);
+      error.hidden = false;
+      submit.disabled = false;
+      submit.textContent = 'Use this link';
+    }
+  });
+  return wrap;
+}
+
+async function forgetPastedLink(r: LosslessUpgradeRow) {
+  const res = await window.candybar.upgradeForgetLink(r.rbId);
+  if (!res.success) {
+    showToast('error', "Couldn't forget the link", res.error);
+    return;
+  }
+  if (r.free) r.free = { ...r.free, soundcloud: null, pasted: null };
+  r.freeOutcome = undefined;
+  selected.delete(r.rbId);
+  saveState();
+  renderSteps();
+  showToast('info', 'Link forgotten', 'Check the playlist again to look for another free copy.');
+}
+
 /** A track only Bandcamp sells: never ticked, never carted; bought on Bandcamp. */
 function buildBandcampRow(r: LosslessUpgradeRow): HTMLElement {
   const b = bandcampPaid(r)!;
@@ -505,6 +590,7 @@ function buildBandcampRow(r: LosslessUpgradeRow): HTMLElement {
     </span>
     <span class="buy-price">${escapeHtml(b.price!.label)}</span>`;
   wireLinks(el);
+  el.querySelector('.buy-trk')!.appendChild(pasteLinkControl(r));
   return el;
 }
 
@@ -526,7 +612,10 @@ function buildFreeRow(r: LosslessUpgradeRow): HTMLElement {
     ? '<span class="buy-pill"><span class="status-pill status-pill--ok">Downloaded</span></span>'
     : needsEmailOnly(r)
       ? `<span class="buy-pill"><span class="status-pill status-pill--warn" tabindex="0" data-tooltip="${escapeHtml("Bandcamp emails this free download when you're signed out, so Track Lab can't get it for you. Open it on Bandcamp to get it yourself.")}">Needs an email</span></span>`
-      : '';
+      : needsAccountOk(h)
+        ? `<span class="buy-pill upg-needs-ok"${freeAccountActions ? ' hidden' : ''}><span class="status-pill status-pill--warn" tabindex="0" data-tooltip="${escapeHtml('This download page wants to connect your SoundCloud and leave a comment. Tick "Let download pages follow, like and comment for me" below, or it\'s skipped.')}">Needs your OK</span></span>`
+        : '';
+  const pasted = r.free?.pasted && h.pasted ? r.free.pasted : null;
   const sc = r.free?.soundcloud;
   const bc = r.free?.bandcamp;
   // What happens if this copy doesn't work out, in Ben's order.
@@ -536,7 +625,12 @@ function buildFreeRow(r: LosslessUpgradeRow): HTMLElement {
     : '';
   const arrival = h.lossless === 'on-arrival'
     ? `SoundCloud doesn't say the file type until it arrives. If it's compressed (like an MP3), it's deleted${fallback ? ` and this track goes to ${escapeHtml(fallback)}` : ''}.`
-    : 'Bandcamp gives you the full-quality file (WAV, AIFF or FLAC).';
+    : h.source === 'soundcloud'
+      ? `The download page says the file is ${h.gateInfo?.format ? `a ${escapeHtml(h.gateInfo.format)}` : 'full quality'}, so it's full quality.`
+      : 'Bandcamp gives you the full-quality file (WAV, AIFF or FLAC).';
+  const needs = h.gateInfo?.needs.length
+    ? `<p>The download page asks for ${escapeHtml(listText(h.gateInfo.needs.map(n => NEED_TEXT[n] || n)))}.${needsAccountOk(h) ? ' Track Lab does those for you only when the box below is ticked; your saved email is used for the email.' : ''}</p>`
+    : '';
   const link = (hit: FreeSourceHit | null | undefined) => hit
     ? `<button type="button" class="btn-ghost btn-sm upg-link" data-url="${escapeHtml(hit.url)}" data-tooltip="Open it on ${SOURCE_NAME[hit.source]} in your browser, to listen first.">Open on ${SOURCE_NAME[hit.source]}</button>`
     : '';
@@ -547,20 +641,26 @@ function buildFreeRow(r: LosslessUpgradeRow): HTMLElement {
       <span class="buy-trk">
         <span class="buy-t">${escapeHtml(rowName(r))}</span>
         <span class="buy-a">${escapeHtml(r.artist)} · <span class="upg-from">now ${escapeHtml(r.formatLabel)}</span></span>
-        <span class="buy-sub upg-free-via">${sourceChip(h)}<span>${landed ? `Ready for step 4: <span class="term" tabindex="0" data-tooltip="${escapeHtml(landed)}">${escapeHtml(fileNameOf(landed))}</span>` : escapeHtml(h.reason)}</span></span>
+        <span class="buy-sub upg-free-via">${sourceChip(h)}${pasted ? '<span class="status-pill">Your link</span>' : ''}<span>${landed ? `Ready for step 4: <span class="term" tabindex="0" data-tooltip="${escapeHtml(landed)}">${escapeHtml(fileNameOf(landed))}</span>` : escapeHtml(h.reason)}</span></span>
       </span>
       ${pill}
       <span class="buy-price buy-price--free">Free</span>
     </div>
     <button type="button" class="btn-icon buy-row-expand" aria-expanded="${open}" aria-controls="${detailsId}" aria-label="Details for ${escapeHtml(rowName(r))}" data-tooltip="Where the free copy is, and what happens if it doesn't work out">${CHEVRON_SVG}</button>
     <div class="buy-row-more" id="${detailsId}" ${open ? '' : 'hidden'}>
-      <p>The free copy: <b>${escapeHtml(h.listedAs)}</b>, uploaded by ${escapeHtml(h.uploader)}. Track Lab is ${Math.round(h.confidence * 100)}% sure it's the same version.</p>
+      ${pasted
+        ? `<p>You pasted this link: <span class="term" tabindex="0" data-tooltip="${escapeHtml(pasted.url)}">${escapeHtml(pasted.url)}</span>${h.confidence ? `. Track Lab is ${Math.round(h.confidence * 100)}% sure it's the same version.` : '.'}</p>${pasted.warning ? `<p class="upg-warn">${escapeHtml(pasted.warning)}</p>` : ''}`
+        : `<p>The free copy: <b>${escapeHtml(h.listedAs)}</b>, uploaded by ${escapeHtml(h.uploader)}. Track Lab is ${Math.round(h.confidence * 100)}% sure it's the same version.</p>`}
       <p>${arrival}</p>
-      <div class="buy-row-facts">${link(sc)}${link(bc)}</div>
+      ${needs}
+      ${h.gateNote ? `<p>${escapeHtml(h.gateNote)}</p>` : ''}
+      <div class="buy-row-facts">${link(sc)}${link(bc)}${pasted ? '<button type="button" class="btn-ghost btn-sm upg-forget">Forget this link</button>' : ''}</div>
     </div>`;
   attachArtFallback(el);
   wireLinks(el);
   const main = el.querySelector<HTMLElement>('.buy-row-main')!;
+  const expand = el.querySelector<HTMLButtonElement>('.buy-row-expand')!;
+  const more = el.querySelector<HTMLElement>('.buy-row-more')!;
   const toggle = () => {
     if (!fetchable(r) || fetchingFree) return;
     const on = !selected.has(r.rbId);
@@ -575,11 +675,11 @@ function buildFreeRow(r: LosslessUpgradeRow): HTMLElement {
     if ((e.target as HTMLElement).closest('.term, .status-pill')) return;
     toggle();
   });
+  el.querySelector('.upg-forget')?.addEventListener('click', () => void forgetPastedLink(r));
+  if (!pasted && !landed) more.appendChild(pasteLinkControl(r, 'Know a better link?'));
   main.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); }
   });
-  const expand = el.querySelector<HTMLButtonElement>('.buy-row-expand')!;
-  const more = el.querySelector<HTMLElement>('.buy-row-more')!;
   expand.addEventListener('click', () => {
     const nowOpen = more.hidden;
     more.hidden = !nowOpen;
@@ -659,6 +759,7 @@ function buildFoundRow(r: LosslessUpgradeRow): HTMLElement {
   el.querySelector('.buy-row-open')?.addEventListener('click', () => {
     if (track.url) void window.candybar.storePanelOpen(store, track.url);
   });
+  more.appendChild(pasteLinkControl(r, 'Found it free somewhere?'));
   return el;
 }
 
@@ -691,6 +792,7 @@ function buildInfoRow(r: LosslessUpgradeRow, kind: Group): HTMLElement {
       <span class="buy-sub">${escapeHtml(notFoundReason(r))}</span>
     </span>
     ${compressedOnly ? '<span class="status-pill status-pill--warn">Compressed only</span>' : '<span class="status-pill">Not found</span>'}`;
+  if (r.format === 'lossy' || r.format === 'streaming') el.querySelector('.buy-trk')!.appendChild(pasteLinkControl(r));
   return el;
 }
 
@@ -895,6 +997,7 @@ function freeActions(): HTMLElement {
     </div>`;
   el.querySelector<HTMLInputElement>('#upgrade-free-actions-ok')?.addEventListener('change', (e) => {
     freeAccountActions = (e.target as HTMLInputElement).checked;
+    groupsContainer.querySelectorAll<HTMLElement>('.upg-needs-ok').forEach(p => { p.hidden = freeAccountActions; });
   });
   el.querySelector('#upgrade-get-free')?.addEventListener('click', () => void getFreeDownloads());
   return el;

@@ -43,8 +43,44 @@ export type FreeSourceHit = {
   /** 'source': Bandcamp serves the lossless master. 'on-arrival': a SoundCloud
    *  file's format is only known once it lands; a lossy one is quarantined. */
   lossless: 'source' | 'on-arrival';
-  /** One line for the UI: "SoundCloud download button", "£2.00 or more on Bandcamp". */
+  /** One line for the UI: "SoundCloud download button", "£2.00 or more on Bandcamp",
+   *  "Free WAV via Influence Planner (asks for your email, a SoundCloud connect and a comment)". */
   reason: string;
+  /** What the download page gives and asks for, read signed out before
+   *  anything is clicked (Influence Planner pages carry it). Null when the
+   *  host can't be read that way. */
+  gateInfo?: GateInfo | null;
+  /** Why the page couldn't be read, when it couldn't. */
+  gateNote?: string;
+  /** Ben pasted this link himself ("Found a free download?"). */
+  pasted?: boolean;
+};
+
+/** A download page's own account of itself. */
+export type GateInfo = {
+  /** "WAV", "MP3"… from the file the page serves; null when it doesn't say. */
+  format: string | null;
+  /** true for WAV/AIFF/FLAC, false for MP3 &c, null when unknown. */
+  lossless: boolean | null;
+  /** What it asks for, in order: 'email', 'soundcloud-connect', 'comment'. */
+  needs: string[];
+  active: boolean;
+};
+
+/** A SoundCloud upload close enough to be the track that the search passed
+ *  over, and why: so a "not found" row can say "Shizz Lo's upload matches,
+ *  but it offers no free download". */
+export type FreeSourceMiss = {
+  url: string;
+  listedAs: string;
+  uploader: string;
+  /** How alike it is before the version and length checks, 0–1. */
+  confidence: number;
+  why: {
+    code: 'no-download' | 'download-limit' | 'lossy-title' | 'gate-off' | 'gate-lossy' | 'other-length' | 'other-version' | 'low-match';
+    /** A phrase that follows "…, but": "it offers no free download". */
+    text: string;
+  };
 };
 
 /** What the free search found for one track. A search that failed is in
@@ -52,6 +88,11 @@ export type FreeSourceHit = {
 export type FreeSources = {
   soundcloud: FreeSourceHit | null;
   bandcamp: FreeSourceHit | null;
+  /** The closest SoundCloud uploads passed over, best explanation first. */
+  soundcloudMisses?: FreeSourceMiss[];
+  /** Set when `soundcloud` is a link Ben pasted: the link, and what the check
+   *  against his copy found (another version, another length, unchecked). */
+  pasted?: { url: string; warning: string | null } | null;
   errors: string[];
 };
 
@@ -69,10 +110,12 @@ export type FreeUpgradeOutcome = {
 };
 
 type FullHit = FreeSourceHit & { fetchRow: Record<string, unknown> | null };
-type FullSources = { soundcloud: FullHit | null; bandcamp: FullHit | null; errors: string[] };
+type FullSources = { soundcloud: FullHit | null; bandcamp: FullHit | null; soundcloudMisses?: FreeSourceMiss[]; errors: string[] };
+type Want = { artist: string; title: string; duration?: number };
 
 type FreeSourcesModule = {
-  findFreeSources: (want: { artist: string; title: string; duration?: number }) => Promise<FullSources>;
+  findFreeSources: (want: Want) => Promise<FullSources>;
+  freeHitFromLink: (want: Want, link: string) => Promise<{ hit: FullHit; warning: string | null }>;
   needsStoreSearch: (found: FullSources) => boolean;
   toFetchRows: (entries: Array<{ key: string; found: FullSources }>) => FreeFetchRow[];
   upgradeOutcomes: (session: unknown) => Record<string, FreeUpgradeOutcome>;
@@ -127,11 +170,25 @@ export async function searchFreeSources(
   // In the playlist's order, so the downloader works down it top to bottom.
   const entries = tracks.map(t => ({ key: t.key, found: full.get(t.key)! }));
   for (const { key, found } of entries) {
-    result.found.set(key, { soundcloud: slim(found.soundcloud), bandcamp: slim(found.bandcamp), errors: found.errors });
+    result.found.set(key, { soundcloud: slim(found.soundcloud), bandcamp: slim(found.bandcamp), soundcloudMisses: found.soundcloudMisses ?? [], errors: found.errors });
     if (m.needsStoreSearch(found)) result.needStores.add(key);
   }
   result.fetchRows = m.toFetchRows(entries);
   return result;
+}
+
+/**
+ * A free copy from a link Ben found himself (a SoundCloud page or the
+ * download page), checked against his copy where it can be. Throws, with a
+ * sentence for the UI, when the link is no use (not a link, nothing free on
+ * it, a switched-off page, an MP3). `fetchRow` is the downloader's row,
+ * already tagged with `upgradeKey`.
+ */
+export async function freeFromLink(key: string, want: Want, link: string): Promise<{ hit: FreeSourceHit; fetchRow: FreeFetchRow; warning: string | null }> {
+  const m = await getModule();
+  const { hit, warning } = await m.freeHitFromLink(want, link);
+  const fetchRow = { ...(hit.fetchRow as Record<string, unknown>), upgradeKey: key } as FreeFetchRow;
+  return { hit: slim(hit)!, fetchRow, warning };
 }
 
 /** Write a --tracks list for the downloader. */

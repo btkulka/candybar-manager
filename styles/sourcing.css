@@ -538,6 +538,15 @@
 .upg-free-actions .card-actions { margin-top: 0; }
 .upg-free-progress .buy-meter { margin-top: var(--space-sm); }
 .upg-free-count { margin-top: 4px; font-size: var(--fs-small); color: var(--text-muted); font-variant-numeric: tabular-nums; }
+/* "Found a free download?": a link that opens a one-line form for a pasted
+   SoundCloud or download-page link. Sits under a row's text or in its details. */
+.upg-paste { margin-top: 4px; white-space: normal; }
+.upg-paste .btn-link { font-size: var(--fs-small); }
+.upg-paste-form { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.upg-paste-form input { flex: 1 1 240px; min-width: 0; }
+.upg-paste-error { flex-basis: 100%; margin: 0; font-size: var(--fs-small); color: var(--danger); }
+/* A pasted link that may not be the same version. */
+.upg-warn { color: var(--warning); }
 /* A yes/no with a sentence of detail under it (same shape as the Claude page's). */
 .upg-check { display: flex; align-items: flex-start; gap: var(--space-sm); cursor: pointer; }
 .upg-check input { margin-top: 3px; flex-shrink: 0; }

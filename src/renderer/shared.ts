@@ -295,6 +295,8 @@ declare global {
       onUpgradeProgress: (callback: (p: import('../types').LosslessUpgradeProgress) => void) => (() => void);
       upgradeFetchFree: (rbIds: string[], opts: { accountActions: boolean }) => Promise<{ success: boolean; outcomes?: Record<string, import('../lib/freeSources').FreeUpgradeOutcome>; error?: string }>;
       upgradeFetchFreeStop: () => Promise<void>;
+      upgradeUseLink: (rbId: string, url: string) => Promise<{ success: boolean; hit?: import('../lib/freeSources').FreeSourceHit; pasted?: { url: string; warning: string | null }; error?: string }>;
+      upgradeForgetLink: (rbId: string) => Promise<{ success: boolean; forgotten?: boolean; error?: string }>;
 
       // Find & buy: saved playlists (check again in one click)
       savedSourcesList: () => Promise<{ success: boolean; sources?: import('../types').SavedSource[]; error?: string }>;

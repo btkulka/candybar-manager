@@ -423,7 +423,7 @@ async function main() {
             outcome = { status: 'skipped', reason: 'gates skipped by flag' };
           } else {
             const r = await runGate(browser.ctx, row, {
-              log, tmpDir: tmp, email: args.email || null, postcode: args.postcode || null, comment: args.comment, scActions: args.scActions,
+              log, tmpDir: tmp, email: args.email || null, postcode: args.postcode || null, comment: args.comment, scActions: args.scActions, dropLossy: !!args.dropLossy,
               assistMs: args.assist * 1000, gateTimeoutMs: args.gateTimeout * 1000,
               sc: { page: browser.page, sess },
             });

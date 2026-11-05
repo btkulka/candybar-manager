@@ -276,3 +276,24 @@ describe('Qobuz quality tiers', () => {
     expect(pickQobuzLosslessTier(opts, 'cd')?.cartLink).toBe('/a?articleId=2');
   });
 });
+
+// Mirrors the flip cases in matching.test.mjs (2026-11-04).
+describe('flips, reworks, refixes and mashups are versions', () => {
+  const flip = track('John Summit & Sub Focus', 'Go Back (Shizz Lo Flip)');
+
+  it('docks the original and another flip, and keeps the same flip', () => {
+    expect(storeScoreParts(flip, ['Sub Focus', 'John Summit'], 'Go Back').penalty).toBeGreaterThan(0);
+    expect(storeScoreParts(flip, ['John Summit x Sub Focus'], 'Go Back (FloZone Flip)').penalty).toBeGreaterThan(0);
+    expect(storeScore(flip, ['John Summit & Sub Focus'], 'Go Back (Shizz Lo Flip)')).toBe(1);
+  });
+
+  it("never counts an owned original as the flip, or another flip", () => {
+    expect(ownedVersionSatisfies('Go Back (Shizz Lo Flip)', 'Go Back (Original Mix)')).toBe(false);
+    expect(ownedVersionSatisfies('Go Back (Shizz Lo Flip)', 'Go Back (FloZone Flip)')).toBe(false);
+    expect(bestOwnedMatch(flip, [{ artist: 'Sub Focus, Julia Church, John Summit', title: 'Go Back (Original Mix)' }])).toBeNull();
+  });
+
+  it("doesn't let a shared rework credit make two songs look alike", () => {
+    expect(storeScoreParts(track('Shizz Lo', 'Go Back (Shizz Lo Flip)'), ['Shizz Lo'], 'Jackpot (Shizz Lo Flip)').titleScore).toBeLessThan(0.6);
+  });
+});

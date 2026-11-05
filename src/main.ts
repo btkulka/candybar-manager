@@ -63,9 +63,9 @@ import { startStoreBridge, type BridgeHandler, type BridgeMeta } from './lib/sto
 import { randomUUID } from 'crypto';
 import { listRekordboxPlaylists, readRekordboxPlaylist } from './lib/rekordboxPlaylists';
 import {
-  toUpgradeRow, spotifyIdToResolve, applySpotifyTrack, buildLosslessIndex, findLosslessCopy, needsStoreSearch
+  toUpgradeRow, spotifyIdToResolve, applySpotifyTrack, buildLosslessIndex, findLosslessCopy, needsStoreSearch, withPastedRow
 } from './lib/losslessUpgrade';
-import { searchFreeSources, writeFetchList, readUpgradeOutcomes, runFreeFetch, type FreeFetchRow } from './lib/freeSources';
+import { searchFreeSources, freeFromLink, writeFetchList, readUpgradeOutcomes, runFreeFetch, type FreeFetchRow } from './lib/freeSources';
 import { preflightUpgradeSwap, planUpgradeSwap, applyUpgradeSwap } from './lib/rekordboxUpgradeSwap';
 import {
   searchSoundCloud,
@@ -3209,8 +3209,10 @@ handleIpc('lossless-upgrade:run', async (event, { playlistId }: { playlistId: st
           (current, total, label) => send({ phase: 'free', current, total, message: label })
         );
         for (const r of toSearch) r.free = free.found.get(`rb:${r.rbId}`);
+        // A link Ben pasted for an entry on an earlier check goes first again.
+        const fetchRows = await applyPastedLinks(toSearch, free.fetchRows);
         toSearch = toSearch.filter(r => free.needStores.has(`rb:${r.rbId}`));
-        await saveFreeFetchRows(playlistId, free.fetchRows);
+        await saveFreeFetchRows(playlistId, fetchRows, Object.fromEntries(rows.map(r => [r.rbId, { artist: r.artist, title: r.title, duration: r.duration }])));
       } catch (err) {
         // The stores are still worth searching; the rows say why there's no free copy.
         mainLog.warn('lossless-upgrade: free search failed:', err);
@@ -3247,25 +3249,111 @@ handleIpc('lossless-upgrade:run', async (event, { playlistId }: { playlistId: st
 // order until one lands a full-quality file; compressed files are deleted on
 // arrival. Each result comes back under its Rekordbox id for the swap step.
 const freeFetchRowsPath = () => path.join(app.getPath('userData'), 'upgrade-free-rows.json');
-let freeFetchRows: { playlistId: string; rows: FreeFetchRow[] } | null = null;
+type UpgradeWant = { artist: string; title: string; duration?: number };
+/** The last check's downloader rows, and each entry's tags (so a pasted link
+ *  can be checked against the copy it would replace). */
+let freeFetchRows: { playlistId: string; rows: FreeFetchRow[]; wants?: Record<string, UpgradeWant> } | null = null;
 let freeFetchAbort: AbortController | null = null;
 
-async function saveFreeFetchRows(playlistId: string, rows: FreeFetchRow[]): Promise<void> {
-  freeFetchRows = { playlistId, rows };
+async function saveFreeFetchRows(playlistId: string, rows: FreeFetchRow[], wants?: Record<string, UpgradeWant>): Promise<void> {
+  freeFetchRows = { playlistId, rows, wants: wants ?? freeFetchRows?.wants };
   await fs.promises.writeFile(freeFetchRowsPath(), JSON.stringify(freeFetchRows)).catch(err =>
     mainLog.warn('lossless-upgrade: could not save the free download list:', err));
 }
 
-async function loadFreeFetchRows(): Promise<FreeFetchRow[]> {
+async function loadFreeFetchState(): Promise<NonNullable<typeof freeFetchRows> | null> {
   if (!freeFetchRows) {
     try {
       freeFetchRows = JSON.parse(await fs.promises.readFile(freeFetchRowsPath(), 'utf8'));
     } catch {
-      return [];
+      return null;
     }
   }
-  return freeFetchRows?.rows ?? [];
+  return freeFetchRows;
 }
+
+async function loadFreeFetchRows(): Promise<FreeFetchRow[]> {
+  return (await loadFreeFetchState())?.rows ?? [];
+}
+
+// ---------- Free download links Ben found himself ----------
+//
+// "Found a free download?" on an Upgrades row takes a SoundCloud page or the
+// download page itself (an Influence Planner gate, say). The link is kept per
+// Rekordbox entry, so checking the playlist again keeps it at the front of
+// that entry's free sources; "Forget this link" drops it.
+const pastedLinksPath = () => path.join(app.getPath('userData'), 'upgrade-free-links.json');
+
+async function readPastedLinks(): Promise<Record<string, string>> {
+  try {
+    const v = JSON.parse(await fs.promises.readFile(pastedLinksPath(), 'utf8'));
+    return v && typeof v === 'object' ? v : {};
+  } catch {
+    return {};
+  }
+}
+
+async function writePastedLinks(links: Record<string, string>): Promise<void> {
+  await fs.promises.writeFile(pastedLinksPath(), JSON.stringify(links, null, 1));
+}
+
+/** Put each pasted link back on its row after a check. A link that no longer
+ *  works says so in the row's errors and the search's own result stays. */
+async function applyPastedLinks(rows: import('./types').LosslessUpgradeRow[], fetchRows: FreeFetchRow[]): Promise<FreeFetchRow[]> {
+  const links = await readPastedLinks();
+  let out = fetchRows;
+  for (const r of rows) {
+    const link = links[r.rbId];
+    if (!link || !r.free) continue;
+    const key = `rb:${r.rbId}`;
+    try {
+      const { hit, fetchRow, warning } = await freeFromLink(key, { artist: r.artist, title: r.title, duration: r.duration }, link);
+      r.free = { ...r.free, soundcloud: hit, pasted: { url: link, warning } };
+      out = withPastedRow(out, key, fetchRow);
+    } catch (err) {
+      r.free = { ...r.free, errors: [...r.free.errors, `Your pasted link (${link}) didn't work: ${err instanceof Error ? err.message : String(err)}`] };
+    }
+  }
+  return out;
+}
+
+handleIpc('lossless-upgrade:use-link', async (_event, { rbId, url }: { rbId: string; url: string }) => {
+  try {
+    if (!rbId || typeof url !== 'string' || !url.trim()) return { success: false, error: 'Paste a link first.' };
+    const state = await loadFreeFetchState();
+    const want = state?.wants?.[String(rbId)];
+    if (!state || !want) return { success: false, error: 'Check the playlist again, then paste the link.' };
+    const key = `rb:${rbId}`;
+    const { hit, fetchRow, warning } = await freeFromLink(key, want, url.trim());
+    const links = await readPastedLinks();
+    links[String(rbId)] = url.trim();
+    await writePastedLinks(links);
+    await saveFreeFetchRows(state.playlistId, withPastedRow(state.rows, key, fetchRow));
+    return { success: true, hit, pasted: { url: url.trim(), warning } };
+  } catch (error) {
+    mainLog.warn('IPC lossless-upgrade:use-link failed:', error);
+    return { success: false, error: error instanceof Error ? error.message : "Track Lab couldn't use that link" };
+  }
+});
+
+handleIpc('lossless-upgrade:forget-link', async (_event, { rbId }: { rbId: string }) => {
+  try {
+    const links = await readPastedLinks();
+    if (!links[String(rbId)]) return { success: true, forgotten: false };
+    delete links[String(rbId)];
+    await writePastedLinks(links);
+    const state = await loadFreeFetchState();
+    if (state) {
+      const key = `rb:${rbId}`;
+      const pasted = state.rows.find(r => r.upgradeKey === key && r.source !== 'bandcamp');
+      if (pasted) await saveFreeFetchRows(state.playlistId, withPastedRow(state.rows, key, null));
+    }
+    return { success: true, forgotten: true };
+  } catch (error) {
+    mainLog.warn('IPC lossless-upgrade:forget-link failed:', error);
+    return { success: false, error: error instanceof Error ? error.message : "Track Lab couldn't forget that link" };
+  }
+});
 
 handleIpc('lossless-upgrade:fetch-free', async (event, { rbIds, accountActions }: { rbIds: string[]; accountActions?: boolean }) => trackOp('Getting free downloads', async () => {
   const send = (message: string) => safeSend(event.sender, 'lossless-upgrade:progress', { phase: 'fetching', current: 0, total: 0, message });

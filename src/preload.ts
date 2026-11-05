@@ -301,6 +301,11 @@ contextBridge.exposeInMainWorld('candybar', {
   upgradeFetchFree: (rbIds: string[], opts: { accountActions: boolean }): Promise<{ success: boolean; outcomes?: Record<string, import('./lib/freeSources').FreeUpgradeOutcome>; error?: string }> =>
     ipcRenderer.invoke('lossless-upgrade:fetch-free', { rbIds, accountActions: opts.accountActions }),
   upgradeFetchFreeStop: (): Promise<void> => ipcRenderer.invoke('lossless-upgrade:fetch-free-stop'),
+  // A free download link Ben found himself, for one row; kept across checks.
+  upgradeUseLink: (rbId: string, url: string): Promise<{ success: boolean; hit?: import('./lib/freeSources').FreeSourceHit; pasted?: { url: string; warning: string | null }; error?: string }> =>
+    ipcRenderer.invoke('lossless-upgrade:use-link', { rbId, url }),
+  upgradeForgetLink: (rbId: string): Promise<{ success: boolean; forgotten?: boolean; error?: string }> =>
+    ipcRenderer.invoke('lossless-upgrade:forget-link', { rbId }),
 
   // Lossless swap: put a downloaded lossless file in place of a Rekordbox
   // entry's file, keeping the entry (cues, Date Added, play count, playlists).

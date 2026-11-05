@@ -13,7 +13,7 @@
  */
 
 import * as fuzzball from 'fuzzball';
-import { normalizeForComparison, normalizeLoose, sameTitleVersion, titleVersionSignature } from './stringUtils';
+import { normalizeForComparison, normalizeLoose, normalizeTitleForScore, sameTitleVersion, titleVersionSignature } from './stringUtils';
 
 /** Below this a store hit isn't a match at all. */
 export const STORE_MATCH_FLOOR = 0.50;
@@ -127,10 +127,10 @@ export function storeScoreParts(
   candidateTitle: string
 ): StoreScoreParts {
   const trackArtist = normalizeForComparison(track.artist);
-  const trackTitle = normalizeForComparison(track.title);
+  const trackTitle = normalizeTitleForScore(track.title);
   const otherArtists = (Array.isArray(candidateArtists) ? candidateArtists : [candidateArtists])
     .map(a => normalizeForComparison(a)).join(' ');
-  const otherTitle = normalizeForComparison(candidateTitle);
+  const otherTitle = normalizeTitleForScore(candidateTitle);
 
   // ratio + token_set_ratio only. partial_ratio slides the shorter string across
   // the longer and rewards incidental letter overlap: it scored "zzzz
@@ -267,12 +267,12 @@ export function bestOwnedMatch<T extends { artist: string; title: string }>(
   owned: T[]
 ): T | null {
   const trackArtist = normalizeForComparison(track.artist);
-  const trackTitle = normalizeForComparison(track.title);
+  const trackTitle = normalizeTitleForScore(track.title);
   let best: T | null = null;
   let bestScore = 0;
   for (const o of owned) {
     if (!ownedVersionSatisfies(track.title, o.title)) continue;
-    const oTitle = normalizeForComparison(o.title);
+    const oTitle = normalizeTitleForScore(o.title);
     const oArtist = normalizeForComparison(o.artist);
     const titleScore = Math.max(fuzzball.ratio(trackTitle, oTitle), fuzzball.token_set_ratio(trackTitle, oTitle)) / 100;
     if (titleScore < OWNED_TITLE_FLOOR) continue;

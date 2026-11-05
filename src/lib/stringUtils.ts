@@ -59,6 +59,19 @@ export function normalizeForComparison(str: string): string {
     .trim();
 }
 
+/** Rework tags normalizeForComparison leaves in: "(Shizz Lo Flip)", "- X Refix". */
+const REWORK_TAG_BRACKET_RE = /\s*[\(\[][^\)\]]*\b(flip|rework|refix|mashup)\b[^\)\]]*[\)\]]/gi;
+const REWORK_TAG_DASH_RE = /\s+[-–—]\s+.*\b(flip|rework|refix|mashup)\b.*$/gi;
+
+/** normalizeForComparison with rework tags off too, for scoring a title
+ *  against a store copy or a purchase. The version signature judges the
+ *  rework; left in, the shared credit read "Jackpot (Shizz Lo Flip)" 92% like
+ *  "Go Back (Shizz Lo Flip)". Not for relocation or duplicate checks, which
+ *  lean on normalizeForComparison as it is. */
+export function normalizeTitleForScore(str: string): string {
+  return normalizeForComparison((str || '').replace(REWORK_TAG_BRACKET_RE, '').replace(REWORK_TAG_DASH_RE, ''));
+}
+
 /**
  * Basic normalization: lowercase, replace punctuation with spaces, collapse whitespace.
  * Used for building match keys where preserving word boundaries matters.
@@ -116,10 +129,12 @@ export function normalizeLoose(str: string): string {
     .normalize('NFKD')
     .replace(/[̀-ͯ]/g, '') // strip combining diacritical marks (ë → e)
     .toLowerCase()
-    // Strip parenthesized version/feat tags: "(Extended Mix)", "[Radio Edit]", "(feat. X)"
-    .replace(/\s*[\(\[].*(feat|ft|featuring|remix|edit|mix|version|original|extended|radio|club|instrumental|dub|vip|bootleg|remaster).*[\)\]]/gi, '')
+    // Strip parenthesized version/feat tags: "(Extended Mix)", "[Radio Edit]", "(feat. X)",
+    // and reworks named like a remix ("(Shizz Lo Flip)", "[X Refix]"), so the
+    // version signature sees them. normalizeForComparison keeps those words.
+    .replace(/\s*[\(\[].*(feat|ft|featuring|remix|edit|mix|version|original|extended|radio|club|instrumental|dub|vip|bootleg|remaster|flip|rework|refix|mashup).*[\)\]]/gi, '')
     // Strip dash-suffixed version tags: "Song - Radio Edit", "Song - Extended Mix"
-    .replace(/\s+[-–—]\s+.*\b(feat|ft|featuring|remix|edit|mix|version|original|extended|radio|club|instrumental|dub|vip|bootleg|remaster)\b.*$/gi, '')
+    .replace(/\s+[-–—]\s+.*\b(feat|ft|featuring|remix|edit|mix|version|original|extended|radio|club|instrumental|dub|vip|bootleg|remaster|flip|rework|refix|mashup)\b.*$/gi, '')
     .replace(/\b(feat\.?|ft\.?|featuring)\b.*?(?=\s*[-–—]|$)/gi, '')
     .replace(/&/g, 'and')
     .replace(/[^a-z0-9\s]/g, '')

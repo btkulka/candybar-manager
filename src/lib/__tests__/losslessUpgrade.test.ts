@@ -5,7 +5,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   classifyEntry, toUpgradeRow, streamingUri, spotifyIdToResolve, applySpotifyTrack,
-  copyKey, buildLosslessIndex, findLosslessCopy, needsStoreSearch, type RekordboxEntry,
+  copyKey, buildLosslessIndex, findLosslessCopy, needsStoreSearch, withPastedRow, type RekordboxEntry,
 } from '../losslessUpgrade';
 
 function entry(over: Partial<RekordboxEntry>): RekordboxEntry {
@@ -146,5 +146,34 @@ describe('lossless copies elsewhere in the collection', () => {
     const row = toUpgradeRow(entry({ rbId: '20', filePath: '/x/Jolean.mp3', fileType: 1, bitRate: 320 }));
     row.losslessCopy = findLosslessCopy(row, index);
     expect(needsStoreSearch(row)).toBe(false);
+  });
+});
+
+describe('flips and the lossless copies elsewhere in the collection', () => {
+  const original = entry({ rbId: '30', artist: 'Sub Focus, Julia Church, John Summit', title: 'Go Back (Original Mix)', filePath: '/x/Go_Back.aiff' });
+  const flipAiff = entry({ rbId: '31', artist: 'John Summit, Sub Focus', title: 'Go Back - Shizz Lo Flip', filePath: '/x/Go Back Shizz Lo.wav', fileType: 11 });
+
+  it('never relinks a flip to the original', () => {
+    const lossy = toUpgradeRow(entry({ rbId: '40', artist: 'John Summit & Sub Focus', title: 'Go Back (Shizz Lo Flip)', filePath: '/x/flip.mp3', fileType: 1, bitRate: 320 }));
+    expect(findLosslessCopy(lossy, buildLosslessIndex([original]))).toBeUndefined();
+  });
+
+  it('finds the same flip written the other way', () => {
+    const lossy = toUpgradeRow(entry({ rbId: '40', artist: 'John Summit & Sub Focus', title: 'Go Back (Shizz Lo Flip)', filePath: '/x/flip.mp3', fileType: 1, bitRate: 320 }));
+    expect(findLosslessCopy(lossy, buildLosslessIndex([original, flipAiff]))?.rbId).toBe('31');
+  });
+});
+
+describe('a pasted free download link in the downloader rows', () => {
+  const row = (key: string, scId: string, source?: string) => ({ upgradeKey: key, scId, ...(source ? { source } : {}) });
+  const rows = [row('rb:1', 'a'), row('rb:2', 'b'), row('rb:2', 'bandcamp:9', 'bandcamp'), row('rb:3', 'c')];
+
+  it("takes the place of the row's SoundCloud copy, ahead of its Bandcamp fallback", () => {
+    expect(withPastedRow(rows, 'rb:2', row('rb:2', 'pasted')).map(r => r.scId)).toEqual(['a', 'pasted', 'bandcamp:9', 'c']);
+  });
+
+  it('goes at the end for a row the search found nothing for, and drops out when forgotten', () => {
+    expect(withPastedRow(rows, 'rb:4', row('rb:4', 'pasted')).map(r => r.scId)).toEqual(['a', 'b', 'bandcamp:9', 'c', 'pasted']);
+    expect(withPastedRow(rows, 'rb:2', null).map(r => r.scId)).toEqual(['a', 'bandcamp:9', 'c']);
   });
 });
