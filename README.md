@@ -76,9 +76,13 @@ After install, `npm run dev` for development or `npm start` to preview a product
 Track Lab can hold several people's data, one profile each: library folders,
 SoundCloud/Spotify/store sign-ins, gate email and address, download ledger,
 sourcing history and Track Lab's library database. Switch from the profile chip
-under the logo or in Settings → Profiles. Switching restarts the app in that
-profile. The **default** profile is the one Track Lab opens in. It starts as the
-original profile and stays that way until another is made default.
+under the logo or in Settings → Profiles. Switching happens in place, with no
+restart: running work is finished or cancelled, the current profile's window,
+store pages and files are closed, the other profile's are opened, and a new
+window comes up on that profile's own browser session (main keeps the default
+session; another profile's is stored in its folder). The **default** profile is
+the one Track Lab opens in. It starts as the original profile and stays that way
+until another is made default. `--profile=<id>` opens a specific one.
 
 ```text
 ~/Library/Application Support/candybar-manager/              main (the original) + profiles.json + store-bridge.sock

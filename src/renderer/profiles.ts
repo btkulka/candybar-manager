@@ -1,7 +1,7 @@
 // Profiles in the window: the chip under the logo (whose Track Lab this is,
 // with a menu to switch or add one) and Settings → Profiles (add, rename,
 // make default, remove). Each profile is a data folder of its own
-// (src/lib/profiles.ts); switching restarts the app in it.
+// (src/lib/profiles.ts); switching swaps it in place and opens a new window.
 
 import type { ProfilesState, TrackLabProfile } from '../types';
 import { escapeHtml, getErrorMessage, showToast } from './shared';
@@ -69,7 +69,7 @@ function renderList(): void {
          </span>`
       : `<span class="profile-row-name">${escapeHtml(p.name)}</span>${badges(p)}`;
     const actions = renaming === p.id ? '' : [
-      p.isRunning ? '' : `<button type="button" class="btn-secondary btn-sm" data-profile-switch="${escapeHtml(p.id)}" data-tooltip="Restart Track Lab as ${escapeHtml(p.name)}">Switch</button>`,
+      p.isRunning ? '' : `<button type="button" class="btn-secondary btn-sm" data-profile-switch="${escapeHtml(p.id)}" data-tooltip="Switch Track Lab to ${escapeHtml(p.name)}">Switch</button>`,
       p.isDefault ? '' : `<button type="button" class="btn-secondary btn-sm" data-profile-default="${escapeHtml(p.id)}" data-tooltip="Open Track Lab as ${escapeHtml(p.name)} from now on">Make default</button>`,
       `<button type="button" class="btn-secondary btn-sm" data-profile-rename="${escapeHtml(p.id)}">Rename</button>`,
       p.isMain || p.isRunning ? '' : `<button type="button" class="btn-secondary btn-sm btn-danger-text" data-profile-remove="${escapeHtml(p.id)}">Remove</button>`,
@@ -123,15 +123,15 @@ async function switchTo(id: string): Promise<void> {
   if (!target || target.isRunning) return;
   const ok = await confirmAction({
     title: `Switch to ${target.name}?`,
-    message: `Track Lab restarts as ${target.name}, with their folders, sign-ins and downloads.`,
+    message: `Track Lab switches to ${target.name}'s folders, sign-ins and downloads.`,
     safetyNote: 'Nothing is lost: switch back any time from the profile menu.',
-    confirmLabel: 'Switch and restart',
+    confirmLabel: 'Switch',
     tone: 'info',
   });
   if (!ok) return;
   try {
     const result = await window.candybar.profilesSwitch(id);
-    if (!result.switching && result.reason) showToast('info', 'Still here', result.reason);
+    if (!result.switched && result.reason) showToast('info', 'Still here', result.reason);
   } catch (err) {
     showToast('error', 'Could not switch profiles', getErrorMessage(err));
   }
@@ -153,14 +153,14 @@ async function addProfile(): Promise<void> {
     render();
     const go = await confirmAction({
       title: `Switch to ${result.created.name} now?`,
-      message: `Track Lab restarts as ${result.created.name} and the setup guide asks for their folders, details and accounts.`,
+      message: `Track Lab switches to ${result.created.name} and the setup guide asks for their folders, details and accounts.`,
       confirmLabel: 'Switch and set up',
       cancelLabel: 'Later',
       tone: 'info',
     });
     if (go) {
       const switched = await window.candybar.profilesSwitch(result.created.id);
-      if (!switched.switching && switched.reason) showToast('info', 'Still here', switched.reason);
+      if (!switched.switched && switched.reason) showToast('info', 'Still here', switched.reason);
     } else {
       showToast('success', `Added ${result.created.name}`, 'Switch to it from the profile menu under the logo.');
     }
@@ -223,8 +223,12 @@ export function initProfiles(): void {
 
   chip?.addEventListener('click', (e) => {
     e.stopPropagation();
-    setMenuOpen(menu?.hidden ?? true);
+    const opening = menu?.hidden ?? true;
+    // Re-read first: a profile can be added or renamed from Claude (MCP) too.
+    if (opening) void refreshProfiles().then(() => setMenuOpen(true));
+    else setMenuOpen(false);
   });
+  document.querySelector('.settings-nav-item[data-target="profiles"]')?.addEventListener('click', () => void refreshProfiles());
   document.addEventListener('click', (e) => {
     if (menu && !menu.hidden && !switcher?.contains(e.target as Node)) setMenuOpen(false);
   });
@@ -242,6 +246,7 @@ export function initProfiles(): void {
       void switchTo(el.dataset.profileSwitch);
     } else {
       openSettingsTo('profiles');
+      void refreshProfiles();
       if (el.dataset.profileAction === 'add') setTimeout(() => $('profile-new-name')?.focus(), 50);
     }
   });

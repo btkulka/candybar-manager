@@ -31,8 +31,11 @@ export type ScanCache = {
 let store: ScanCache = {};
 let cacheFilePath: string | null = null;
 
+/** Point the cache at a profile's folder. Forgets what was held for the last
+ *  one: loadCache() then reads the new profile's file, if it has one. */
 export function initCachePath(userDataDir: string): void {
   cacheFilePath = path.join(userDataDir, 'scan-cache.json');
+  store = {};
 }
 
 // Serialize writes so rapid successive calls can't race and swap their

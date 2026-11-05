@@ -1,5 +1,5 @@
 // First: picks the profile (and so the data folder) before anything reads it.
-import { PROFILES_ROOT, RUNNING_PROFILE, GOT_SINGLE_INSTANCE_LOCK } from './lib/profileBoot';
+import { PROFILES_ROOT, GOT_SINGLE_INSTANCE_LOCK, currentProfile, dataDir, setCurrentProfile } from './lib/profileBoot';
 import log, { createScopedLogger, enableFileLog } from './lib/logger';
 import { app, BrowserWindow, webContents, ipcMain, dialog, nativeImage, Tray, Menu, protocol, net, shell, session, type OpenDialogOptions } from 'electron';
 import fs from 'fs';
@@ -20,9 +20,14 @@ const mainLog = createScopedLogger('Main');
 //   logs/main.log  everything logged, debug and up, each line tagged with its operation
 //   logs/ops/      every operation: what was asked, by whom, its progress, output and outcome
 // Set up first, so startup itself is on record.
-const LOGS_DIR = path.join(app.getPath('userData'), 'logs');
-enableFileLog(LOGS_DIR, 'main');
-initOpLog(app.getPath('userData'), { proc: 'app' });
+// Both are the current profile's, and move with a profile switch (openProfileLogs).
+let LOGS_DIR = path.join(dataDir(), 'logs');
+function openProfileLogs(): void {
+  LOGS_DIR = path.join(dataDir(), 'logs');
+  enableFileLog(LOGS_DIR, 'main');
+  initOpLog(dataDir(), { proc: 'app' });
+}
+openProfileLogs();
 
 // Process-level error handlers
 process.on('uncaughtException', (error) => {
@@ -60,8 +65,8 @@ import {
   isStoreCheckoutUrl, isStoreSignInUrl, plainChromeUserAgent, PLACE_ORDER_RE, ADVANCE_RE, scrapeItemCount, resyncRefusal,
 } from './lib/mainGuards';
 import {
-  readRegistry, findProfile, listProfiles, createProfile, renameProfile, setDefaultProfile, removeProfile, sharedSecretsFrom,
-  type ProfileView,
+  readRegistry, findProfile, listProfiles, createProfile, renameProfile, setDefaultProfile, removeProfile, sharedSecretsFrom, MAIN_PROFILE_ID,
+  type ProfileView, type Profile,
 } from './lib/profiles';
 import { readConfig, writeConfig, AppConfig, DEFAULT_LIBRARY_ROOT, getDefaultArchivePath, getDefaultRestoreStageDir, setSecretsPath, getConfigWarnings, resolveRekordboxBackupDir } from './lib/config';
 import { searchSpotify, testSpotifyConnection, SpotifySearchResult, getPlaylistTracks, getSpotifyTracksByIds } from './lib/spotify';
@@ -153,7 +158,8 @@ function withCors(res: Response): Response {
   return new Response(res.body, { status: res.status, statusText: res.statusText, headers });
 }
 
-const CONFIG_PATH = path.join(app.getPath('userData'), 'config.json');
+// The current profile's settings and secrets (pointAtProfileFiles moves them on a switch).
+let CONFIG_PATH = path.join(dataDir(), 'config.json');
 // Claude's tools and the sourcing CLI reach the app here. It sits in the
 // profiles root, not the profile's folder: one Track Lab runs at a time, and
 // they find it without knowing which profile it's in (lib/storeBridge.mjs).
@@ -166,9 +172,14 @@ const CONFIG_DEFAULTS_PATH = path.join(app.getAppPath(), 'config.json');
 // credentials. They used to sit in the repo checkout; the first launch after the
 // move copies that file across once and leaves the original where it was.
 const LEGACY_SECRETS_PATH = path.join(app.getAppPath(), 'secrets.json');
-const SECRETS_PATH = path.join(app.getPath('userData'), 'secrets.json');
-// Only main ever had a repo copy: another profile must never be seeded with it.
-setSecretsPath(RUNNING_PROFILE.id === 'main' ? migrateSecretsFile(LEGACY_SECRETS_PATH, SECRETS_PATH) : SECRETS_PATH);
+let SECRETS_PATH = path.join(dataDir(), 'secrets.json');
+function pointAtProfileFiles(): void {
+  CONFIG_PATH = path.join(dataDir(), 'config.json');
+  SECRETS_PATH = path.join(dataDir(), 'secrets.json');
+  // Only main ever had a repo copy: another profile must never be seeded with it.
+  setSecretsPath(currentProfile().id === MAIN_PROFILE_ID ? migrateSecretsFile(LEGACY_SECRETS_PATH, SECRETS_PATH) : SECRETS_PATH);
+}
+pointAtProfileFiles();
 
 /** One-time copy of the repo-checkout secrets.json into userData. Returns the
  *  path to use: the userData file, or the legacy one if the copy couldn't be
@@ -202,7 +213,7 @@ async function getLibraryRoot(): Promise<string> {
  * must NOT land in world-readable /tmp. Returns the absolute path written.
  */
 async function writeScratchFile(name: string, contents: string): Promise<string> {
-  const dir = path.join(app.getPath('userData'), 'scratch');
+  const dir = path.join(dataDir(), 'scratch');
   await fs.promises.mkdir(dir, { recursive: true, mode: 0o700 });
   const outPath = path.join(dir, name);
   await fs.promises.writeFile(outPath, contents, { mode: 0o600 });
@@ -340,7 +351,7 @@ async function confirmInterruptWork(action: 'quit' | 'update' | 'switch'): Promi
     detail: {
       quit: 'Quitting now cancels it. Files already moved stay moved; a copy in progress is finished or abandoned cleanly first.',
       update: 'Updating restarts the app, which cancels it. You can update after it finishes — the check runs again on the next launch.',
-      switch: 'Switching restarts the app in the other profile, which cancels it. Files already moved stay moved; a copy in progress is finished or abandoned cleanly first.',
+      switch: 'Switching profiles cancels it. Files already moved stay moved; a copy in progress is finished or abandoned cleanly first.',
     }[action],
     buttons: [{ quit: 'Quit Anyway', update: 'Update Anyway', switch: 'Switch Anyway' }[action], 'Keep Working'],
     defaultId: 1,
@@ -438,6 +449,24 @@ function recordJobOps(): void {
   manager.on('job-cancelled', finish('error'));
 }
 
+/** media:// (audio previews), served the same in every profile's session. Set
+ *  once the app is ready. */
+let mediaHandler: ((request: Request) => Promise<Response>) | null = null;
+const preparedSessions = new WeakSet<Electron.Session>();
+
+/** The current profile's browser session. Main keeps the default one (the
+ *  app's own Chromium folder, which is main's); another profile's is stored in
+ *  its own folder, so its local storage and cookies stay its own. */
+function profileSession(): Electron.Session {
+  const ses = currentProfile().id === MAIN_PROFILE_ID ? session.defaultSession : session.fromPath(dataDir());
+  if (!preparedSessions.has(ses)) {
+    preparedSessions.add(ses);
+    applyPermissionPolicy(ses);
+    if (ses !== session.defaultSession && mediaHandler) ses.protocol.handle('media', mediaHandler);
+  }
+  return ses;
+}
+
 function createWindow() {
   const iconPath = resolveIconPath();
   const win = new BrowserWindow({
@@ -455,6 +484,8 @@ function createWindow() {
       // hardened in `will-attach-webview` below (no node, isolated, store-origin
       // src only) so flipping this on doesn't widen the app's attack surface.
       webviewTag: true,
+      // The current profile's browser storage (its local storage, cookies).
+      session: profileSession(),
     },
     icon: iconPath,
     show: false
@@ -685,7 +716,7 @@ app.whenReady().then(async () => {
   // Register media:// protocol for audio preview playback. AIFF files are
   // transcoded to MP3 on the fly because Chromium's bundled FFmpeg can't
   // demux 24-bit PCM AIFF. Everything else passes through as-is.
-  protocol.handle('media', async (request) => {
+  mediaHandler = async (request: Request): Promise<Response> => {
     try {
       // Strip scheme+authority prefix directly to avoid URL parser quirks with custom schemes
       const encoded = request.url.replace(/^media:\/\/localhost/, '');
@@ -707,63 +738,25 @@ app.whenReady().then(async () => {
       mainLog.error(`Media protocol error for ${request.url}:`, err);
       return new Response('File not found', { status: 404 });
     }
-  });
+  };
+  protocol.handle('media', mediaHandler);
 
   // Startup init. Any failure here (a locked or corrupt candybar.db, a native
   // module built for another Electron) leaves nothing usable, so say so and
   // quit instead of idling with no window.
   try {
-    // Append-only journal of destructive file operations (for recovery tracing).
-    // First, so even the database migrations below are traceable.
-    initWriteJournal(app.getPath('userData'));
     // Route user-audio deletes through the OS Trash (recoverable) instead of a
     // permanent unlink. The lib layer stays Electron-free; we inject the handler.
     setTrashHandler((filePath) => shell.trashItem(filePath));
-
-    // Initialize database
-    initDatabase();
-    mainLog.info('Database initialized');
-
-    // One-shot migration of legacy scan-cache.json data into SQLite
-    migrateFromJsonCacheIfNeeded(app.getPath('userData'));
-
-    // Load cache on startup (with file persistence for dev HMR survival)
-    initCachePath(app.getPath('userData'));
-    await loadCache();
-    mainLog.info('Cache loaded');
-
-    // Initialize job queue. Claude jobs read the token, model and folders at
-    // run time, so a change saved in Settings applies to the next job.
-    initJobQueue({
-      appRoot: app.getAppPath(),
-      getSettings: async () => {
-        const config = await readConfig(CONFIG_PATH, CONFIG_DEFAULTS_PATH);
-        return {
-          oauthToken: config.claudeOauthToken ?? '',
-          model: config.claudeModel ?? '',
-          libraryRoot: config.libraryRoot || DEFAULT_LIBRARY_ROOT,
-          organizeSourceDir: config.organizeSourceDir ?? '',
-          profile: config.claudeProfile ?? null,
-        };
-      },
-      storeBridgePath: STORE_BRIDGE_PATH,
-      scratchDir: (() => {
-        const dir = path.join(app.getPath('userData'), 'claude-scratch');
-        fs.mkdirSync(dir, { recursive: true });
-        return dir;
-      })(),
-      runtimeDir: path.join(app.getPath('userData'), 'runtime'),
-    });
-    recordJobOps();
-    mainLog.info('Job queue initialized');
+    await openProfileData();
   } catch (error) {
     mainLog.error('Startup failed:', error);
-    recordEvent('app:start', { source: 'app', args: { version: app.getVersion(), userData: app.getPath('userData') }, error });
+    recordEvent('app:start', { source: 'app', args: { version: app.getVersion(), userData: dataDir() }, error });
     flushOpLogSync();
     dialog.showErrorBox(
       'Track Lab couldn’t start',
       `${error instanceof Error ? error.message : String(error)}\n\n` +
-      `The app's data lives in ${app.getPath('userData')}. ` +
+      `The app's data lives in ${dataDir()}. ` +
       'If this followed an update, run "npm install" in the app folder and try again.'
     );
     startupFailed = true;
@@ -784,7 +777,7 @@ app.whenReady().then(async () => {
   mainLog.info('App startup complete');
   recordEvent('app:start', {
     source: 'app',
-    args: { version: app.getVersion(), electron: process.versions.electron, platform: process.platform, userData: app.getPath('userData'), appPath: app.getAppPath() },
+    args: { version: app.getVersion(), electron: process.versions.electron, platform: process.platform, userData: dataDir(), appPath: app.getAppPath() },
   });
 
   // A corrupt config.json is backed up and replaced with defaults by readConfig;
@@ -811,9 +804,56 @@ app.on('child-process-gone', (_event, details) => {
 });
 
 app.on('window-all-closed', () => {
+  if (profileSwitching) return; // the next profile's window is on its way
   mainLog.info('All windows closed');
   if (process.platform !== 'darwin') app.quit();
 });
+
+/** Open the current profile's files: its write journal, database, scan cache
+ *  and job queue. At startup, and again after a profile switch (the logs and
+ *  settings paths move first: openProfileLogs, pointAtProfileFiles). */
+async function openProfileData(): Promise<void> {
+  // Append-only journal of destructive file operations (for recovery tracing).
+  // First, so even the database migrations below are traceable.
+  initWriteJournal(dataDir());
+
+  // Initialize database
+  initDatabase(path.join(dataDir(), 'candybar.db'));
+  mainLog.info('Database initialized');
+
+  // One-shot migration of legacy scan-cache.json data into SQLite
+  migrateFromJsonCacheIfNeeded(dataDir());
+
+  // Load cache on startup (with file persistence for dev HMR survival)
+  initCachePath(dataDir());
+  await loadCache();
+  mainLog.info('Cache loaded');
+
+  // Initialize job queue. Claude jobs read the token, model and folders at
+  // run time, so a change saved in Settings applies to the next job.
+  initJobQueue({
+    appRoot: app.getAppPath(),
+    getSettings: async () => {
+      const config = await readConfig(CONFIG_PATH, CONFIG_DEFAULTS_PATH);
+      return {
+        oauthToken: config.claudeOauthToken ?? '',
+        model: config.claudeModel ?? '',
+        libraryRoot: config.libraryRoot || DEFAULT_LIBRARY_ROOT,
+        organizeSourceDir: config.organizeSourceDir ?? '',
+        profile: config.claudeProfile ?? null,
+      };
+    },
+    storeBridgePath: STORE_BRIDGE_PATH,
+    scratchDir: (() => {
+      const dir = path.join(dataDir(), 'claude-scratch');
+      fs.mkdirSync(dir, { recursive: true });
+      return dir;
+    })(),
+    runtimeDir: path.join(dataDir(), 'runtime'),
+  });
+  recordJobOps();
+  mainLog.info('Job queue initialized');
+}
 
 let startupFailed = false;
 /** Set once the user has agreed to cut running work short (or nothing was running). */
@@ -895,7 +935,7 @@ async function showConfigWarnings(): Promise<void> {
 
 // The origin/main commit (or, packaged, the release tag) the user last dismissed
 // the prompt for. Kept in its own file so it never rides along with config writes.
-const UPDATE_STATE_PATH = path.join(app.getPath('userData'), 'update-check.json');
+const UPDATE_STATE_PATH = path.join(PROFILES_ROOT, 'update-check.json'); // the app's, not a profile's
 
 function readDismissedUpdateSha(): string | null {
   try {
@@ -1624,12 +1664,12 @@ handleIpc('update-config', async (_event, partial: Partial<AppConfig>) => {
 // ---------- Profiles ----------
 //
 // Each profile is a data folder of its own (src/lib/profiles.ts): settings,
-// sign-ins, ledgers and Track Lab's library database. Switching restarts the
-// app in the other profile; the default profile is the one it opens in.
+// sign-ins, ledgers and Track Lab's library database. Switching swaps them in
+// place (switchProfile); the default profile is the one Track Lab opens in.
 
 function profilesState(): { running: string; defaultId: string; profiles: ProfileView[] } {
   const reg = readRegistry(PROFILES_ROOT);
-  return { running: RUNNING_PROFILE.id, defaultId: reg.defaultId, profiles: listProfiles(PROFILES_ROOT, RUNNING_PROFILE.id) };
+  return { running: currentProfile().id, defaultId: reg.defaultId, profiles: listProfiles(PROFILES_ROOT, currentProfile().id) };
 }
 
 function profileOrThrow(idOrName: unknown) {
@@ -1638,23 +1678,65 @@ function profileOrThrow(idOrName: unknown) {
   return profile;
 }
 
-let profileSwitchPending = false;
+let profileSwitching = false;
 
-/** Restart Track Lab in another profile. The reply goes out first; then the
- *  normal quit path runs (drain jobs, flush the journal and cookies). */
-async function switchProfile(idOrName: unknown): Promise<{ switching: boolean; profile: ProfileView; reason?: string }> {
+/** What the main process holds in memory for the current profile. */
+function forgetProfileState(): void {
+  rekordboxPathCache = null;
+  freeFetchRows = null;
+  sourcingFreeRows = null;
+}
+
+/** Leave the current profile's files closed and the next one's open. */
+async function enterProfile(profile: Profile): Promise<void> {
+  setCurrentProfile(profile);
+  openProfileLogs();
+  pointAtProfileFiles();
+  forgetProfileState();
+  await openProfileData();
+}
+
+/**
+ * Switch profiles in place, no restart: finish or cancel this profile's work,
+ * close its window, store pages and files, open the other profile's, and give
+ * it a new window on its own browser session. If the other profile can't be
+ * opened, the previous one is reopened.
+ */
+async function switchProfile(idOrName: unknown): Promise<{ switched: boolean; profile: ProfileView; reason?: string }> {
   const target = profileOrThrow(idOrName);
-  const view = listProfiles(PROFILES_ROOT, RUNNING_PROFILE.id).find(p => p.id === target.id)!;
-  if (target.id === RUNNING_PROFILE.id) return { switching: false, profile: view, reason: `Already running as "${target.name}".` };
-  if (profileSwitchPending) return { switching: true, profile: view };
-  if (!(await confirmInterruptWork('switch'))) return { switching: false, profile: view, reason: 'Kept working: running work would have been cancelled.' };
-  profileSwitchPending = true;
-  quitConfirmed = true;
-  const args = process.argv.slice(1).filter(a => !a.startsWith('--profile='));
-  app.relaunch({ args: [...args, `--profile=${target.id}`] });
-  recordEvent('profile:switch', { source: 'app', args: { from: RUNNING_PROFILE.id, to: target.id } });
-  setTimeout(() => app.quit(), 300);
-  return { switching: true, profile: view };
+  const view = () => listProfiles(PROFILES_ROOT, currentProfile().id).find(p => p.id === target.id)!;
+  if (target.id === currentProfile().id) return { switched: false, profile: view(), reason: `Already in "${target.name}".` };
+  if (profileSwitching) return { switched: false, profile: view(), reason: 'A profile switch is already under way.' };
+  if (!(await confirmInterruptWork('switch'))) return { switched: false, profile: view(), reason: 'Kept working: switching would have cancelled it.' };
+  profileSwitching = true;
+  const from = currentProfile();
+  recordEvent('profile:switch', { source: 'app', args: { from: from.id, to: target.id } });
+  mainLog.info(`Switching profile: ${from.name} → ${target.name}`);
+  try {
+    await drainRunningWork();
+    freeFetchAbort?.abort();
+    closeStorePanel();
+    closeStoreBrowsers();
+    for (const w of BrowserWindow.getAllWindows()) if (!w.isDestroyed()) w.destroy();
+    await flushWriteJournal();
+    await flushOpLog();
+    closeDatabase();
+    try {
+      await enterProfile(target);
+    } catch (err) {
+      mainLog.error(`Couldn't open the "${target.name}" profile; going back to "${from.name}":`, err);
+      closeDatabase();
+      await enterProfile(from);
+      createWindow();
+      throw new Error(`Couldn't open the "${target.name}" profile: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    createWindow();
+    mainLog.info(`Profile switched: ${from.name} → ${target.name}`);
+    recordEvent('profile:switched', { source: 'app', args: { from: from.id, to: target.id } });
+    return { switched: true, profile: view() };
+  } finally {
+    profileSwitching = false;
+  }
 }
 
 handleIpc('profiles:list', async () => profilesState());
@@ -1665,7 +1747,7 @@ handleIpc('profiles:create', async (_event, { name, switchTo }: { name: string; 
   const profile = createProfile(PROFILES_ROOT, name, { sharedSecrets: sharedSecretsFrom(SECRETS_PATH) });
   mainLog.info(`Profile added: ${profile.name} (${profile.id})`);
   const switched = switchTo ? await switchProfile(profile.id) : null;
-  return { ...profilesState(), created: profile, switching: switched?.switching ?? false };
+  return { ...profilesState(), created: profile, switched: switched?.switched ?? false };
 });
 
 handleIpc('profiles:rename', async (_event, { id, name }: { id: string; name: string }) => {
@@ -1681,7 +1763,7 @@ handleIpc('profiles:set-default', async (_event, { id }: { id: string }) => {
 
 handleIpc('profiles:delete', async (_event, { id }: { id: string }) => {
   // Out of the list first, then its folder to the Trash (recoverable there).
-  const { profile, dir } = removeProfile(PROFILES_ROOT, profileOrThrow(id).id, RUNNING_PROFILE.id);
+  const { profile, dir } = removeProfile(PROFILES_ROOT, profileOrThrow(id).id, currentProfile().id);
   let trashed = true;
   try {
     await shell.trashItem(dir);
@@ -1732,7 +1814,7 @@ async function loadOwnershipLibrary(): Promise<SourcingLibrary> {
   const [mod, config] = await Promise.all([sourcingLibrary(), readConfig(CONFIG_PATH, CONFIG_DEFAULTS_PATH)]);
   // The DB this app writes (its own userData), not whatever the reader defaults to.
   const lib = await mod.loadLibrary({
-    candybarDbPath: path.join(app.getPath('userData'), 'candybar.db'),
+    candybarDbPath: path.join(dataDir(), 'candybar.db'),
     // Rekordbox off: this profile's collection isn't the one on this Mac.
     rekordbox: config.rekordboxEnabled !== false,
   });
@@ -1753,7 +1835,7 @@ async function loadOwnershipLibrary(): Promise<SourcingLibrary> {
 async function requireRekordbox(): Promise<void> {
   const config = await readConfig(CONFIG_PATH, CONFIG_DEFAULTS_PATH);
   if (config.rekordboxEnabled === false) {
-    const name = findProfile(readRegistry(PROFILES_ROOT), RUNNING_PROFILE.id)?.name ?? RUNNING_PROFILE.name;
+    const name = findProfile(readRegistry(PROFILES_ROOT), currentProfile().id)?.name ?? currentProfile().name;
     throw new Error(`Rekordbox is off in the "${name}" profile (Settings → Rekordbox), so no Rekordbox playlist is read or changed here.`);
   }
 }
@@ -3393,7 +3475,7 @@ handleIpc('lossless-upgrade:run', async (event, { playlistId }: { playlistId: st
 // bin/source-soundcloud-likes.mjs --tracks walks each entry's sources in
 // order until one lands a full-quality file; compressed files are deleted on
 // arrival. Each result comes back under its Rekordbox id for the swap step.
-const freeFetchRowsPath = () => path.join(app.getPath('userData'), 'upgrade-free-rows.json');
+const freeFetchRowsPath = () => path.join(dataDir(), 'upgrade-free-rows.json');
 type UpgradeWant = { artist: string; title: string; duration?: number };
 /** The last check's downloader rows, and each entry's tags (so a pasted link
  *  can be checked against the copy it would replace). */
@@ -3427,7 +3509,7 @@ async function loadFreeFetchRows(): Promise<FreeFetchRow[]> {
 // download page itself (an Influence Planner gate, say). The link is kept per
 // Rekordbox entry, so checking the playlist again keeps it at the front of
 // that entry's free sources; "Forget this link" drops it.
-const pastedLinksPath = () => path.join(app.getPath('userData'), 'upgrade-free-links.json');
+const pastedLinksPath = () => path.join(dataDir(), 'upgrade-free-links.json');
 
 async function readPastedLinks(): Promise<Record<string, string>> {
   try {
@@ -3499,7 +3581,7 @@ handleIpc('lossless-upgrade:use-link', async (_event, { rbId, url }: { rbId: str
 // candybar.db or any music.
 handleIpc('support:save-report', async (_event, { pages }: { pages?: Record<string, string | null> }) => {
   try {
-    const userData = app.getPath('userData');
+    const userData = dataDir();
     const stamp = new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-');
     const dir = path.join(app.getPath('temp'), `Track Lab report ${stamp}`);
     await fs.promises.rm(dir, { recursive: true, force: true });
@@ -3628,7 +3710,7 @@ handleIpc('lossless-upgrade:fetch-free', async (event, { rbIds, accountActions }
     const rows = (await loadFreeFetchRows()).filter(r => keys.has(r.upgradeKey));
     if (rows.length === 0) return { success: false, error: 'Check the playlist again, then get the free downloads.' };
 
-    const listPath = path.join(app.getPath('userData'), 'upgrade-free', `tracks-${Date.now()}.json`);
+    const listPath = path.join(dataDir(), 'upgrade-free', `tracks-${Date.now()}.json`);
     writeFetchList(listPath, `Upgrade: ${rbIds.length} track${rbIds.length === 1 ? '' : 's'}`, rows);
     freeFetchAbort = new AbortController();
     send('Starting the downloads…');
@@ -3667,7 +3749,7 @@ app.on('will-quit', () => freeFetchAbort?.abort());
 // sets can be on the page at once, so rows from each check are added to the
 // last ones rather than replacing them. Same downloader, same rules (one run
 // at a time across both tabs, compressed files deleted on arrival).
-const sourcingFreeRowsPath = () => path.join(app.getPath('userData'), 'sourcing-free-rows.json');
+const sourcingFreeRowsPath = () => path.join(dataDir(), 'sourcing-free-rows.json');
 /** The newest rows kept; older checks' rows go first. */
 const SOURCING_FREE_ROWS_MAX = 2000;
 let sourcingFreeRows: Map<string, FreeFetchRow> | null = null;
@@ -3705,7 +3787,7 @@ handleIpc('library-sourcing:fetch-free', async (event, { keys, accountActions }:
     const rows = [...wanted].flatMap(k => (all.has(k) ? [all.get(k)!] : []));
     if (rows.length === 0) return { success: false, error: 'Check the set again, then get the free downloads.' };
 
-    const listPath = path.join(app.getPath('userData'), 'sourcing-free', `tracks-${Date.now()}.json`);
+    const listPath = path.join(dataDir(), 'sourcing-free', `tracks-${Date.now()}.json`);
     writeFetchList(listPath, `Find & buy: ${rows.length} free download${rows.length === 1 ? '' : 's'}`, rows);
     freeFetchAbort = new AbortController();
     send('Starting the downloads…');
@@ -4213,7 +4295,7 @@ const STORE_BRIDGE_HANDLERS: Record<string, BridgeHandler> = {
       jobs: runningQueueJobs(),
       actions: ipcOps.channels().length,
       paths: {
-        userData: app.getPath('userData'),
+        userData: dataDir(),
         config: CONFIG_PATH,
         libraryRoot,
         organizeSourceDir: config.organizeSourceDir || null,
@@ -5018,7 +5100,7 @@ handleIpc('restore-run', async (event, { options }: { options: Omit<RestoreOptio
         safeSend(event.sender, 'restore-progress', p);
       }, controller.signal);
       // Persist a copy of the report to user data for later reference.
-      const reportPath = path.join(app.getPath('userData'), `restore-report-${Date.now()}.json`);
+      const reportPath = path.join(dataDir(), `restore-report-${Date.now()}.json`);
       await fs.promises.writeFile(reportPath, JSON.stringify(report, null, 2));
       return { success: true, report, reportPath };
     });

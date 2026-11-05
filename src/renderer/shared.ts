@@ -188,11 +188,11 @@ declare global {
       getConfig: () => Promise<AppConfig>;
       getConfigPath: () => Promise<string>;
       profilesList: () => Promise<ProfilesState>;
-      profilesCreate: (name: string, switchTo?: boolean) => Promise<ProfilesState & { created: TrackLabProfile; switching: boolean }>;
+      profilesCreate: (name: string, switchTo?: boolean) => Promise<ProfilesState & { created: TrackLabProfile; switched: boolean }>;
       profilesRename: (id: string, name: string) => Promise<ProfilesState>;
       profilesSetDefault: (id: string) => Promise<ProfilesState>;
       profilesDelete: (id: string) => Promise<ProfilesState & { trashed: boolean; folder: string }>;
-      profilesSwitch: (id: string) => Promise<{ switching: boolean; profile: TrackLabProfile; reason?: string }>;
+      profilesSwitch: (id: string) => Promise<{ switched: boolean; profile: TrackLabProfile; reason?: string }>;
       getLibraryRoot: () => Promise<string>;
       setConfig: (config: AppConfig) => Promise<AppConfig>;
       /** Merge-write: only the given keys change, so concurrent saves can't clobber each other. */

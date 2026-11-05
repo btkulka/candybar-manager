@@ -988,7 +988,7 @@ async function profilesNow(): Promise<{ appRunning: boolean; running: string | n
 
 tool(
   'profiles',
-  'Track Lab profiles. Each profile is one person\'s data: settings and library, SoundCloud/Spotify/store sign-ins, the email gates get, download ledger and history. "list" shows them, which one Track Lab is running and which is the default (the one it opens in). From Claude Code or Claude Desktop with more than one profile, ALWAYS ask Ben which profile to use before anything else, then "switch" to it if it isn\'t running. Track Lab restarts in it, and this waits until it\'s back. "create" adds one, which Ben fills in through the setup guide after switching. "rename", "set_default", and "delete" also exist. Delete sends the profile\'s folder to the Trash, and never works on the running profile or the original one.',
+  'Track Lab profiles. Each profile is one person\'s data: settings and library, SoundCloud/Spotify/store sign-ins, the email gates get, download ledger and history. "list" shows them, which one Track Lab is running and which is the default (the one it opens in). From Claude Code or Claude Desktop with more than one profile, ALWAYS ask Ben which profile to use before anything else, then "switch" to it if it isn\'t running. Track Lab swaps to it in place, without restarting. "create" adds one, which Ben fills in through the setup guide after switching. "rename", "set_default", and "delete" also exist. Delete sends the profile\'s folder to the Trash, and never works on the running profile or the original one.',
   {
     action: z.enum(['list', 'create', 'switch', 'rename', 'set_default', 'delete']),
     profile: z.string().optional().describe('Profile id or name (switch, rename, set_default, delete)'),
@@ -1001,18 +1001,8 @@ tool(
     if (action === 'rename') return runApp('profiles:rename', [{ id: need(profile, 'profile'), name: need(name, 'name') }]);
     if (action === 'set_default') return runApp('profiles:set-default', [{ id: need(profile, 'profile') }]);
     if (action === 'delete') return runApp('profiles:delete', [{ id: need(profile, 'profile') }]);
-    const asked = (await invokeApp('profiles:switch', [{ id: need(profile, 'profile') }])).result as { switching: boolean; profile: { id: string; name: string }; reason?: string };
-    if (!asked.switching) return reply(asked);
-    // Wait for Track Lab to come back up in the new profile, so the next call
-    // doesn't start a second copy in the default one.
-    const deadline = Date.now() + 90_000;
-    await new Promise(r => setTimeout(r, 2_000));
-    while (Date.now() < deadline) {
-      const now = await profilesNow();
-      if (now.appRunning && now.running === asked.profile.id) return reply({ switched: true, profile: asked.profile, state: now });
-      await new Promise(r => setTimeout(r, 1_500));
-    }
-    return reply({ error: `Track Lab didn't come back up as "${asked.profile.name}" within 90 s. Check the app before going on.` });
+    const asked = (await invokeApp('profiles:switch', [{ id: need(profile, 'profile') }])).result as { switched: boolean; profile: { id: string; name: string }; reason?: string };
+    return reply({ ...asked, state: await profilesNow() });
   })
 );
 

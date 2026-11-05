@@ -155,3 +155,13 @@ describe('whose files a process outside the app uses', () => {
     expect(twin.activeProfileId(env)).toBe(MAIN_PROFILE_ID);
   });
 });
+
+describe('in-place switching', () => {
+  it("main.ts reads the current profile's folder, never the app's own data folder", () => {
+    // app.getPath('userData') is the profiles root (main's folder) whichever
+    // profile is current; reading it would mix another person's files in.
+    const main = fs.readFileSync(path.join(__dirname, '..', '..', 'main.ts'), 'utf8');
+    expect(main).not.toMatch(/app\.getPath\(\s*['"]userData['"]\s*\)/);
+    expect(main).not.toMatch(/app\.setPath\(\s*['"]userData['"]/);
+  });
+});

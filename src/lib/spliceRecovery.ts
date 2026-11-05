@@ -15,11 +15,11 @@ function spliceLibUrl(file: string): string {
   return pathToFileURL(path.join(app.getAppPath(), 'lib', file)).href;
 }
 
-// The running profile's Splice sign-in (profileBoot sets CANDYBAR_CACHE_DIR;
-// main's is ~/.cache/candybar-manager, as before profiles).
-const CACHE_DIR = process.env.CANDYBAR_CACHE_DIR || path.join(os.homedir(), '.cache', 'candybar-manager');
-const TOKEN_CACHE = path.join(CACHE_DIR, 'splice-token.json');
-const PROFILE_DIR = path.join(CACHE_DIR, 'playwright-profiles', 'splice');
+// The current profile's Splice sign-in (profileBoot keeps CANDYBAR_CACHE_DIR
+// up to date across switches; main's is ~/.cache/candybar-manager).
+const cacheDir = () => process.env.CANDYBAR_CACHE_DIR || path.join(os.homedir(), '.cache', 'candybar-manager');
+const tokenCache = () => path.join(cacheDir(), 'splice-token.json');
+const profileDir = () => path.join(cacheDir(), 'playwright-profiles', 'splice');
 
 export type SpliceLoginStatus = {
   connected: boolean;
@@ -114,14 +114,14 @@ export async function getLoginStatus(): Promise<SpliceLoginStatus> {
   // `Default/Network/Cookies`; older builds used `Default/Cookies`. Check
   // both to stay forward/backward compatible.
   const cookiePaths = [
-    path.join(PROFILE_DIR, 'Default', 'Network', 'Cookies'),
-    path.join(PROFILE_DIR, 'Default', 'Cookies'),
+    path.join(profileDir(), 'Default', 'Network', 'Cookies'),
+    path.join(profileDir(), 'Default', 'Cookies'),
   ];
-  const hasProfile = fs.existsSync(PROFILE_DIR) && cookiePaths.some(p => fs.existsSync(p));
+  const hasProfile = fs.existsSync(profileDir()) && cookiePaths.some(p => fs.existsSync(p));
 
   let tokenExpiresAt: number | null = null;
   try {
-    const raw = fs.readFileSync(TOKEN_CACHE, 'utf8');
+    const raw = fs.readFileSync(tokenCache(), 'utf8');
     const cached = JSON.parse(raw) as { expiresAt?: number };
     if (typeof cached.expiresAt === 'number') tokenExpiresAt = cached.expiresAt;
   } catch {
@@ -477,7 +477,7 @@ export async function buyCreditsBucket(
 
 /** Write a manifest matching the CLI's output, but to userData (cross-platform). */
 export function writeManifest(scanResult: SpliceScanResult, buckets: SpliceBuckets): string {
-  const dir = path.join(app.getPath('userData'), 'splice-recover');
+  const dir = path.join(process.env.CANDYBAR_USER_DATA || app.getPath('userData'), 'splice-recover');
   fs.mkdirSync(dir, { recursive: true });
   const manifestPath = path.join(dir, `splice-recover-${path.basename(scanResult.alsPath, '.als')}.json`);
   fs.writeFileSync(
