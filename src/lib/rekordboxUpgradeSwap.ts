@@ -26,6 +26,7 @@ import fs from 'fs/promises';
 import os from 'os';
 import path from 'path';
 import { parseFile, type IAudioMetadata } from 'music-metadata';
+import { MediaRunError, probeMedia, resolveFfmpeg, resolveFfprobe, runMedia } from '@btkulka/media-kit';
 import { createScopedLogger } from './logger';
 import { rbxPython } from './rbxPython';
 import { recordWrite, statBytes } from './writeJournal';
@@ -41,9 +42,23 @@ import type {
   UpgradeSwapProgress, UpgradeSwapResult, UpgradeSwapResultItem,
 } from '../types';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
-const ffmpegPath: string = require('ffmpeg-static');
+const ffmpegStatic: string | null = require('ffmpeg-static');
 // eslint-disable-next-line @typescript-eslint/no-require-imports
-const ffprobePath: string = require('ffprobe-static').path;
+const ffprobeStatic: string | null = require('ffprobe-static').path;
+
+/** The bundled ffmpeg (ffmpeg-static), else one media-kit finds. */
+function ffmpegBin(): string {
+  const bin = resolveFfmpeg({ bundled: ffmpegStatic });
+  if (!bin) throw new Error('ffmpeg not found');
+  return bin;
+}
+
+/** The bundled ffprobe (ffprobe-static), else one media-kit finds. */
+function ffprobeBin(): string {
+  const bin = resolveFfprobe({ bundled: ffprobeStatic });
+  if (!bin) throw new Error('ffprobe not found');
+  return bin;
+}
 
 const log = createScopedLogger('UpgradeSwap');
 
@@ -477,38 +492,19 @@ function runSwapScript<T>(deps: SwapDeps, args: string[], opts: { input?: unknow
   });
 }
 
-function runCapture(bin: string, args: string[], timeoutMs: number): Promise<{ code: number | null; stdout: string; stderr: string }> {
-  return new Promise((resolve) => {
-    const proc = spawn(bin, args);
-    let stdout = '';
-    let stderr = '';
-    const timer = setTimeout(() => proc.kill('SIGTERM'), timeoutMs);
-    proc.stdout.on('data', (d: Buffer) => { stdout += d.toString(); });
-    proc.stderr.on('data', (d: Buffer) => { stderr += d.toString(); });
-    proc.on('close', (code) => { clearTimeout(timer); resolve({ code, stdout, stderr }); });
-    proc.on('error', (err) => { clearTimeout(timer); resolve({ code: null, stdout, stderr: err.message }); });
-  });
-}
-
 export async function probeAudio(file: string): Promise<AudioProbe> {
-  const r = await runCapture(ffprobePath, [
-    '-v', 'error', '-select_streams', 'a:0',
-    '-show_entries', 'format=format_name,duration:stream=codec_name,sample_rate,channels,bits_per_raw_sample,bits_per_sample,sample_fmt,duration',
-    '-of', 'json', file,
-  ], 60_000);
-  if (r.code !== 0) throw new Error(r.stderr.trim().split('\n').pop() || 'ffprobe failed');
-  const data = JSON.parse(r.stdout) as { format?: { format_name?: string; duration?: string }; streams?: Array<Record<string, string | number | undefined>> };
-  const s = data.streams?.[0];
+  const data = await probeMedia(ffprobeBin(), file, { timeoutMs: 60_000 });
+  const s = data.streams.find(st => st.codec_type === 'audio');
   if (!s) throw new Error('no audio stream');
   const fmtBits: Record<string, number> = { s16: 16, s16p: 16, s32: 32, s32p: 32, flt: 32, fltp: 32, dbl: 64, dblp: 64, u8: 8 };
   const bits = Number(s.bits_per_raw_sample) || Number(s.bits_per_sample) || fmtBits[String(s.sample_fmt)] || 0;
   return {
     codec: String(s.codec_name ?? ''),
-    container: String(data.format?.format_name ?? '').split(',')[0],
+    container: String(data.format.format_name ?? '').split(',')[0],
     sampleRate: Number(s.sample_rate) || 0,
     bitDepth: bits,
     channels: Number(s.channels) || 2,
-    durationSec: Number(s.duration) || Number(data.format?.duration) || 0,
+    durationSec: Number(s.duration) || Number(data.format.duration) || 0,
   };
 }
 
@@ -719,7 +715,7 @@ async function planOne(w: UpgradeSwapInput, row: SwapRow | undefined, ctx: PlanC
 
   let measurement: AlignMeasurement;
   try {
-    measurement = await runSwapScript<AlignMeasurement>(ctx.deps, ['align', '--ffmpeg', ffmpegPath, '--original', row.FolderPath, '--new', w.newFilePath, ...(originalLossy ? ['--original-lossy'] : [])], { timeoutMs: 300_000 });
+    measurement = await runSwapScript<AlignMeasurement>(ctx.deps, ['align', '--ffmpeg', ffmpegBin(), '--original', row.FolderPath, '--new', w.newFilePath, ...(originalLossy ? ['--original-lossy'] : [])], { timeoutMs: 300_000 });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     return skip(`The two files couldn't be compared (${msg}), so it wasn't swapped.`, { status: 'unchecked', note: msg });
@@ -787,10 +783,16 @@ async function writeSwapFile(p: PlannedSwap, deps: SwapDeps): Promise<Written> {
     '-f', 'aiff', '-n', tmp,
   ];
   const bytes = await statBytes(p.newFilePath);
-  const r = await runCapture(ffmpegPath, args, 15 * 60_000);
-  if (r.code !== 0) {
+  let msg: string | null = null;
+  try {
+    await runMedia(ffmpegBin(), args, { timeoutMs: 15 * 60_000 });
+  } catch (err) {
+    // The last stderr line explains a failed write (-loglevel error); without
+    // one, the reason itself (not found, timed out, exit code).
+    msg = (err instanceof MediaRunError && err.stderr.trim().split('\n').pop()) || (err instanceof Error ? err.message : String(err));
+  }
+  if (msg !== null) {
     await fs.unlink(tmp).catch(() => {});
-    const msg = r.stderr.trim().split('\n').pop() || `ffmpeg exited ${r.code}`;
     recordWrite({ op: 'convert', src: p.newFilePath, dest: target, bytes, context: 'lossless-swap', outcome: 'error', error: msg });
     throw new Error(`couldn't write the AIFF (${msg})`);
   }

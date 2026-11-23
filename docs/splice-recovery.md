@@ -105,7 +105,7 @@ Splice's `filepath` filter matches against their own filenames. If your project 
 |---|---|
 | [`lib/launchBrowser.mjs`](../lib/launchBrowser.mjs) | Launches real Chrome with a per-site persistent profile. Avoids Chrome-for-Testing fingerprint. |
 | [`lib/spliceClient.mjs`](../lib/spliceClient.mjs) | Snags the Auth0 JWT from the persistent profile, caches it with expiry, talks to `surfaces-graphql.splice.com`. Rate-limited, retries on 401/429. |
-| [`lib/alsParser.mjs`](../lib/alsParser.mjs) | Decompresses `.als` (gzipped XML), regex-extracts `<Path Value="..."/>`, filters to `/Splice/` paths. |
+| `@btkulka/ableton-als` (shared package, `../packages/ableton-als`) | Reads the `.als` (gzipped XML) and lists the samples it loads that are missing on disk (`findMissingSamples`): sample references only, project-relative paths resolved, Live 9 to 12 layouts. |
 | [`splice-recover.mjs`](../splice-recover.mjs) | CLI that wires the above together. |
 | [`splice-api-recon.mjs`](../splice-api-recon.mjs) | One-time API recon / login helper. |
 

@@ -1,7 +1,7 @@
 import fs from 'fs/promises';
 import path from 'path';
-import { spawn } from 'child_process';
 import { parseFile, type IAudioMetadata } from 'music-metadata';
+import { pcmCodec, resolveFfmpeg, runMedia } from '@btkulka/media-kit';
 import NodeID3 from 'node-id3';
 import { checkTrackHealth } from './trackHealthCheck';
 import { AUDIO_EXTENSIONS, METADATA_CONCURRENCY } from './constants';
@@ -16,7 +16,7 @@ import type { TrackHealth, TrackInfo, UpdateTagsParams, ScanProgress } from '../
 export type { TrackHealth, TrackInfo, UpdateTagsParams, ScanProgress };
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
-const ffmpegPath: string = require('ffmpeg-static');
+const ffmpegStatic: string | null = require('ffmpeg-static');
 
 const log = createScopedLogger('TrackScanner');
 
@@ -437,7 +437,7 @@ async function updateTagsFfmpeg(params: UpdateTagsParams): Promise<string> {
       const srcMeta = await parseFile(filePath, { duration: false, skipCovers: true });
       bits = srcMeta.format?.bitsPerSample || 16;
     } catch { /* fall back to 16-bit */ }
-    audioCodec = bits >= 32 ? 'pcm_s32be' : bits >= 24 ? 'pcm_s24be' : 'pcm_s16be';
+    audioCodec = pcmCodec('aiff', bits as 16 | 24 | 32);
   }
   args.push('-map', '0:a', '-c:a', audioCodec, '-map_metadata', '0');
 
@@ -489,24 +489,20 @@ async function updateTagsFfmpeg(params: UpdateTagsParams): Promise<string> {
   log.info('Writing tags via ffmpeg:', path.basename(filePath), ext !== outputExt ? `(converting to ${outputExt})` : '');
 
   try {
-    await new Promise<void>((resolve, reject) => {
-      const proc = spawn(ffmpegPath, args);
-      let stderr = '';
-      proc.stderr.on('data', (data: Buffer) => { stderr += data.toString(); });
-      proc.on('error', (err) => reject(new Error(`Failed to start ffmpeg: ${err.message}`)));
-      proc.on('close', (code) => {
-        if (code === 0) { resolve(); return; }
-        // Detect the specific AIFC header corruption we know how to repair,
-        // so the renderer can offer a fix-and-retry. Prefix on the message
-        // is the contract with the UI layer (custom error props don't
-        // survive Electron IPC).
-        if (/could not find COMM tag or invalid block_align value/i.test(stderr)) {
-          reject(new Error(`AIFC_CORRUPT_HEADER: ${filePath}`));
-          return;
-        }
-        reject(new Error(`ffmpeg tag write failed (code ${code}): ${stderr.split('\n').filter(l => l.includes('Error') || l.includes('error')).join('; ') || stderr.slice(-200)}`));
-      });
-    });
+    const ffmpeg = resolveFfmpeg({ bundled: ffmpegStatic });
+    if (!ffmpeg) throw new Error('Failed to start ffmpeg: ffmpeg not found');
+    // A failed start rejects with "Failed to start ffmpeg: …"; a non-zero exit is read here.
+    const { code, stderr } = await runMedia(ffmpeg, args, { check: false });
+    if (code !== 0) {
+      // Detect the specific AIFC header corruption we know how to repair,
+      // so the renderer can offer a fix-and-retry. Prefix on the message
+      // is the contract with the UI layer (custom error props don't
+      // survive Electron IPC).
+      if (/could not find COMM tag or invalid block_align value/i.test(stderr)) {
+        throw new Error(`AIFC_CORRUPT_HEADER: ${filePath}`);
+      }
+      throw new Error(`ffmpeg tag write failed (code ${code}): ${stderr.split('\n').filter(l => l.includes('Error') || l.includes('error')).join('; ') || stderr.slice(-200)}`);
+    }
 
     await fs.rename(tempPath, finalPath);
     // Remove original WAV/FLAC after successful conversion to AIFF (recoverable via Trash).

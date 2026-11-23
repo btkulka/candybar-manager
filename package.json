@@ -30,7 +30,6 @@
     "music-metadata": "^10.7.4",
     "node-id3": "^0.2.9",
     "playwright": "^1.58.2",
-    "soundcloud.ts": "^0.7.1",
     "zod": "^4.3.6"
   },
   "overrides": {
@@ -38,8 +37,12 @@
     "@tootallnate/once": "^3.0.1"
   },
   "devDependencies": {
+    "@btkulka/ableton-als": "file:../packages/ableton-als",
     "@btkulka/electron-kit": "file:../packages/electron-kit",
+    "@btkulka/media-kit": "file:../packages/media-kit",
     "@btkulka/proc-kit": "file:../packages/proc-kit",
+    "@btkulka/soundcloud-client": "file:../packages/soundcloud-client",
+    "@btkulka/spotify-client": "file:../packages/spotify-client",
     "@electron/rebuild": "^4.0.3",
     "@types/better-sqlite3": "^7.6.13",
     "@types/jsdom": "^28.0.0",

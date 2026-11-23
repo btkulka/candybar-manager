@@ -1,104 +1,35 @@
 /**
- * Spotify API client for basic track/artist search
- * Uses Client Credentials flow (no user auth needed for search)
+ * Spotify through the API key (client-credentials flow; public data only), on
+ * @btkulka/spotify-client: the token, 401 refresh, 429 waits, search, playlist
+ * paging and the flattened track/artist shapes live there. What stays here is
+ * Track Lab's: one client per credential pair, its log lines, and the
+ * by-id lookup that drops malformed Rekordbox ids.
  */
 
+import {
+  createSpotifyClient,
+  toTrack,
+  SpotifyApiError,
+  type SpotifyClient,
+  type SpotifyCredentials,
+  type SpotifyPlaylistInfo,
+  type SpotifySearchResult,
+  type SpotifyTrack,
+  type SpotifyTrackObject,
+} from '@btkulka/spotify-client';
 import { createScopedLogger } from './logger';
+
+export type { SpotifyArtist, SpotifyCredentials, SpotifyPlaylistInfo, SpotifySearchResult, SpotifyTrack } from '@btkulka/spotify-client';
 
 const log = createScopedLogger('Spotify');
 
-export type SpotifyCredentials = {
-  clientId: string;
-  clientSecret: string;
-};
+let current: { key: string; client: SpotifyClient } | null = null;
 
-export type SpotifyTrack = {
-  id: string;
-  name: string;
-  artists: string[];
-  album: string;
-  album_image_url: string | null;
-  release_year: string | null;
-  duration_ms: number;
-  preview_url: string | null;
-  external_url: string;
-  popularity: number;
-};
-
-export type SpotifyArtist = {
-  id: string;
-  name: string;
-  genres: string[];
-  popularity: number;
-  external_url: string;
-  image_url: string | null;
-};
-
-export type SpotifySearchResult = {
-  tracks: SpotifyTrack[];
-  artists: SpotifyArtist[];
-};
-
-type TokenCache = {
-  token: string;
-  expiresAt: number;
-};
-
-let tokenCache: TokenCache | null = null;
-
-const DEFAULT_TIMEOUT_MS = 15_000;
-
-async function fetchWithTimeout(
-  input: string,
-  init: RequestInit = {},
-  timeoutMs = DEFAULT_TIMEOUT_MS
-): Promise<Response> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    return await fetch(input, { ...init, signal: controller.signal });
-  } catch (err) {
-    if ((err as Error).name === 'AbortError') {
-      throw new Error(`Spotify request timed out after ${timeoutMs}ms: ${input}`);
-    }
-    throw err;
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-async function getAccessToken(credentials: SpotifyCredentials): Promise<string> {
-  // Return cached token if still valid (with 60s buffer)
-  if (tokenCache && Date.now() < tokenCache.expiresAt - 60000) {
-    return tokenCache.token;
-  }
-
-  const { clientId, clientSecret } = credentials;
-  const auth = Buffer.from(`${clientId}:${clientSecret}`).toString('base64');
-
-  const response = await fetchWithTimeout('https://accounts.spotify.com/api/token', {
-    method: 'POST',
-    headers: {
-      'Authorization': `Basic ${auth}`,
-      'Content-Type': 'application/x-www-form-urlencoded'
-    },
-    body: 'grant_type=client_credentials'
-  });
-
-  if (!response.ok) {
-    const error = await response.text();
-    log.error('Spotify auth failed:', error);
-    throw new Error(`Spotify auth failed: ${error}`);
-  }
-
-  const data = await response.json() as { access_token: string; expires_in: number };
-
-  tokenCache = {
-    token: data.access_token,
-    expiresAt: Date.now() + data.expires_in * 1000
-  };
-
-  return tokenCache.token;
+/** The client for these credentials, kept while they stay the same so its token is reused. */
+function spotifyFor(credentials: SpotifyCredentials): SpotifyClient {
+  const key = `${credentials.clientId}\n${credentials.clientSecret}`;
+  if (current?.key !== key) current = { key, client: createSpotifyClient(credentials) };
+  return current.client;
 }
 
 export async function searchSpotify(
@@ -106,279 +37,50 @@ export async function searchSpotify(
   credentials: SpotifyCredentials,
   options: { type?: ('track' | 'artist')[]; limit?: number } = {}
 ): Promise<SpotifySearchResult> {
-  const { type = ['track', 'artist'], limit = 20 } = options;
-  const token = await getAccessToken(credentials);
-
-  const params = new URLSearchParams({
-    q: query,
-    type: type.join(','),
-    limit: limit.toString()
-  });
-
-  const response = await fetchWithTimeout(`https://api.spotify.com/v1/search?${params}`, {
-    headers: {
-      'Authorization': `Bearer ${token}`
-    }
-  });
-
-  if (!response.ok) {
-    const error = await response.text();
-    log.error('Spotify search failed:', error);
-    throw new Error(`Spotify search failed: ${error}`);
+  try {
+    return await spotifyFor(credentials).search(query, options);
+  } catch (err) {
+    log.error('Spotify search failed:', err instanceof Error ? err.message : err);
+    throw err;
   }
-
-  const data = await response.json() as {
-    tracks?: { items: SpotifyApiTrack[] };
-    artists?: { items: SpotifyApiArtist[] };
-  };
-
-  return {
-    tracks: (data.tracks?.items ?? []).map(mapTrack),
-    artists: (data.artists?.items ?? []).map(mapArtist)
-  };
 }
 
-// Internal Spotify API types
-type SpotifyApiTrack = {
-  id: string;
-  name: string;
-  artists: { name: string }[];
-  album: { name: string; images: { url: string }[]; release_date?: string };
-  duration_ms: number;
-  preview_url: string | null;
-  external_urls: { spotify: string };
-  popularity: number;
-};
-
-type SpotifyApiArtist = {
-  id: string;
-  name: string;
-  genres: string[];
-  popularity: number;
-  external_urls: { spotify: string };
-  images: { url: string }[];
-};
-
-function mapTrack(t: SpotifyApiTrack): SpotifyTrack {
-  return {
-    id: t.id,
-    name: t.name,
-    artists: t.artists.map(a => a.name),
-    album: t.album.name,
-    album_image_url: t.album.images[0]?.url ?? null,
-    release_year: t.album.release_date?.substring(0, 4) ?? null,
-    duration_ms: t.duration_ms,
-    preview_url: t.preview_url,
-    external_url: t.external_urls.spotify,
-    popularity: t.popularity
-  };
-}
-
-function mapArtist(a: SpotifyApiArtist): SpotifyArtist {
-  return {
-    id: a.id,
-    name: a.name,
-    genres: a.genres,
-    popularity: a.popularity,
-    external_url: a.external_urls.spotify,
-    image_url: a.images[0]?.url ?? null
-  };
-}
-
-// ========== Playlist Support ==========
-
-/**
- * Parse a Spotify playlist URL/URI into a playlist ID.
- * Supports:
- *  - https://open.spotify.com/playlist/37i9dQZF1DXcBWIGoYBM5M
- *  - https://open.spotify.com/playlist/37i9dQZF1DXcBWIGoYBM5M?si=...
- *  - spotify:playlist:37i9dQZF1DXcBWIGoYBM5M
- *  - 37i9dQZF1DXcBWIGoYBM5M (bare ID, 22 chars alphanumeric)
- */
-export function parseSpotifyPlaylistUrl(input: string): string | null {
-  if (!input) return null;
-  const trimmed = input.trim();
-
-  // URL format
-  const urlMatch = trimmed.match(/open\.spotify\.com\/playlist\/([a-zA-Z0-9]+)/);
-  if (urlMatch) return urlMatch[1];
-
-  // URI format
-  const uriMatch = trimmed.match(/^spotify:playlist:([a-zA-Z0-9]+)$/);
-  if (uriMatch) return uriMatch[1];
-
-  // Bare ID (Spotify IDs are 22 chars, base62)
-  if (/^[a-zA-Z0-9]{22}$/.test(trimmed)) return trimmed;
-
-  return null;
-}
-
-export type SpotifyPlaylistInfo = {
-  id: string;
-  name: string;
-  description: string;
-  trackCount: number;
-  imageUrl: string | null;
-  externalUrl: string;
-  owner: string;
-};
-
-type SpotifyApiPlaylistTrackItem = {
-  track: SpotifyApiTrack | null; // null for local files
-};
-
-/**
- * Fetch all tracks from a public Spotify playlist.
- * Uses Client Credentials flow — only works for public playlists.
- */
+/** Every track of a public playlist (the API key can't read private ones). */
 export async function getPlaylistTracks(
   playlistInput: string,
   credentials: SpotifyCredentials,
   onProgress?: (loaded: number, total: number) => void
 ): Promise<{ playlist: SpotifyPlaylistInfo; tracks: SpotifyTrack[] }> {
-  const playlistId = parseSpotifyPlaylistUrl(playlistInput);
-  if (!playlistId) {
-    throw new Error('Invalid Spotify playlist URL. Please use a link like: https://open.spotify.com/playlist/...');
-  }
-
-  const token = await getAccessToken(credentials);
-
-  // Fetch playlist metadata
-  const metaResponse = await fetchWithTimeout(
-    `https://api.spotify.com/v1/playlists/${playlistId}?fields=id,name,description,external_urls,images,owner(display_name),tracks(total)`,
-    { headers: { Authorization: `Bearer ${token}` } }
-  );
-
-  if (!metaResponse.ok) {
-    if (metaResponse.status === 404) {
-      throw new Error('Playlist not found. Make sure the playlist exists and is public.');
-    }
-    if (metaResponse.status === 403) {
-      throw new Error('This playlist is private. Only public playlists are supported.');
-    }
-    const errText = await metaResponse.text();
-    throw new Error(`Spotify API error: ${errText}`);
-  }
-
-  const meta = await metaResponse.json() as {
-    id: string;
-    name: string;
-    description: string;
-    external_urls: { spotify: string };
-    images: { url: string }[];
-    owner: { display_name: string };
-    tracks: { total: number };
-  };
-
-  const playlist: SpotifyPlaylistInfo = {
-    id: meta.id,
-    name: meta.name,
-    description: meta.description || '',
-    trackCount: meta.tracks.total,
-    imageUrl: meta.images[0]?.url ?? null,
-    externalUrl: meta.external_urls.spotify,
-    owner: meta.owner.display_name
-  };
-
-  // Paginate through all tracks (50 per page)
-  const tracks: SpotifyTrack[] = [];
-  const total = meta.tracks.total;
-  let offset = 0;
-  const limit = 50;
-  const MAX_RETRIES_PER_PAGE = 5;
-  const MAX_RETRY_SECONDS = 60;
-  let retriesThisPage = 0;
-
-  while (offset < total) {
-    const pageToken = await getAccessToken(credentials); // refresh if needed
-    const pageResponse = await fetchWithTimeout(
-      `https://api.spotify.com/v1/playlists/${playlistId}/tracks?offset=${offset}&limit=${limit}&fields=items(track(id,name,artists,album,duration_ms,preview_url,external_urls,popularity)),total`,
-      { headers: { Authorization: `Bearer ${pageToken}` } }
-    );
-
-    if (!pageResponse.ok) {
-      if (pageResponse.status === 401) {
-        tokenCache = null; // force refresh on next call
-      }
-      if (pageResponse.status === 429 && retriesThisPage < MAX_RETRIES_PER_PAGE) {
-        const retryAfter = Math.min(
-          parseInt(pageResponse.headers.get('retry-after') || '2', 10),
-          MAX_RETRY_SECONDS
-        );
-        retriesThisPage += 1;
-        log.warn(`Spotify rate limited (retry ${retriesThisPage}/${MAX_RETRIES_PER_PAGE}), waiting ${retryAfter}s`);
-        await new Promise(r => setTimeout(r, retryAfter * 1000));
-        continue; // retry same offset
-      }
-      const errText = await pageResponse.text();
-      throw new Error(`Spotify API error fetching tracks: ${errText}`);
-    }
-
-    retriesThisPage = 0;
-
-    const page = await pageResponse.json() as { items: SpotifyApiPlaylistTrackItem[] };
-
-    for (const item of page.items) {
-      if (item.track) {
-        tracks.push(mapTrack(item.track));
-      }
-    }
-
-    offset += limit;
-    onProgress?.(Math.min(offset, total), total);
-
-    // Small delay to avoid rate limiting on large playlists
-    if (offset < total) {
-      await new Promise(r => setTimeout(r, 100));
-    }
-  }
-
+  const result = await spotifyFor(credentials).getPlaylistTracks(playlistInput, onProgress);
+  const { playlist, tracks } = result;
   log.info(`Fetched ${tracks.length} tracks from playlist "${playlist.name}" (${playlist.trackCount} total, ${playlist.trackCount - tracks.length} local/unavailable skipped)`);
-
-  return { playlist, tracks };
+  return result;
 }
 
 /**
  * Look up tracks by Spotify ID, 50 per request (the API's cap). IDs Spotify
  * no longer knows come back as null and are left out of the map.
  *
- * A 429 waits out Retry-After and tries again. A 400 means one id in the batch
- * is malformed (a truncated Rekordbox URI), and Spotify rejects the whole batch
- * for it, so the batch is halved until the bad id stands alone and is dropped —
- * one bad entry can't fail a whole playlist.
+ * The client waits out 429s and refreshes the token on a 401. A 400 means one
+ * id in the batch is malformed (a truncated Rekordbox URI), and Spotify rejects
+ * the whole batch for it, so the batch is halved until the bad id stands alone
+ * and is dropped — one bad entry can't fail a whole playlist.
  */
 export async function getSpotifyTracksByIds(
   ids: string[],
   credentials: SpotifyCredentials
 ): Promise<Map<string, SpotifyTrack>> {
+  const client = spotifyFor(credentials);
   const found = new Map<string, SpotifyTrack>();
-  const MAX_RETRIES = 5;
-  const MAX_RETRY_SECONDS = 60;
 
-  async function lookup(batch: string[], retries = 0): Promise<void> {
-    const token = await getAccessToken(credentials);
-    const response = await fetchWithTimeout(
-      `https://api.spotify.com/v1/tracks?ids=${batch.map(encodeURIComponent).join(',')}`,
-      { headers: { Authorization: `Bearer ${token}` } }
-    );
-    if (response.ok) {
-      const data = await response.json() as { tracks: Array<SpotifyApiTrack | null> };
-      for (const t of data.tracks) {
-        if (t) found.set(t.id, mapTrack(t));
+  async function lookup(batch: string[]): Promise<void> {
+    try {
+      const data = await client.get<{ tracks?: Array<SpotifyTrackObject | null> }>(`/tracks?ids=${batch.map(encodeURIComponent).join(',')}`);
+      for (const t of data?.tracks ?? []) {
+        if (t) found.set(t.id, toTrack(t));
       }
-      return;
-    }
-    if (response.status === 429 && retries < MAX_RETRIES) {
-      const wait = Math.min(parseInt(response.headers.get('retry-after') || '2', 10) || 2, MAX_RETRY_SECONDS);
-      log.warn(`Spotify rate limited looking up tracks (retry ${retries + 1}/${MAX_RETRIES}), waiting ${wait}s`);
-      await new Promise(r => setTimeout(r, wait * 1000));
-      return lookup(batch, retries + 1);
-    }
-    if (response.status === 401 && retries === 0) {
-      tokenCache = null;
-      return lookup(batch, retries + 1);
-    }
-    if (response.status === 400) {
+    } catch (err) {
+      if (!(err instanceof SpotifyApiError) || err.status !== 400) throw err;
       if (batch.length === 1) {
         log.warn(`Spotify rejected track id ${batch[0]} as invalid — skipped`);
         return;
@@ -386,10 +88,7 @@ export async function getSpotifyTracksByIds(
       const mid = Math.ceil(batch.length / 2);
       await lookup(batch.slice(0, mid));
       await lookup(batch.slice(mid));
-      return;
     }
-    const errText = await response.text();
-    throw new Error(`Spotify API error looking up tracks: ${errText}`);
   }
 
   for (let i = 0; i < ids.length; i += 50) {
@@ -400,7 +99,7 @@ export async function getSpotifyTracksByIds(
 
 export async function testSpotifyConnection(credentials: SpotifyCredentials): Promise<boolean> {
   try {
-    await getAccessToken(credentials);
+    await spotifyFor(credentials).getToken();
     return true;
   } catch (error) {
     log.warn('Spotify connection test failed:', error);

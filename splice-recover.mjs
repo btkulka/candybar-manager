@@ -20,7 +20,7 @@
 
 import fs from 'fs';
 import path from 'path';
-import { findMissingSpliceSamples } from './lib/alsParser.mjs';
+import { findMissingSamples } from '@btkulka/ableton-als';
 import { searchSamples, downloadSample } from './lib/spliceClient.mjs';
 
 const args = process.argv.slice(2);
@@ -39,7 +39,7 @@ if (!fs.existsSync(alsPath)) {
 const VERBOSE = true;
 
 console.log(`scanning ${alsPath}`);
-const scan = findMissingSpliceSamples(alsPath);
+const scan = findMissingSamples(alsPath);
 console.log(`  total sample refs: ${scan.totalRefs}`);
 console.log(`  splice-flavored:   ${scan.spliceRefs}`);
 console.log(`  missing on disk:   ${scan.missing.length}`);

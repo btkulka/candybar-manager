@@ -24,7 +24,10 @@ publishes the release. `npm run dist` builds them locally into `release/`.
 
 ### Mac
 
-The shared packages it links as `file:../packages/*` come from `btkulka/packages`.
+The shared packages it links as `file:../packages/*` (electron-kit, proc-kit,
+media-kit, spotify-client, soundcloud-client, ableton-als) come from
+`btkulka/packages`. They're bundled into the app's main process; see
+CLAUDE.md for where they may and may not be imported.
 
 ```bash
 git clone https://github.com/btkulka/candybar-manager.git ~/source/candybar-manager

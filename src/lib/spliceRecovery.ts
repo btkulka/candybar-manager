@@ -4,6 +4,7 @@ import os from 'os';
 import { pathToFileURL } from 'url';
 import { app } from 'electron';
 import type { BrowserContext } from 'playwright';
+import { findMissingSamples } from '@btkulka/ableton-als';
 import { createScopedLogger } from './logger';
 
 const log = createScopedLogger('SpliceRecovery');
@@ -73,9 +74,6 @@ export type SpliceDownloadReport = {
 
 // --- .mjs module bindings (lazy) ------------------------------------------
 
-type AlsParserModule = {
-  findMissingSpliceSamples: (alsPath: string) => SpliceScanResult;
-};
 type SpliceClientModule = {
   searchSamples: (opts: { filepath?: string | null; query?: string | null; licensed?: boolean | null; page?: number; limit?: number; verbose?: boolean }) => Promise<{ assets: Array<{ uuid: string; filename: string; name: string; coverUrl: string | null; packName: string | null; packSlug: string | null }> }>;
   downloadSample: (assetUuid: string, destPath: string, opts?: { verbose?: boolean }) => Promise<string>;
@@ -87,14 +85,9 @@ type LaunchBrowserModule = {
   launchSiteBrowser: (opts: { profile: string; headless?: boolean; extraArgs?: string[] }) => Promise<BrowserContext>;
 };
 
-let alsParserMod: AlsParserModule | null = null;
 let spliceClientMod: SpliceClientModule | null = null;
 let launchBrowserMod: LaunchBrowserModule | null = null;
 
-async function getAlsParser(): Promise<AlsParserModule> {
-  if (!alsParserMod) alsParserMod = await import(spliceLibUrl('alsParser.mjs')) as AlsParserModule;
-  return alsParserMod;
-}
 async function getSpliceClient(): Promise<SpliceClientModule> {
   if (!spliceClientMod) spliceClientMod = await import(spliceLibUrl('spliceClient.mjs')) as SpliceClientModule;
   return spliceClientMod;
@@ -204,8 +197,7 @@ export async function startLogin(): Promise<{ ok: boolean; error?: string }> {
 
 export async function scan(alsPath: string): Promise<SpliceScanResult> {
   if (!fs.existsSync(alsPath)) throw new Error(`File not found: ${alsPath}`);
-  const { findMissingSpliceSamples } = await getAlsParser();
-  return findMissingSpliceSamples(alsPath);
+  return findMissingSamples(alsPath);
 }
 
 type SearchAsset = {

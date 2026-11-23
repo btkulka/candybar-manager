@@ -9,12 +9,12 @@
 
 import { promises as fs } from 'fs';
 import path from 'path';
-import { spawn } from 'child_process';
 import { createRequire } from 'module';
 import { parseFile } from 'music-metadata';
+import { pcmCodec, resolveFfmpeg, runMedia } from '@btkulka/media-kit';
 
 const require = createRequire(import.meta.url);
-const ffmpegPath = require('ffmpeg-static');
+const ffmpegPath = resolveFfmpeg({ bundled: require('ffmpeg-static') });
 
 const REPORT = process.env.MATCH_REPORT || '/tmp/candybar-missing/xml_match_report.json';
 const XML = '/Volumes/Time Machin/rekordbox/export.xml';
@@ -24,30 +24,11 @@ function pathToLocation(p) {
   return 'file://localhost' + encodeURI(p);
 }
 
-function runFfmpeg(args) {
-  return new Promise((resolve, reject) => {
-    const proc = spawn(ffmpegPath, args);
-    let stderr = '';
-    proc.stderr.on('data', (d) => { stderr += d.toString(); });
-    proc.on('error', (e) => reject(new Error(`spawn failed: ${e.message}`)));
-    proc.on('close', (code) => {
-      if (code === 0) resolve();
-      else reject(new Error(`ffmpeg exit ${code}: ${stderr.slice(-400)}`));
-    });
-  });
-}
-
 async function detectBitsPerSample(p) {
   try {
     const m = await parseFile(p, { duration: false, skipCovers: true });
     return m.format?.bitsPerSample || 16;
   } catch { return 16; }
-}
-
-function aiffPcmCodec(bits) {
-  if (bits >= 32) return 'pcm_s32be';
-  if (bits >= 24) return 'pcm_s24be';
-  return 'pcm_s16be';
 }
 
 // Process a single match. Returns { src, finalPath, converted, tagsUpdated }
@@ -102,7 +83,7 @@ async function processMatch(match) {
 
   if (willConvert && ext === '.flac') {
     const bits = await detectBitsPerSample(src);
-    args.push('-c:a', aiffPcmCodec(bits));
+    args.push('-c:a', pcmCodec('aiff', bits));
   } else {
     args.push('-c:a', 'copy');
   }
@@ -116,7 +97,8 @@ async function processMatch(match) {
   }
   args.push('-y', tempPath);
 
-  await runFfmpeg(args);
+  if (!ffmpegPath) throw new Error('ffmpeg not found (no ffmpeg-static, none on PATH)');
+  await runMedia(ffmpegPath, args);
 
   // Atomic publish: link() into place, fails with EEXIST if another process
   // created finalPath during ffmpeg. fs.rename() would silently overwrite.

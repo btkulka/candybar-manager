@@ -23,3 +23,24 @@ patch and tag that.
 
 The one exception: a push that changes nothing the app ships (only this file,
 README.md or tests) needs no release. Say so when pushing.
+
+## Shared packages (BPM)
+
+Ben's shared packages are linked from `../packages` as **devDependencies**:
+`@btkulka/media-kit` (ffmpeg, ffprobe, yt-dlp), `@btkulka/proc-kit` (media-kit's
+process helpers), `@btkulka/spotify-client`, `@btkulka/soundcloud-client`,
+`@btkulka/ableton-als` and `@btkulka/electron-kit`. electron-vite inlines
+devDependencies into `dist/main` (`externalizeDepsPlugin` leaves only
+`dependencies` as require()s), and the checkout scripts (`splice-recover.mjs`,
+`yt-vocal-split.mjs` with `lib/youtubeDl.mjs`, `apply-xml-matches.mjs`,
+`scripts/`) load them from `node_modules`.
+
+Never import one from code the .dmg runs unbundled: `src/mcp-server.ts` and
+everything `tsconfig.mcp.json` compiles with it into `dist/mcp`, or the `lib/`
+and `bin/` files the app loads at runtime. The .dmg ships only
+`dependencies`, and electron-builder 26 can't ship a `file:` package there (it
+fails with "dependency path is undefined" on media-kit's proc-kit). That's why
+`trackConverter.ts` (in the MCP build) and `lib/sourcing/` (downloads,
+previews, playlist, soundcloud) keep their own ffmpeg, Spotify and SoundCloud
+code. `npx tsc -p tsconfig.mcp.json --noEmit --listFiles | grep btkulka` must
+print nothing.

@@ -221,7 +221,14 @@ async function main() {
 
   // (c/d) YouTube → mp3
   stdout.write(`\n▶ Downloading audio → mp3  (into ${outDir})\n`);
-  const mp3Path = await downloadAudioMp3(target.url, outDir);
+  let downloadShown = false;
+  const mp3Path = await downloadAudioMp3(target.url, outDir, {
+    onProgress: ({ percent }) => {
+      downloadShown = true;
+      stdout.write(`\r  downloading… ${percent.toFixed(1)}%   `);
+    },
+  });
+  if (downloadShown) stdout.write('\n');
   stdout.write(`  ✔ ${mp3Path}\n`);
 
   // (e) upload + split
