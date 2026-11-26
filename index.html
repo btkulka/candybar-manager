@@ -429,7 +429,7 @@
               <div class="card-header buy-picker-head">
                 <div>
                   <h3 id="source-picker-title">Add a playlist</h3>
-                  <p class="card-desc">Paste the link to a Spotify playlist or a SoundCloud set. In either app, choose Share, then Copy link.</p>
+                  <p class="card-desc">Search Spotify for a playlist, or paste the link to a Spotify playlist or a SoundCloud set (in either app, choose Share, then Copy link).</p>
                 </div>
               </div>
               <div id="source-source-slot"></div>
@@ -1572,7 +1572,10 @@
                 <div><h3>Source a playlist</h3><p class="card-desc">What's missing from your library, and the full-quality copy to get. Track Lab checks it, then Claude reviews every match: tracks you already have, wrong records, other versions.</p></div>
               </div>
               <div class="skill-card-form">
-                <input type="text" id="skill-source-link" placeholder="Spotify playlist or SoundCloud set link" spellcheck="false" aria-label="Playlist link" />
+                <div class="skill-source-field">
+                  <input type="text" id="skill-source-link" placeholder="Search Spotify playlists, or paste a Spotify or SoundCloud link" autocomplete="off" spellcheck="false" aria-label="Search Spotify playlists, or paste a playlist link" />
+                  <div class="buy-search" id="skill-source-search"></div>
+                </div>
                 <div class="skill-card-actions">
                   <button type="button" class="btn-ghost btn-sm" id="skill-source-csv" data-tooltip="Use a spreadsheet (CSV) instead, like an Exportify export">Use a spreadsheet…</button>
                   <button type="button" class="btn-primary btn-sm" id="skill-source-run">Source it</button>

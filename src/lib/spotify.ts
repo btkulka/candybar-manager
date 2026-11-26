@@ -12,14 +12,16 @@ import {
   SpotifyApiError,
   type SpotifyClient,
   type SpotifyCredentials,
+  type SpotifyItemSearchResult,
   type SpotifyPlaylistInfo,
+  type SpotifySearchItemsOptions,
   type SpotifySearchResult,
   type SpotifyTrack,
   type SpotifyTrackObject,
 } from '@btkulka/spotify-client';
 import { createScopedLogger } from './logger';
 
-export type { SpotifyArtist, SpotifyCredentials, SpotifyPlaylistInfo, SpotifySearchResult, SpotifyTrack } from '@btkulka/spotify-client';
+export type { SpotifyArtist, SpotifyCredentials, SpotifyItemSearchResult, SpotifyPlaylistInfo, SpotifySearchResult, SpotifySearchType, SpotifyTrack } from '@btkulka/spotify-client';
 
 const log = createScopedLogger('Spotify');
 
@@ -39,6 +41,21 @@ export async function searchSpotify(
 ): Promise<SpotifySearchResult> {
   try {
     return await spotifyFor(credentials).search(query, options);
+  } catch (err) {
+    log.error('Spotify search failed:', err instanceof Error ? err.message : err);
+    throw err;
+  }
+}
+
+/** The search box on Find and buy (and search_spotify): playlists, tracks,
+ *  albums, artists, podcasts or episodes, each flattened into a SpotifyItem. */
+export async function searchSpotifyItems(
+  query: string,
+  credentials: SpotifyCredentials,
+  options: SpotifySearchItemsOptions = {}
+): Promise<SpotifyItemSearchResult> {
+  try {
+    return await spotifyFor(credentials).searchItems(query, options);
   } catch (err) {
     log.error('Spotify search failed:', err instanceof Error ? err.message : err);
     throw err;

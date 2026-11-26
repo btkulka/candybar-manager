@@ -1,7 +1,7 @@
 import type { ClaudeAskResult, ClaudeProfile, ClaudeSoundcloudParams, ClaudeSoundcloudResult, ClaudeStatus, ClaudeTrackTagsResult, TrackTagField } from '../types';
 import { PROFILE_QUESTIONS } from '../lib/claude/userProfile';
 import { escapeHtml, showToast, plural, setActiveTab } from './shared';
-import { sourceWithClaude } from './source';
+import { looksLikeLink, mountPlaylistSearch, pickedPlaylistLabel, sourceWithClaude } from './source';
 import { upgradeWithClaude } from './upgrade';
 import {
   claudeBridge, startClaudeJob, getClaudeStatus, describeClaudeStatus, ensureClaudeReady, ClaudeJobError,
@@ -835,21 +835,23 @@ let skillCsv: string | null = null;
 let skillPlaylistsLoaded = false;
 
 /** What the "Source a playlist" card would check, or null with why. */
-function skillSourceSpec(): { spec: { kind: 'spotify' | 'soundcloud' | 'csv'; ref: string } | null; help: string } {
+function skillSourceSpec(): { spec: { kind: 'spotify' | 'soundcloud' | 'csv'; ref: string } | null; help: string; searching?: boolean } {
   if (skillCsv) return { spec: { kind: 'csv', ref: skillCsv }, help: `Spreadsheet: ${skillCsv.split('/').pop()}` };
   const link = ($<HTMLInputElement>('skill-source-link')?.value ?? '').trim();
   if (!link) return { spec: null, help: '' };
   if (SPOTIFY_PLAYLIST_RE.test(link)) return { spec: { kind: 'spotify', ref: link }, help: 'A Spotify playlist.' };
   if (SOUNDCLOUD_SET_RE.test(link)) return { spec: { kind: 'soundcloud', ref: link }, help: 'A SoundCloud set.' };
+  if (!looksLikeLink(link)) return { spec: null, help: 'Pick a playlist from the list, or paste a link.', searching: true };
   return { spec: null, help: "That isn't a Spotify playlist or a SoundCloud set link." };
 }
 
-function refreshSkillSource(): void {
-  const { spec, help } = skillSourceSpec();
+/** `picked`: the playlist chosen from the search, named in the help line. */
+function refreshSkillSource(picked?: string): void {
+  const { spec, help, searching } = skillSourceSpec();
   const run = $<HTMLButtonElement>('skill-source-run');
   if (run) run.disabled = !spec;
   const el = $('skill-source-help');
-  if (el) { el.textContent = help; el.classList.toggle('is-error', !spec && !!help); }
+  if (el) { el.textContent = picked && spec ? picked : help; el.classList.toggle('is-error', !spec && !!help && !searching); }
 }
 
 async function loadSkillPlaylists(): Promise<void> {
@@ -877,7 +879,18 @@ function initSkillsPage(): void {
   new MutationObserver(onShown).observe(page, { attributes: true, attributeFilter: ['class'] });
   onShown();
 
-  $<HTMLInputElement>('skill-source-link')?.addEventListener('input', () => { skillCsv = null; refreshSkillSource(); });
+  const sourceLink = $<HTMLInputElement>('skill-source-link');
+  const sourceSearch = $('skill-source-search');
+  // Words search Spotify playlists; a pick puts its link in the field.
+  if (sourceLink && sourceSearch) {
+    mountPlaylistSearch(sourceSearch, sourceLink, (item) => {
+      sourceLink.value = item.url;
+      skillCsv = null;
+      refreshSkillSource(`${pickedPlaylistLabel(item)}. A Spotify playlist.`);
+      $<HTMLButtonElement>('skill-source-run')?.focus();
+    });
+  }
+  sourceLink?.addEventListener('input', () => { skillCsv = null; refreshSkillSource(); });
   $('skill-source-csv')?.addEventListener('click', async () => {
     const picked = await window.candybar.selectPath('file').catch(() => null);
     if (typeof picked !== 'string' || !picked) return;

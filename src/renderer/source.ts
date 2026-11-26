@@ -8,6 +8,9 @@ import { showToast, setStatus, escapeHtml, setValue, getErrorMessage, plural, fo
 import { gateEmailFieldHtml, fillGateEmailField, commitGateEmail } from './gateEmail';
 import { confirmAction } from './confirmDialog';
 import { renderSourceInput, SOURCE_KIND_ICONS } from './sourceInputTemplate';
+import { mountSpotifySearch, type SpotifySearchHandle } from '@btkulka/spotify-client/search';
+import type { SpotifyItem } from '@btkulka/spotify-client';
+import '@btkulka/spotify-client/search.css';
 import { fillPlaylistCard } from './playlistCard';
 import {
   type Store, STORE_LABEL, autoSelectable, isOtherVersion, parsePriceDollars, toStoreMatch,
@@ -108,8 +111,10 @@ let csvPreviewStatus: HTMLDivElement;
 let csvPreviewStatusText: HTMLElement;
 let csvFileName: HTMLSpanElement;
 let clearCsvBtn: HTMLButtonElement;
-/** The one link field: a Spotify playlist or a SoundCloud set, told apart by the link. */
+/** The one link field: a Spotify playlist or a SoundCloud set, told apart by the
+ *  link, or words that search Spotify playlists. */
 let linkInput: HTMLInputElement;
+let linkDebounce: ReturnType<typeof setTimeout> | undefined;
 let linkIcon: HTMLElement;
 let linkStatus: HTMLElement;
 /** Inline error for a check that failed (what happened + what to do). */
@@ -342,9 +347,11 @@ function updateRunButton() {
   }
   const hint = sourceType === 'csv' && csvPath
     ? 'This spreadsheet needs an Artist column and a Title column'
-    : linkInput?.value.trim()
+    : linkInput?.value.trim() && looksLikeLink(linkInput.value.trim())
       ? 'That link isn\'t a Spotify playlist or a SoundCloud set'
-      : 'Paste a playlist link or choose a spreadsheet first';
+      : linkInput?.value.trim()
+        ? 'Pick a playlist from the search results first'
+        : 'Search for a playlist, paste a link or choose a spreadsheet first';
   runSearchBtn.setAttribute('data-tooltip-disabled', searching ? 'A check is already running' : hint);
   runSearchLabel.textContent = appendMode && resultsShown() ? 'Add to this list' : 'Check this playlist';
 }
@@ -453,9 +460,46 @@ const SPOTIFY_PLAYLIST = /open\.spotify\.com\/(?:intl-[a-z]+\/)?playlist\/[a-zA-
  *  process expands. */
 const SOUNDCLOUD_SET = /^(https?:\/\/)?(www\.|m\.)?soundcloud\.com\/[^/?#\s]+\/sets\/[^/?#\s]+|^(https?:\/\/)?on\.soundcloud\.com\/[A-Za-z0-9]+/i;
 
+/** A Spotify link, URI or bare playlist ID, which the field reads as a link. */
+const SPOTIFY_LINKISH = /open\.spotify\.com|spotify\.link|^spotify:|^[a-zA-Z0-9]{22}$/i;
+const SOUNDCLOUD_LINKISH = /soundcloud\.com|on\.soundcloud/i;
+
+/** Anything pasted that's a link rather than words to search Spotify for. */
+export function looksLikeLink(v: string): boolean {
+  return SPOTIFY_LINKISH.test(v) || SOUNDCLOUD_LINKISH.test(v) || /^[a-z][a-z0-9+.-]*:\/\//i.test(v) || /^(www\.)?[a-z0-9-]+(\.[a-z0-9-]+)+\/\S/i.test(v);
+}
+
+/**
+ * The Spotify playlist search under a link field (here, and Source a playlist on
+ * the Claude skills page): words in the field search Spotify playlists through
+ * the main process, and a link is left to the field's own reading. Mount it
+ * before the field's own listeners, so Enter on a highlighted result picks it.
+ */
+export function mountPlaylistSearch(slot: HTMLElement, input: HTMLInputElement, onPick: (item: SpotifyItem) => void): SpotifySearchHandle {
+  return mountSpotifySearch(slot, {
+    input,
+    types: ['playlist'],
+    source: { searchItems: (query, options) => window.candybar.spotifySearch(query, options) },
+    ignore: looksLikeLink,
+    onSelect: onPick,
+    describeError: (err) => {
+      const message = getErrorMessage(err).replace(/^Error invoking remote method '[^']*': (?:Error: )?/, '');
+      return /credentials not configured/i.test(message)
+        ? { message: 'Searching needs Spotify\'s API key. Pasting a playlist link works without it.', action: { label: 'Connect Spotify', run: () => requestOpenSettings('spotify') } }
+        : `Spotify search didn't work: ${message}`;
+    },
+  });
+}
+
+/** "Daft Punk Greatest Hits (by Red Franzen)": a picked playlist, for a field's help line. */
+export function pickedPlaylistLabel(item: SpotifyItem): string {
+  return `${item.name}${item.owner ? ` (by ${item.owner})` : ''}`;
+}
+
 /** Read the link field: which service it is, whether it's a playlist/set, and
  *  what to tell the person. A track, album or profile link is turned away here
- *  rather than failing later. */
+ *  rather than failing later. Words that aren't a link are a search: the
+ *  Spotify search box under the field shows playlists for them. */
 function validateLink(raw: string) {
   const v = raw.trim();
   spotifyPlaylistUrl = '';
@@ -467,7 +511,7 @@ function validateLink(raw: string) {
   if (!v) {
     if (!csvPath) sourceType = 'spotify';
     setFieldHelp(linkStatus, '', '');
-  } else if (/spotify/i.test(v) || /^[a-zA-Z0-9]{22}$/.test(v)) {
+  } else if (SPOTIFY_LINKISH.test(v)) {
     sourceType = 'spotify';
     icon = 'spotify';
     spotifyPlaylistUrl = v;
@@ -478,7 +522,7 @@ function validateLink(raw: string) {
         ? "That's a link to a single track, album or artist. Copy the link of a playlist instead."
         : "That doesn't look like a Spotify playlist link. It should start with https://open.spotify.com/playlist/",
     spotifyUrlValid ? 'ok' : 'error');
-  } else if (/soundcloud/i.test(v)) {
+  } else if (SOUNDCLOUD_LINKISH.test(v)) {
     sourceType = 'soundcloud';
     icon = 'soundcloud';
     soundcloudSetUrl = v;
@@ -487,9 +531,13 @@ function validateLink(raw: string) {
       ? 'SoundCloud set. Ready to check.'
       : "That's a SoundCloud link, but not to a set. A set link has /sets/ in it, like soundcloud.com/artist/sets/name.",
     soundcloudUrlValid ? 'ok' : 'error');
-  } else {
+  } else if (looksLikeLink(v)) {
     sourceType = 'spotify';
     setFieldHelp(linkStatus, "Track Lab doesn't recognise that link. Paste a link to a Spotify playlist or a SoundCloud set, or use a spreadsheet below.", 'error');
+  } else {
+    sourceType = 'spotify';
+    icon = 'search';
+    setFieldHelp(linkStatus, 'Pick a playlist from the list, or paste a link.', '');
   }
   linkIcon.innerHTML = SOURCE_KIND_ICONS[icon];
   linkIcon.dataset.kind = icon;
@@ -1870,7 +1918,7 @@ async function runSearch(spec?: SourceSpec): Promise<boolean> {
   if (!source) {
     showToast('warning', 'Add a playlist first',
       sourceType === 'csv' ? 'Choose a spreadsheet (CSV file) to check.'
-        : sourceType === 'spotify' ? 'Paste a link to a Spotify playlist.'
+        : sourceType === 'spotify' ? 'Search for a Spotify playlist and pick it, or paste its link.'
         : 'Paste a link to a SoundCloud set (it has /sets/ in it).');
     return false;
   }
@@ -2285,6 +2333,7 @@ export function initSource() {
         linkInput: 'source-link',
         linkIcon: 'source-link-icon',
         linkStatus: 'source-link-status',
+        searchSlot: 'source-link-search',
         dropZone: 'source-csv-drop-zone',
         fileDisplay: 'source-csv-file-display',
         pathInput: 'source-csv',
@@ -2326,10 +2375,19 @@ export function initSource() {
 
   validateLink('');
 
+  // Words in the field search Spotify playlists; picking one puts its link in
+  // the field, as if it had been pasted.
+  mountPlaylistSearch(document.getElementById('source-link-search') as HTMLElement, linkInput, (item) => {
+    clearTimeout(linkDebounce);
+    setLink(item.url);
+    hideRunError();
+    setFieldHelp(linkStatus, `${pickedPlaylistLabel(item)}. Ready to check.`, 'ok');
+    runSearchBtn.focus();
+  });
+
   runSearchBtn.addEventListener('click', () => void runSearch());
   // The link field: read as you type (briefly debounced), right away on paste,
   // and Enter runs the check like the button does.
-  let linkDebounce: ReturnType<typeof setTimeout>;
   linkInput.addEventListener('input', () => {
     if (csvPath && linkInput.value.trim()) clearCsvFile();
     clearTimeout(linkDebounce);

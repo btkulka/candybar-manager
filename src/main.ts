@@ -47,6 +47,8 @@ const QUIET_CHANNELS: ReadonlySet<string> = new Set([
   'saved-sources:list', 'store-login-status', 'soundcloud-sign-in-status', 'spotify-sign-in-status', 'splice-login-status',
   'get-organize-state', 'update-organize-state', 'update-check-result', 'update-health-result',
   'restore-list-volumes', 'diagnose-aiff-header',
+  // Runs on every pause in typing in Find and buy's search box.
+  'spotify-search',
 ]);
 
 // Every IPC handler goes through here: recorded in the operations log, and
@@ -69,7 +71,7 @@ import {
   type ProfileView, type Profile,
 } from './lib/profiles';
 import { readConfig, writeConfig, AppConfig, DEFAULT_LIBRARY_ROOT, getDefaultArchivePath, getDefaultRestoreStageDir, setSecretsPath, getConfigWarnings, resolveRekordboxBackupDir } from './lib/config';
-import { searchSpotify, testSpotifyConnection, SpotifySearchResult, getSpotifyTracksByIds } from './lib/spotify';
+import { searchSpotify, searchSpotifyItems, testSpotifyConnection, SpotifySearchResult, getSpotifyTracksByIds, type SpotifyItemSearchResult, type SpotifySearchType } from './lib/spotify';
 import { getPlaylistTracksAny, readSpotifySignIn, signInToSpotify } from './lib/spotifySignIn';
 import { fetchSoundCloudSet } from './lib/soundcloudSets';
 import { readSoundCloudSignIn, signInToSoundCloud } from './lib/soundcloudSession';
@@ -2421,6 +2423,24 @@ handleIpc('export-catalog', async (event, { outputPath }: { outputPath: string }
     return { id: jobId, success: false, error: message };
   }
 });
+
+// Spotify search by kind: the search box on Find and buy, which picks a
+// playlist instead of pasting its link. Needs the API key (client credentials).
+const SPOTIFY_SEARCH_TYPES: readonly SpotifySearchType[] = ['track', 'album', 'artist', 'playlist', 'show', 'episode'];
+handleIpc(
+  'spotify-search',
+  async (
+    _event,
+    { query, types, limit, offset, market }: { query: string; types?: SpotifySearchType[]; limit?: number; offset?: number; market?: string }
+  ): Promise<SpotifyItemSearchResult> => {
+    const config = await readConfig(CONFIG_PATH, CONFIG_DEFAULTS_PATH);
+    if (!config.spotifyClientId || !config.spotifyClientSecret) {
+      throw new Error('Spotify credentials not configured');
+    }
+    const kinds = (types ?? ['playlist']).filter((t) => SPOTIFY_SEARCH_TYPES.includes(t));
+    return searchSpotifyItems(String(query ?? ''), { clientId: config.spotifyClientId, clientSecret: config.spotifyClientSecret }, { types: kinds, limit, offset, market });
+  }
+);
 
 // Music search handlers
 type MusicSearchSource = 'spotify' | 'soundcloud' | 'beatport' | 'qobuz';

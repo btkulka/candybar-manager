@@ -1181,6 +1181,18 @@ tool(
 );
 
 tool(
+  'search_spotify',
+  'Find and buy\'s search box: search Spotify for playlists (the default), tracks, albums, artists, podcasts (show) or episodes, each with its name, a line under it, its link and URI. Use a playlist\'s url with find_sources. Needs the Spotify API key in Settings.',
+  {
+    query: z.string(),
+    types: z.array(z.enum(['track', 'album', 'artist', 'playlist', 'show', 'episode'])).optional().describe('Default: playlist'),
+    limit: z.number().int().min(1).max(50).optional().describe('Per kind. Default 10'),
+    offset: z.number().int().min(0).max(1000).optional().describe('For the next page. Default 0'),
+  },
+  async ({ query, types, limit, offset }) => runApp('spotify-search', [{ query, types: types ?? ['playlist'], limit: limit ?? 10, offset: offset ?? 0 }])
+);
+
+tool(
   'find_sources',
   'Find & buy, as the Sources tab runs it inside Track Lab: read a Spotify playlist, CSV or SoundCloud set, check it against Rekordbox, and find lossless store copies of what\'s missing (Beatport before Qobuz; lossy matches excluded). Returns owned / probable / store matches / not found. source_playlist is the script version of the same search.',
   {

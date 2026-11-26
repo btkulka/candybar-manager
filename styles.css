@@ -139,6 +139,23 @@
 
   /* The one dim behind every dialog, drawer, lightbox and the tour */
   --overlay-dim: rgba(0, 0, 0, 0.7);
+
+  /* @btkulka/spotify-client's search box (Find and buy), in these colours */
+  --sps-font: var(--font-sans);
+  --sps-bg: var(--bg-surface);
+  --sps-field: var(--bg-elevated);
+  --sps-hover: var(--bg-surface-hover);
+  --sps-line: var(--border-default);
+  --sps-ink: var(--text-primary);
+  --sps-ink-2: var(--text-secondary);
+  --sps-ink-3: var(--text-muted);
+  --sps-accent: var(--accent);
+  --sps-accent-ink: var(--on-accent);
+  --sps-accent-soft: var(--accent-muted);
+  --sps-danger: var(--danger);
+  --sps-radius: var(--radius-sm);
+  --sps-radius-panel: var(--radius-md);
+  --sps-shadow: var(--shadow-lg);
 }
 
 *, *::before, *::after {

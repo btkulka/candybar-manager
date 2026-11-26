@@ -96,6 +96,10 @@
   transition: border-color 0.15s var(--ease-out), box-shadow 0.15s var(--ease-out);
 }
 .buy-link:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-muted); }
+/* Spotify search results (source.ts) open under the field, as wide as it is. */
+.buy-link { position: relative; }
+.buy-search { position: absolute; left: -1px; right: -1px; top: 100%; height: 0; z-index: 40; }
+.buy-search .sps { font-size: var(--fs-body); }
 .buy-link-icon { display: grid; place-items: center; width: 20px; height: 20px; flex-shrink: 0; color: var(--text-muted); }
 .buy-link-icon svg { width: 20px; height: 20px; }
 .buy-link-input {

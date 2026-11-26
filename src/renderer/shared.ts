@@ -200,6 +200,9 @@ declare global {
       updateConfig: (partial: Partial<AppConfig>) => Promise<AppConfig>;
       migrateArchive: (oldPath: string, newPath: string) => Promise<{ success: boolean; error?: string }>;
       onMigrateProgress: (callback: (payload: { current: number; total: number; file: string }) => void) => void;
+      /** Find and buy's search box: Spotify by kind (needs the API key). */
+      spotifySearch: (query: string, options: { types: import('../lib/spotify').SpotifySearchType[]; limit: number; offset: number; market?: string }) =>
+        Promise<import('../lib/spotify').SpotifyItemSearchResult>;
       checkSpotify: () => Promise<boolean>;
       soundcloudSignInStatus: () => Promise<SoundCloudSignIn | null>;
       spotifySignInStatus: () => Promise<SpotifySignIn | null>;

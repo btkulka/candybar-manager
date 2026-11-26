@@ -346,6 +346,9 @@ html.store-panel-open .claude-fab { right: calc(var(--store-panel-width, 0px) + 
 .skill-card-icon svg { width: 18px; height: 18px; }
 .skill-card-form { display: flex; flex-direction: column; gap: var(--space-sm); margin-top: auto; }
 .skill-card-form input, .skill-card-form select { width: 100%; min-width: 0; }
+/* Its Spotify playlist search (source.ts mountPlaylistSearch) opens under the field. */
+.skill-source-field { position: relative; }
+.skill-source-field .buy-search { left: 0; right: 0; }
 .skill-card-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: var(--space-sm); }
 .skill-card-form .field-help { margin: 0; font-size: var(--fs-small); color: var(--text-muted); min-height: 1.2em; }
 .skill-card-form .field-help.is-error { color: var(--danger); }

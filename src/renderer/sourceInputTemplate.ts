@@ -1,8 +1,10 @@
 /**
- * Markup for the "Add a playlist" card on Find and buy: one field that takes a
- * Spotify playlist or SoundCloud set link (source.ts tells which from the link
- * itself, so nobody picks a type first), a drop zone for a spreadsheet, the
- * spreadsheet preview, and the card's action row.
+ * Markup for the "Add a playlist" card on Find and buy: one field that searches
+ * Spotify playlists as you type (@btkulka/spotify-client's search box, mounted
+ * by source.ts into the field's search slot) and takes a pasted Spotify playlist
+ * or SoundCloud set link (source.ts tells which from the link itself, so nobody
+ * picks a type first), a drop zone for a spreadsheet, the spreadsheet preview,
+ * and the card's action row.
  *
  * source.ts binds these elements by id after injecting the markup.
  */
@@ -14,6 +16,8 @@ export interface SourceInputIds {
   linkInput: string;
   linkIcon: string;
   linkStatus: string;
+  /** Where the Spotify search results open, under the field */
+  searchSlot: string;
   /** Spreadsheet drop zone, its file strip, hidden path input, clear button */
   dropZone: string;
   fileDisplay: string;
@@ -52,6 +56,7 @@ export const SOURCE_KIND_ICONS = {
   spotify: `<svg class="buy-kind-icon buy-kind-icon--spotify" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="${SPOTIFY_ICON_PATH}"/></svg>`,
   soundcloud: `<svg class="buy-kind-icon buy-kind-icon--soundcloud" viewBox="0 0 291.319 291.319" fill="currentColor" aria-hidden="true"><path d="${SOUNDCLOUD_ICON_PATH}"/></svg>`,
   csv: `<svg class="buy-kind-icon buy-kind-icon--csv" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="8" y1="13" x2="16" y2="13"/><line x1="8" y1="17" x2="16" y2="17"/></svg>`,
+  search: `<svg class="buy-kind-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>`,
   link: `<svg class="buy-kind-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>`,
 } as const;
 
@@ -63,11 +68,12 @@ export function renderSourceInput(options: SourceInputOptions): string {
   const { ids } = options;
   return `
     <div class="buy-add-field">
-      <label class="sr-only" for="${ids.linkInput}">Playlist link</label>
+      <label class="sr-only" for="${ids.linkInput}">Search Spotify playlists, or paste a playlist link</label>
       <div class="buy-add-row">
         <div class="buy-link">
           <span class="buy-link-icon" id="${ids.linkIcon}">${SOURCE_KIND_ICONS.link}</span>
-          <input type="text" id="${ids.linkInput}" class="buy-link-input" placeholder="Paste a Spotify playlist or SoundCloud set link" autocomplete="off" spellcheck="false" />
+          <input type="text" id="${ids.linkInput}" class="buy-link-input" placeholder="Search Spotify playlists, or paste a Spotify or SoundCloud link" autocomplete="off" spellcheck="false" />
+          <div class="buy-search" id="${ids.searchSlot}"></div>
         </div>
         <button type="button" class="btn-primary btn-lg" id="${options.actionId}" disabled data-tooltip="${escapeHtml(options.actionHint ?? options.actionLabel)}"${options.actionDisabledHint ? ` data-tooltip-disabled="${escapeHtml(options.actionDisabledHint)}"` : ''}>
           <span class="buy-action-label">${escapeHtml(options.actionLabel)}</span>

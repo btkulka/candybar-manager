@@ -82,6 +82,7 @@ export const PARITY: Record<string, readonly string[] | string> = {
 
   // Searching and sourcing
   'search-music': ['search_music'],
+  'spotify-search': ['search_spotify'],
   'library-sourcing:run': ['find_sources'],
   // A set's free downloads: source_soundcloud_likes with `set` runs the same downloader.
   'library-sourcing:fetch-free': ['source_soundcloud_likes'],

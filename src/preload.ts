@@ -81,6 +81,8 @@ contextBridge.exposeInMainWorld('candybar', {
     subscribe('migrate-progress', callback),
   searchMusic: (query: string, sources: ('spotify' | 'soundcloud' | 'beatport' | 'qobuz')[]) =>
     ipcRenderer.invoke('search-music', { query, sources }),
+  spotifySearch: (query: string, options: { types: string[]; limit: number; offset: number; market?: string }) =>
+    ipcRenderer.invoke('spotify-search', { query, ...options }),
   checkSpotify: () => ipcRenderer.invoke('check-spotify'),
   soundcloudSignInStatus: (): Promise<SoundCloudSignIn | null> => ipcRenderer.invoke('soundcloud-sign-in-status'),
   // Spotify, signed in through the profile's gate browser (no API key needed).
