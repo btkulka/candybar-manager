@@ -35,6 +35,11 @@ devDependencies into `dist/main` (`externalizeDepsPlugin` leaves only
 `yt-vocal-split.mjs` with `lib/youtubeDl.mjs`, `apply-xml-matches.mjs`,
 `scripts/`) load them from `node_modules`.
 
+The release build (`.github/workflows/release.yml`) checks out btkulka/packages
+beside the app and builds only these packages, proc-kit first. Linking a new
+shared package means adding it to that build step too, after anything it
+depends on.
+
 Never import one from code the .dmg runs unbundled: `src/mcp-server.ts` and
 everything `tsconfig.mcp.json` compiles with it into `dist/mcp`, or the `lib/`
 and `bin/` files the app loads at runtime. The .dmg ships only

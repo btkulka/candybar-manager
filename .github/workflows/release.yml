@@ -36,9 +36,15 @@ jobs:
           version="v$(node -p "require('./package.json').version")"
           [ "$version" = "$GITHUB_REF_NAME" ] || { echo "Tag $GITHUB_REF_NAME doesn't match package.json ($version)"; exit 1; }
 
+      # Only the packages Track Lab links, proc-kit first (media-kit needs it).
+      # The whole-repo build goes alphabetically and breaks when one package
+      # needs another later in the alphabet (app-server on http-kit).
       - name: Build the shared packages
         working-directory: packages
-        run: npm ci && npm run build
+        run: |
+          npm ci
+          npm run build -w @btkulka/proc-kit
+          npm run build -w @btkulka/media-kit -w @btkulka/electron-kit -w @btkulka/ableton-als -w @btkulka/spotify-client -w @btkulka/soundcloud-client
 
       - name: Install
         working-directory: candybar-manager
