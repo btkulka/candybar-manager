@@ -28,9 +28,10 @@ import fs from 'fs';
 import path from 'path';
 import { AsyncLocalStorage } from 'async_hooks';
 
-/** Who asked for the work: Ben in the window, Claude over MCP, a script over
- *  the app's socket, the job queue, or the app itself. */
-export type OpSource = 'ui' | 'claude' | 'cli' | 'job' | 'app';
+/** Who asked for the work: Ben in the window, Ben in a browser (a Benhäus tab
+ *  or his phone, through the web host), Claude over MCP, a script over the
+ *  app's socket, the job queue, or the app itself. */
+export type OpSource = 'ui' | 'web' | 'claude' | 'cli' | 'job' | 'app';
 export type OpOutcome = 'ok' | 'error';
 
 export type StartInfo = {

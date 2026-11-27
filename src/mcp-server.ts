@@ -782,7 +782,7 @@ tool(
 // after it crashed.
 
 const OP_STATUSES = ['ok', 'error', 'running', 'interrupted'] as const;
-const OP_SOURCES = ['ui', 'claude', 'cli', 'job', 'app'] as const;
+const OP_SOURCES = ['ui', 'web', 'claude', 'cli', 'job', 'app'] as const;
 
 tool(
   'app_status',
@@ -1288,6 +1288,21 @@ tool(
     items: z.array(z.object({ trackId: z.string(), articleId: z.string().optional() })).describe('Track ids (and Qobuz article ids) from store matches'),
   },
   async ({ store, items }) => runApp('store-cart-check', [{ store, items }])
+);
+
+tool(
+  'cart_queue',
+  'The cart queue: Beatport tracks picked on the phone that wait for Track Lab\'s Beatport sign-in and go into the Beatport cart by themselves once Track Lab has a token (the Beatport cart panel, a login window). `list` shows what\'s waiting, what went in and what the store refused; `add` queues store matches (lossless Beatport matches only; they go straight in when Track Lab is already signed in); `remove` takes tracks out by key (`beatport:<trackId>`).',
+  {
+    action: z.enum(['list', 'add', 'remove']),
+    matches: anyRows.optional().describe('add: Beatport store matches (from find_sources)'),
+    keys: z.array(z.string()).optional().describe('remove: queue keys, `beatport:<trackId>`'),
+  },
+  async ({ action, matches, keys }) => action === 'list'
+    ? runApp('store-cart-queue:list', [])
+    : action === 'add'
+      ? runApp('store-cart-queue:add', [{ store: 'beatport', matches: matches ?? [] }])
+      : runApp('store-cart-queue:remove', [{ keys: keys ?? [] }])
 );
 
 tool(

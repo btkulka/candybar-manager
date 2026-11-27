@@ -1,0 +1,260 @@
+/* mobile — Track Lab's phone page (mobile.html): Find and buy on a phone.
+   Loaded after styles.css, the Candybar v2 foundation, for its tokens,
+   buttons, status pills, meters and toasts; adds only the phone layout.
+   Touch targets are 44px at least; text never drops below 13px. */
+
+html { -webkit-text-size-adjust: 100%; }
+body.m {
+  min-height: 100dvh;
+  padding: 0 0 env(safe-area-inset-bottom);
+  overscroll-behavior-y: contain;
+  -webkit-tap-highlight-color: transparent;
+}
+body.m.m-has-bar { padding-bottom: calc(96px + env(safe-area-inset-bottom)); }
+
+/* ---------- Top bar ---------- */
+.m-top {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+  padding: calc(env(safe-area-inset-top) + 10px) var(--space-lg) 10px;
+  background: rgba(5, 9, 12, 0.92);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border-bottom: 1px solid var(--border-subtle);
+}
+.m-mark { width: 30px; height: 30px; flex-shrink: 0; }
+.m-title { display: flex; flex-direction: column; line-height: 1.15; min-width: 0; }
+.m-app { font-weight: 700; font-size: var(--fs-h3); }
+.m-sub { font-size: var(--fs-micro); color: var(--text-muted); }
+.m-stores { margin-left: auto; display: flex; gap: 6px; }
+.m-store-pill { font-size: 11px; padding: 2px 8px; }
+
+.m-main { padding: var(--space-lg); max-width: 640px; margin: 0 auto; }
+.m-screen > * + * { margin-top: var(--space-md); }
+.m-block { width: 100%; }
+.m-h {
+  margin: var(--space-2xl) 0 var(--space-sm);
+  font-size: var(--fs-micro);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+/* ---------- Playlist field ---------- */
+.m-field { display: block; }
+.m-field-label { display: block; margin-bottom: 6px; font-size: var(--fs-small); color: var(--text-secondary); font-weight: 600; }
+.m-input {
+  width: 100%;
+  height: var(--control-h-lg);
+  padding: 0 var(--space-lg);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-control);
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 16px; /* 16px keeps iOS from zooming in on focus */
+}
+.m-input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-muted); }
+.m-help { margin: 0; font-size: var(--fs-small); color: var(--text-muted); }
+.m-help--ok { color: var(--success); }
+.m-help--error { color: var(--danger); }
+
+/* ---------- Lists of playlists ---------- */
+.m-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.m-item {
+  width: 100%;
+  min-height: 60px;
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+  padding: 8px var(--space-md) 8px 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--bg-surface);
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.m-item:active { background: var(--bg-surface-hover); border-color: var(--border-accent); }
+.m-item-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.m-item-title { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.m-item-sub { font-size: var(--fs-small); color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.m-kind { font-size: 11px; font-weight: 600; color: var(--text-muted); flex-shrink: 0; }
+.m-kind--spotify { color: var(--brand-spotify); }
+.m-kind--soundcloud { color: var(--brand-soundcloud); }
+.m-empty { padding: var(--space-lg); color: var(--text-muted); font-size: var(--fs-small); text-align: center; list-style: none; }
+.m-fatal { margin-top: 30vh; }
+
+/* ---------- Artwork ---------- */
+.m-art, .m-cover {
+  flex-shrink: 0;
+  object-fit: cover;
+  background: var(--bg-raised);
+  border-radius: var(--radius-sm);
+}
+.m-art { width: 44px; height: 44px; }
+.m-cover { width: 64px; height: 64px; border-radius: var(--radius-md); }
+.m-art--empty { display: grid; place-items: center; color: var(--text-muted); }
+.m-art--empty svg { width: 45%; height: 45%; }
+
+/* ---------- Playlist card, progress ---------- */
+.m-card {
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+  padding: var(--space-md);
+  border-radius: var(--radius-lg);
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+}
+.m-card-text { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.m-card-title { font-weight: 700; font-size: var(--fs-h3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.m-card-sub { font-size: var(--fs-small); color: var(--text-secondary); }
+.m-card-when { color: var(--text-muted); }
+.m-progress { padding: var(--space-lg) 2px; }
+.m-progress-msg { margin: var(--space-md) 0 0; font-weight: 600; }
+.m-progress-sub { margin: 4px 0 0; font-size: var(--fs-small); color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ---------- Results ---------- */
+.m-results-head { display: flex; justify-content: space-between; margin-top: 0; }
+.m-results-head .btn-ghost { min-height: 40px; }
+.m-group {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  background: var(--bg-surface);
+  overflow: hidden;
+}
+.m-group summary {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  min-height: 48px;
+  padding: 0 var(--space-lg);
+  cursor: pointer;
+  list-style: none;
+  font-weight: 700;
+}
+.m-group summary::-webkit-details-marker { display: none; }
+.m-group summary::after {
+  content: '';
+  margin-left: auto;
+  width: 8px;
+  height: 8px;
+  border-right: 2px solid var(--text-muted);
+  border-bottom: 2px solid var(--text-muted);
+  transform: rotate(45deg) translateY(-2px);
+  transition: transform 0.2s var(--ease-out);
+}
+.m-group[open] summary::after { transform: rotate(225deg) translate(-2px, 0); }
+.m-group-count {
+  padding: 1px 8px;
+  border-radius: var(--radius-pill);
+  background: var(--bg-raised);
+  font-size: var(--fs-micro);
+  color: var(--text-secondary);
+}
+.m-group-hint { margin: 0; padding: 0 var(--space-lg) var(--space-sm); font-size: var(--fs-small); color: var(--text-muted); }
+.m-rows { list-style: none; margin: 0; padding: 0; }
+.m-row {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-md);
+  padding: 10px var(--space-md) 10px var(--space-lg);
+  border-top: 1px solid var(--border-subtle);
+}
+.m-tick {
+  width: 24px;
+  height: 24px;
+  margin: 10px 0 0;
+  flex-shrink: 0;
+  accent-color: var(--accent);
+}
+.m-row-text { flex: 1; min-width: 0; }
+.m-row--tick .m-row-text { cursor: pointer; }
+.m-row-title { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.m-row-sub { font-size: var(--fs-small); color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.m-row-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 6px;
+  margin-top: 4px;
+  font-size: var(--fs-small);
+  color: var(--text-muted);
+}
+.m-row-meta .status-pill { font-size: 11px; padding: 1px 8px; }
+.m-dot { color: var(--text-muted); }
+.m-row-note { margin-top: 3px; font-size: var(--fs-small); color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.m-store { font-weight: 700; }
+.m-store--beatport { color: var(--brand-beatport); }
+.m-store--qobuz { color: var(--brand-qobuz); }
+.m-open {
+  width: 44px;
+  height: 44px;
+  margin: -2px -6px 0 0;
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+}
+.m-open:active { background: var(--bg-raised); color: var(--accent); }
+.m-open svg { width: 18px; height: 18px; }
+
+/* ---------- The cart bar ---------- */
+.m-bar {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 6;
+  padding: var(--space-md) var(--space-lg) calc(var(--space-md) + env(safe-area-inset-bottom));
+  background: rgba(10, 16, 20, 0.96);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border-top: 1px solid var(--border-default);
+  box-shadow: var(--shadow-lg);
+}
+.m-bar > * + * { margin-top: var(--space-md); }
+.m-bar-row { display: flex; align-items: center; gap: var(--space-md); max-width: 640px; margin-left: auto; margin-right: auto; }
+.m-bar-row .btn-primary { min-height: var(--control-h-lg); padding: 0 var(--space-xl); flex-shrink: 0; }
+.m-bar-sum { flex: 1; min-width: 0; display: flex; flex-direction: column; line-height: 1.25; }
+.m-bar-sum strong { font-size: var(--fs-h3); }
+.m-bar-sum span { font-size: var(--fs-small); color: var(--text-muted); }
+.m-bar-none { color: var(--text-muted); }
+.m-bar-note { margin: 0 auto; max-width: 640px; font-size: var(--fs-small); color: var(--warning); }
+.m-adding { max-width: 640px; margin-left: auto; margin-right: auto; }
+.m-adding .m-progress-msg { margin-top: 6px; font-size: var(--fs-small); font-weight: 500; color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.m-carts { display: flex; flex-direction: column; gap: 6px; max-width: 640px; margin-left: auto; margin-right: auto; }
+.m-cart {
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+  min-height: 52px;
+  padding: 0 var(--space-md) 0 var(--space-lg);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-default);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  text-decoration: none;
+}
+.m-cart--beatport { border-color: rgba(164, 255, 0, 0.35); }
+.m-cart--qobuz { border-color: rgba(94, 135, 255, 0.45); }
+.m-cart:active { background: var(--bg-surface-hover); }
+.m-cart--waiting { border-style: dashed; border-color: rgba(245, 207, 61, 0.4); padding-top: 8px; padding-bottom: 8px; }
+.m-cart--waiting .m-cart-title { color: var(--warning); }
+.m-cart-text { flex: 1; min-width: 0; display: flex; flex-direction: column; line-height: 1.25; }
+.m-cart-title { font-weight: 700; }
+.m-cart-sub { font-size: var(--fs-small); color: var(--text-muted); }
+.m-cart-go { display: inline-flex; align-items: center; gap: 4px; font-weight: 600; color: var(--accent); white-space: nowrap; }
+.m-cart-go svg { width: 16px; height: 16px; }
+.m-cart-hint { margin: 0; font-size: 12px; color: var(--text-muted); }
+
+/* Toasts come in under the top bar on a phone, clear of the cart bar. */
+body.m .toast-container { left: var(--space-md); right: var(--space-md); top: calc(env(safe-area-inset-top) + 64px); bottom: auto; }

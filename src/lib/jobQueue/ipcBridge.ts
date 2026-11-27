@@ -1,5 +1,6 @@
 import { BrowserWindow } from 'electron';
 import { createScopedLogger } from '../logger';
+import { pushToWeb } from '../webHost';
 import { JobManager } from './jobManager';
 import { JobInfo, JobProgress } from './types';
 import { libraryScanJob } from './jobs/libraryScan';
@@ -27,11 +28,12 @@ export function initJobQueue(claudeDeps?: ClaudeJobDeps): void {
   // a tag lookup, and none of them hold up a library scan.
   if (claudeDeps) for (const def of claudeJobs(claudeDeps)) manager.register(def);
 
-  // Forward job events to all renderer windows
+  // Forward job events to all renderer windows, and the web app's pages
   const broadcast = (channel: string, payload: unknown) => {
     BrowserWindow.getAllWindows().forEach(win => {
       if (!win.isDestroyed()) win.webContents.send(channel, payload);
     });
+    pushToWeb(channel, payload);
   };
 
   manager.on('job-queued', (info: JobInfo) => broadcast('job-update', info));

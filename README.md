@@ -105,6 +105,30 @@ refuse. From Claude Code or Claude Desktop, Claude asks which profile to use
 whenever there's more than one (the MCP server's instructions and the
 `profiles` tool).
 
+## Web app (Benhäus tab, phone)
+
+Track Lab also serves itself as a web app on `http://127.0.0.1:7792`
+(electron-kit's web host, `src/lib/webHost.ts`): the same main process, with the
+page and its IPC over HTTP. Every launch serves it, so a Benhäus tab joins a Track
+Lab that's already open; `npm run web` builds and starts Track Lab with no window,
+serving only (Benhäus's Launch as web app runs that). `TRACK_LAB_WEB_PORT` moves
+it. A page's calls run the window's own handlers, logged as operations with
+source `web`; what the app tells its window is pushed to the pages too.
+
+In a browser there's no store panel to embed: store pages and carts open in a
+browser tab (the preload's `storePanelOpen` and `openExternal`), and audio
+previews come from `/media/…` instead of `media://`.
+
+On a phone (a small touch screen; `?phone` forces it, `?desktop` skips it) the
+page is `mobile.html` (`src/mobile.ts`), Find and buy alone: search Spotify or
+paste a Spotify playlist or SoundCloud set link (or tap one of Your playlists),
+let the Mac check it, tick what to buy, Add to carts, then open the Beatport or
+Qobuz cart to check out on the phone. The carts are the store accounts' own, so
+the phone sees them when it's signed in to the same Beatport and Qobuz accounts
+Track Lab uses. The same rules hold: only lossless matches are ticked or carted,
+and nothing in the library is ticked. Benhäus's phone remote reaches it through its
+pass-through to the Mac's localhost.
+
 ## Write journal
 
 Every destructive file operation (move, delete, ffmpeg conversion, tag rewrite,

@@ -13,6 +13,8 @@ import { pipeline } from 'stream/promises';
 import { initOpLog, getOpLogDir, currentOp, withOp, startOp, runInOp, recordEvent, flushOpLog, flushOpLogSync, type Op, type OpSource } from './lib/opLog';
 import { createIpcRegistry } from './lib/ipcOps';
 import { windowOnlyReason } from './lib/mcpParity';
+import { startWebHost, stopWebHost, pushToWeb, isWebOnlyLaunch } from './lib/webHost';
+import { readCartQueue, writeCartQueue, enqueueCart, settleCartQueue, removeFromCartQueue, type CartQueueState, type CartQueueStore } from './lib/cartQueue';
 
 const mainLog = createScopedLogger('Main');
 
@@ -96,7 +98,7 @@ import {
   loginQobuz, loginBeatport, logoutQobuz, logoutBeatport, isQobuzLoggedIn, isBeatportLoggedIn,
   fetchAllQobuzPurchases, fetchAllBeatportPurchases,
   downloadBeatportPurchases, downloadQobuzPurchases,
-  setBeatportToken, getBeatportAccessToken, readBeatportSessionToken,
+  setBeatportToken, getBeatportAccessToken, getAnyBeatportAccessToken, readBeatportSessionToken, onBeatportToken,
   addToQobuzCart, addToBeatportCart, checkQobuzCart, checkBeatportCart,
   probeQobuzLoginForPartition, invalidateQobuzAuthCache,
   qobuzPartition, beatportPartition,
@@ -248,6 +250,9 @@ let tray: Tray | null = null;
  *  contents throws — which would abort the job mid-operation. */
 function safeSend(target: Electron.WebContents | BrowserWindow | null | undefined, channel: string, payload?: unknown): void {
   recordSend(channel, payload);
+  // What the app window is told (or would be, with none open) goes to the
+  // pages the web host serves as well.
+  if (!target || target === appWindow || target === appWindow?.webContents) pushToWeb(channel, payload);
   if (!target) return;
   try {
     const wc = target instanceof BrowserWindow
@@ -455,6 +460,29 @@ function recordJobOps(): void {
 /** media:// (audio previews), served the same in every profile's session. Set
  *  once the app is ready. */
 let mediaHandler: ((request: Request) => Promise<Response>) | null = null;
+
+/** An audio preview: media:// in the window, /media/ on the web. AIFF files
+ *  are transcoded to MP3 on the fly because Chromium's bundled FFmpeg can't
+ *  demux 24-bit PCM AIFF. Everything else passes through as-is. */
+async function mediaResponse(filePath: string, range: string | null): Promise<Response> {
+  try {
+    // It exists only to preview audio. Refuse anything that isn't a known
+    // audio file so it can't be used to read arbitrary local files.
+    if (!AUDIO_EXTENSIONS.has(path.extname(filePath).toLowerCase())) {
+      mainLog.warn(`Media protocol: refusing non-audio path "${filePath}"`);
+      return new Response('Forbidden', { status: 403 });
+    }
+    if (/\.aif[fc]?$/i.test(filePath)) {
+      mainLog.info(`Media protocol: transcoding "${filePath}" to MP3`);
+      return withCors(await createMp3PreviewResponse(filePath, range));
+    }
+    mainLog.info(`Media protocol: serving "${filePath}"`);
+    return withCors(await net.fetch(pathToFileURL(filePath).href));
+  } catch (err) {
+    mainLog.error(`Media protocol error for ${filePath}:`, err);
+    return new Response('File not found', { status: 404 });
+  }
+}
 const preparedSessions = new WeakSet<Electron.Session>();
 
 /** The current profile's browser session. Main keeps the default one (the
@@ -628,7 +656,12 @@ app.on('session-created', (ses) => {
 if (!GOT_SINGLE_INSTANCE_LOCK) {
   app.exit(0);
 }
-app.on('second-instance', () => {
+
+/** `npm run web`: Track Lab serves its web app with no window of its own. */
+const WEB_ONLY = isWebOnlyLaunch();
+app.on('second-instance', (_event, argv) => {
+  // `npm run web` while Track Lab is open: this one already serves the page.
+  if (isWebOnlyLaunch(argv)) return;
   const win = getMainWindow();
   if (!win) {
     if (app.isReady()) createWindow();
@@ -667,6 +700,7 @@ function ensureAppShortcut(): void {
 }
 
 app.whenReady().then(async () => {
+  const readyAt = Date.now();
   ensureAppShortcut();
   const iconPath = resolveIconPath();
   if (iconPath && app.dock) {
@@ -719,29 +753,9 @@ app.whenReady().then(async () => {
   // Register media:// protocol for audio preview playback. AIFF files are
   // transcoded to MP3 on the fly because Chromium's bundled FFmpeg can't
   // demux 24-bit PCM AIFF. Everything else passes through as-is.
-  mediaHandler = async (request: Request): Promise<Response> => {
-    try {
-      // Strip scheme+authority prefix directly to avoid URL parser quirks with custom schemes
-      const encoded = request.url.replace(/^media:\/\/localhost/, '');
-      const filePath = decodeURIComponent(encoded);
-      // The media:// protocol exists only to preview audio. Refuse anything that
-      // isn't a known audio file so it can't be used to read arbitrary local files.
-      if (!AUDIO_EXTENSIONS.has(path.extname(filePath).toLowerCase())) {
-        mainLog.warn(`Media protocol: refusing non-audio path "${filePath}"`);
-        return new Response('Forbidden', { status: 403 });
-      }
-      if (/\.aif[fc]?$/i.test(filePath)) {
-        mainLog.info(`Media protocol: transcoding "${filePath}" to MP3`);
-        return withCors(await createMp3PreviewResponse(filePath, request.headers.get('range')));
-      }
-      mainLog.info(`Media protocol: serving "${filePath}"`);
-      const fileUrl = pathToFileURL(filePath).href;
-      return withCors(await net.fetch(fileUrl));
-    } catch (err) {
-      mainLog.error(`Media protocol error for ${request.url}:`, err);
-      return new Response('File not found', { status: 404 });
-    }
-  };
+  mediaHandler = (request: Request): Promise<Response> =>
+    // Strip scheme+authority prefix directly to avoid URL parser quirks with custom schemes
+    mediaResponse(decodeURIComponent(request.url.replace(/^media:\/\/localhost/, '')), request.headers.get('range'));
   protocol.handle('media', mediaHandler);
 
   // Startup init. Any failure here (a locked or corrupt candybar.db, a native
@@ -776,8 +790,19 @@ app.whenReady().then(async () => {
     .then((stop) => { stopStoreBridge = stop; mainLog.info('Store bridge listening'); })
     .catch((err) => mainLog.warn('Store bridge not started:', err));
 
-  createWindow();
-  mainLog.info('App startup complete');
+  // The web app (a Benhäus tab, the phone), served in every launch so a web
+  // tab can join a Track Lab that's already open. Best effort.
+  void startWebHost({
+    rendererDir: path.join(__dirname, '..', 'renderer'),
+    preloadFile: path.join(__dirname, '..', 'preload', 'preload.js'),
+    version: app.getVersion(),
+    ipc: ipcOps,
+    listeners: (channel) => ipcMain.listeners(channel) as Array<(event: unknown, ...args: unknown[]) => void>,
+    media: mediaResponse,
+  });
+
+  if (!WEB_ONLY) createWindow();
+  mainLog.info(WEB_ONLY ? 'App startup complete (web app only, no window)' : 'App startup complete');
   recordEvent('app:start', {
     source: 'app',
     args: { version: app.getVersion(), electron: process.versions.electron, platform: process.platform, userData: dataDir(), appPath: app.getAppPath() },
@@ -795,6 +820,9 @@ app.whenReady().then(async () => {
   if (app.isPackaged && process.platform === 'darwin') void ensureSharedVenv(app.getAppPath());
 
   app.on('activate', () => {
+    // A web-only launch opens its window from the Dock, not on the activate
+    // macOS sends as it starts.
+    if (WEB_ONLY && Date.now() - readyAt < 5000) return;
     // A login window can outlive the app window, so look for the app window itself.
     if (!getMainWindow()) createWindow();
   });
@@ -809,7 +837,8 @@ app.on('child-process-gone', (_event, details) => {
 app.on('window-all-closed', () => {
   if (profileSwitching) return; // the next profile's window is on its way
   mainLog.info('All windows closed');
-  if (process.platform !== 'darwin') app.quit();
+  // The web app keeps serving with no window.
+  if (process.platform !== 'darwin' && !WEB_ONLY) app.quit();
 });
 
 /** Open the current profile's files: its write journal, database, scan cache
@@ -887,6 +916,7 @@ app.on('will-quit', (event) => {
   event.preventDefault();
   closeStorePanel();
   void stopStoreBridge?.(); // no new store requests from Claude or the CLI
+  void stopWebHost(); // nor from the web app's pages
   closeStoreBrowsers(); // the hidden per-partition windows that read store sessions
   // Cancel and drain running work first, so no handler is left writing to a
   // closed database or cut off mid-copy; then make sure the write journal's
@@ -1357,6 +1387,22 @@ async function refreshBeatportTokenFromSession(accountId: string): Promise<boole
     }
   }
   return false;
+}
+
+/** Beatport's catalog search runs on the signed-in session's token, which is
+ *  only kept in memory: until the store panel opens (never, for the web app
+ *  on the phone) a search falls back to beatport.com's pages, which turn it
+ *  away. So before a store search, read the token from the session, without
+ *  a window. Best effort: no session, no token, and the search goes on. */
+async function primeBeatportSearch(): Promise<void> {
+  if (getAnyBeatportAccessToken()) return;
+  try {
+    const config = await readConfig(CONFIG_PATH, CONFIG_DEFAULTS_PATH);
+    const account = config.beatportAccounts[0];
+    if (account) await refreshBeatportTokenFromSession(account.id);
+  } catch (err) {
+    mainLog.warn('Beatport: could not read the session token before searching:', err);
+  }
 }
 
 async function extractBeatportTokenFromPanel(): Promise<boolean> {
@@ -3006,6 +3052,7 @@ handleIpc(
         }
       };
 
+      await primeBeatportSearch();
       const results = await batchSearchQobuz(
         tracks,
         (current, total, currentTrack) => {
@@ -3282,6 +3329,7 @@ handleIpc(
 
       // Every result each track's search saw, for Claude to judge afterwards.
       const candidatesByKey = new Map<string, StoreCandidates>();
+      if (phase2Inputs.length > 0) await primeBeatportSearch();
       const plainMatches = phase2Inputs.length > 0
         ? await batchSearchQobuz(
             phase2Inputs,
@@ -3492,6 +3540,7 @@ handleIpc('lossless-upgrade:run', async (event, { playlistId }: { playlistId: st
     const byKey = new Map(toSearch.map(r => [`rb:${r.rbId}`, r]));
     if (toSearch.length > 0) {
       send({ phase: 'searching', current: 0, total: toSearch.length, message: 'Preparing store search…' });
+      await primeBeatportSearch();
       const storeMatches = await batchSearchQobuz(
         toSearch.map(r => ({ key: `rb:${r.rbId}`, artist: r.artist, title: r.title, album: r.album || undefined, duration: r.duration })),
         (current, total, currentTrack) => send({ phase: 'searching', current, total, message: currentTrack })
@@ -3908,6 +3957,7 @@ handleIpc(
   'qobuz-cart-search',
   async (event, { tracks }: { tracks: QobuzCartTrackInput[] }) => {
     try {
+      await primeBeatportSearch();
       const results = await batchSearchQobuz(tracks, (current, total, currentTrack) => {
         safeSend(event.sender, 'qobuz-cart-search-progress', { current, total, currentTrack });
       });
@@ -4091,6 +4141,62 @@ handleIpc('fetch-store-purchases', async (_event, { source }: { source: 'qobuz' 
 
 handleIpc('store-cart-add', async (event, { matches, source }: { matches: StoreMatch[]; source: 'qobuz' | 'beatport' }) => {
   return addMatchesToCart(source, matches, (p) => safeSend(event.sender, 'store-cart-progress', p));
+});
+
+// ---------- Cart queue ----------
+//
+// Tracks picked on the phone that wait for Track Lab's Beatport sign-in
+// (lib/cartQueue.ts): a Track Lab with no window can read Beatport's token
+// only just after a sign-in on the Mac. The queue goes in the cart the moment
+// a token turns up (the Beatport cart panel, a login window, any sign-in).
+
+function cartQueueChanged(state: CartQueueState, drained?: { store: CartQueueStore; added: number; failed: number }): void {
+  safeSend(getMainWindow(), 'store-cart-queue', { ...state, drained });
+}
+
+let drainingCartQueue = false;
+async function drainCartQueue(): Promise<void> {
+  if (drainingCartQueue) return;
+  const pending = readCartQueue(dataDir()).pending.filter(q => q.store === 'beatport');
+  if (pending.length === 0) return;
+  const config = await readConfig(CONFIG_PATH, CONFIG_DEFAULTS_PATH);
+  const account = config.beatportAccounts[0];
+  if (!account || !getBeatportAccessToken(account.id)) return;
+  drainingCartQueue = true;
+  try {
+    await withOp('store-cart-queue:fill', { source: 'app', args: { store: 'beatport', tracks: pending.length } }, async () => {
+      const res = await addMatchesToCart('beatport', pending.map(q => q.match), () => {});
+      if (!res.success) throw new Error(res.error);
+      const next = settleCartQueue(readCartQueue(dataDir()), 'beatport', res.result);
+      writeCartQueue(dataDir(), next);
+      const failed = res.result.failed.length;
+      mainLog.info(`Cart queue: ${res.result.added.length} Beatport track(s) added, ${failed} not`);
+      cartQueueChanged(next, { store: 'beatport', added: res.result.added.length, failed });
+    });
+  } catch (err) {
+    mainLog.warn('Cart queue: filling the Beatport cart failed:', err);
+  } finally {
+    drainingCartQueue = false;
+  }
+}
+onBeatportToken(() => void drainCartQueue());
+
+handleIpc('store-cart-queue:list', async () => readCartQueue(dataDir()));
+
+handleIpc('store-cart-queue:add', async (_event, { store, matches }: { store: CartQueueStore; matches: StoreMatch[] }) => {
+  if (store !== 'beatport') throw new Error('Only Beatport tracks wait in the cart queue; Qobuz renews its own sign-in when it adds to the cart.');
+  const { state, queued } = enqueueCart(readCartQueue(dataDir()), store, matches ?? []);
+  writeCartQueue(dataDir(), state);
+  cartQueueChanged(state);
+  void drainCartQueue(); // already signed in: straight in
+  return { queued: queued.length, state };
+});
+
+handleIpc('store-cart-queue:remove', async (_event, { keys }: { keys: string[] }) => {
+  const state = removeFromCartQueue(readCartQueue(dataDir()), keys ?? []);
+  writeCartQueue(dataDir(), state);
+  cartQueueChanged(state);
+  return state;
 });
 
 /** Add matches to the first account's cart. The app's UI and the store

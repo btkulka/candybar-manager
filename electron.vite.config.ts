@@ -34,7 +34,9 @@ export default defineConfig({
       outDir: 'dist/renderer',
       rollupOptions: {
         input: {
-          index: resolve(__dirname, 'index.html')
+          index: resolve(__dirname, 'index.html'),
+          // The phone page of the web app (src/lib/webHost.ts)
+          mobile: resolve(__dirname, 'mobile.html')
         }
       }
     }

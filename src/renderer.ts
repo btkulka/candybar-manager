@@ -7,7 +7,7 @@ window.addEventListener('unhandledrejection', (event) => {
   console.error('[Renderer] Unhandled rejection:', event.reason);
 });
 
-import { setActiveTab, setValue, initNavigation, initTagEditor, initArtViewer, checkSpotifyConnection, checkSoundCloudConnection, checkStoreConnections, applyHowSteps, initConnections } from './renderer/shared';
+import { setActiveTab, setValue, initNavigation, initTagEditor, initArtViewer, checkSpotifyConnection, checkSoundCloudConnection, checkStoreConnections, applyHowSteps, initConnections, showToast, plural } from './renderer/shared';
 import { initOrganize, restoreOrganizeState } from './renderer/organize';
 import { initSource, setSourceCsvFile, restoreSourceSpotifyUrl, hasRestoredSourcesSession } from './renderer/source';
 import { initLibrary, restoreLibraryResults, autoRefreshLibrary, showHealthSkeleton, hideHealthSkeleton } from './renderer/library';
@@ -27,6 +27,7 @@ import { initUpgrade } from './renderer/upgrade';
 import { initClaude } from './renderer/claude';
 import { initUpdates } from './renderer/updates';
 import { initProfiles } from './renderer/profiles';
+import { isWebApp, wantsPhonePage } from './renderer/webApp';
 
 // Re-export types that were previously exported from this file
 export type { SuggestedAction, HealthIssue } from './renderer/shared';
@@ -199,13 +200,27 @@ function initApp() {
     }
   });
 
+  // Beatport tracks picked on the phone went in the cart once Track Lab got a
+  // Beatport sign-in (lib/cartQueue.ts).
+  window.candybar.onStoreCartQueue((q) => {
+    if (!q.drained) return;
+    if (q.drained.added > 0) showToast('success', `${plural(q.drained.added, 'track')} from your phone added to Beatport`, 'They were waiting for Track Lab to sign in to Beatport. Check out from the Beatport cart.');
+    if (q.drained.failed > 0) showToast('warning', `Beatport refused ${plural(q.drained.failed, 'track')} from your phone`, 'Beatport says they were already bought or are no longer for sale.');
+  });
+
   window.addEventListener('store-account-changed', () => {
     checkStoreConnections(false).catch((err) => console.error('[Renderer] checkStoreConnections (account changed) failed:', err));
   });
 }
 
-if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', initApp);
+// The web app on a phone is the sourcing page alone (mobile.html).
+if (wantsPhonePage()) {
+  location.replace(`/mobile.html${location.search}`);
 } else {
-  initApp();
+  document.documentElement.classList.toggle('web-app', isWebApp());
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initApp);
+  } else {
+    initApp();
+  }
 }

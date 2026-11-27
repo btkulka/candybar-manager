@@ -14,6 +14,7 @@
 
 import { storePanelLayout } from '../lib/storePanelLayout';
 import { isStoreSignInUrl } from '../lib/mainGuards';
+import { isWebApp } from './webApp';
 
 const STORE_LABELS: Record<string, string> = { qobuz: 'Qobuz', beatport: 'Beatport' };
 
@@ -311,6 +312,9 @@ function endResize(): void {
 }
 
 export function initStorePanel(): void {
+  // On the web (src/lib/webHost.ts) store pages open in a browser tab instead
+  // (the preload's storePanelOpen): there's no <webview> to embed them in.
+  if (isWebApp()) return;
   panelEl = document.getElementById('store-panel');
   wrapEl = document.getElementById('store-panel-webview-wrap');
   titleEl = document.getElementById('store-panel-title');

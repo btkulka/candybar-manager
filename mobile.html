@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <!-- Track Lab's phone page (src/mobile.ts): playlist sourcing into the
+         Beatport and Qobuz carts, served by the web host (src/lib/webHost.ts)
+         through Benhäus's phone remote. Same CSP as index.html. -->
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; media-src 'self' blob: data:; font-src 'self' data:; connect-src 'self' https:;" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="color-scheme" content="dark" />
+    <meta name="theme-color" content="#05090c" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <title>Track Lab</title>
+    <link rel="icon" href="assets/icon/app-icon-small.svg" />
+    <link rel="stylesheet" href="styles.css" />
+    <link rel="stylesheet" href="styles/mobile.css" />
+  </head>
+  <body class="m">
+    <header class="m-top">
+      <svg class="m-mark" viewBox="0 0 64 64" aria-hidden="true">
+        <circle cx="32" cy="32" r="30" fill="#0f161c" stroke="#7fffd4" stroke-width="3" />
+        <circle cx="32" cy="32" r="19" fill="none" stroke="#7fffd4" stroke-opacity="0.35" stroke-width="2" />
+        <circle cx="32" cy="32" r="6" fill="#7fffd4" />
+      </svg>
+      <div class="m-title">
+        <span class="m-app">Track Lab</span>
+        <span class="m-sub">Find and buy</span>
+      </div>
+      <div class="m-stores" id="m-stores" aria-label="Store sign-in"></div>
+    </header>
+
+    <main class="m-main">
+      <!-- Pick a playlist -->
+      <section id="m-pick" class="m-screen">
+        <label class="m-field">
+          <span class="m-field-label">Playlist</span>
+          <input id="m-input" class="m-input" type="search" inputmode="search" autocomplete="off" autocapitalize="off" spellcheck="false"
+                 placeholder="Search Spotify, or paste a link" />
+        </label>
+        <p class="m-help" id="m-help">A Spotify playlist or a SoundCloud set. Track Lab checks it against your library and finds full-quality copies on Beatport and Qobuz.</p>
+        <button class="btn-primary btn-lg m-block" id="m-run-link" hidden>Check this playlist</button>
+        <ul class="m-list" id="m-search-results" hidden></ul>
+
+        <h2 class="m-h">Your playlists</h2>
+        <ul class="m-list" id="m-saved"><li class="m-empty">Loading…</li></ul>
+      </section>
+
+      <!-- Checking -->
+      <section id="m-run" class="m-screen" hidden>
+        <div class="m-card" id="m-run-card"></div>
+        <div class="m-progress">
+          <div class="buy-meter"><div class="buy-meter-fill" id="m-run-bar"></div></div>
+          <p class="m-progress-msg" id="m-run-msg">Starting…</p>
+          <p class="m-progress-sub" id="m-run-sub"></p>
+        </div>
+      </section>
+
+      <!-- Results -->
+      <section id="m-results" class="m-screen" hidden>
+        <div class="m-results-head">
+          <button class="btn-ghost btn-sm" id="m-back" aria-label="Pick another playlist">‹ Playlists</button>
+          <button class="btn-ghost btn-sm" id="m-rerun">Check again</button>
+        </div>
+        <div class="m-card" id="m-result-card"></div>
+        <div id="m-groups"></div>
+      </section>
+    </main>
+
+    <!-- The cart bar: what's ticked, then what's in each store's cart -->
+    <footer class="m-bar" id="m-bar" hidden>
+      <div class="m-carts" id="m-carts" hidden></div>
+      <div class="m-adding" id="m-adding" hidden>
+        <div class="buy-meter buy-meter--sm"><div class="buy-meter-fill" id="m-add-bar"></div></div>
+        <p class="m-progress-msg" id="m-add-msg"></p>
+      </div>
+      <p class="m-bar-note" id="m-bar-note" hidden></p>
+      <div class="m-bar-row">
+        <div class="m-bar-sum" id="m-bar-sum"></div>
+        <button class="btn-primary" id="m-add">Add to carts</button>
+      </div>
+    </footer>
+
+    <div class="toast-container" id="toast-container"></div>
+    <script type="module" src="./src/mobile.ts"></script>
+  </body>
+</html>

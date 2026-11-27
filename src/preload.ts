@@ -45,6 +45,15 @@ function subscribe<T>(channel: string, callback: (payload: T) => void): () => vo
   return () => { ipcRenderer.removeListener(channel, listener); };
 }
 
+// Served as a web app (a Benhäus tab, the phone: src/lib/webHost.ts), this same
+// preload runs in the browser, where there's no store panel to embed and
+// main's shell.openExternal would open the link on the Mac, not where Ben is.
+// Store pages and links open in a browser tab there instead.
+const onWeb = typeof window !== 'undefined' && Boolean((window as unknown as { __kitWeb?: unknown }).__kitWeb);
+function openInBrowserTab(url: string): void {
+  if (/^https?:\/\//i.test(url)) window.open(url, '_blank', 'noopener');
+}
+
 contextBridge.exposeInMainWorld('candybar', {
   /** The window's script started (main's startup watchdog waits for this). */
   rendererReady: () => ipcRenderer.send('renderer:ready'),
@@ -142,7 +151,8 @@ contextBridge.exposeInMainWorld('candybar', {
   onUpdateState: (callback: (payload: UpdateState) => void): (() => void) =>
     subscribe('update-state', callback),
 
-  openExternal: (url: string): Promise<void> => ipcRenderer.invoke('open-external', { url }),
+  openExternal: (url: string): Promise<void> =>
+    onWeb ? Promise.resolve(openInBrowserTab(url)) : ipcRenderer.invoke('open-external', { url }),
   showInFinder: (filePath: string): Promise<void> => ipcRenderer.invoke('show-in-finder', { filePath }),
 
   // Track conversion
@@ -396,6 +406,14 @@ contextBridge.exposeInMainWorld('candybar', {
   // (signed out, unreachable) is never reported as empty.
   storeCartCheck: (store: 'qobuz' | 'beatport', items: Array<{ trackId: string; articleId?: string }>): Promise<StoreCartCheck> =>
     ipcRenderer.invoke('store-cart-check', { store, items }),
+  // The cart queue: Beatport tracks waiting for Track Lab's Beatport sign-in
+  // (lib/cartQueue.ts); they go in the cart once it has a token.
+  storeCartQueueList: (): Promise<import('./lib/cartQueue').CartQueueState> => ipcRenderer.invoke('store-cart-queue:list'),
+  storeCartQueueAdd: (store: 'beatport', matches: StoreMatch[]): Promise<{ queued: number; state: import('./lib/cartQueue').CartQueueState }> =>
+    ipcRenderer.invoke('store-cart-queue:add', { store, matches }),
+  storeCartQueueRemove: (keys: string[]): Promise<import('./lib/cartQueue').CartQueueState> => ipcRenderer.invoke('store-cart-queue:remove', { keys }),
+  onStoreCartQueue: (callback: (state: import('./lib/cartQueue').CartQueueState & { drained?: { store: 'beatport' | 'qobuz'; added: number; failed: number } }) => void): (() => void) =>
+    subscribe('store-cart-queue', callback),
   // `skipped` are tracks you deleted earlier, left out on purpose (deleted stays deleted).
   // `files` maps each downloaded match's input key (`rb:<id>` on Lossless
   // Upgrades) to the file it became — what upgradeSwapPlan takes.
@@ -406,7 +424,7 @@ contextBridge.exposeInMainWorld('candybar', {
 
   // Store panel (embedded browser)
   storePanelOpen: (store: 'qobuz' | 'beatport', url: string): Promise<{ success: boolean }> =>
-    ipcRenderer.invoke('store-panel-open', { store, url }),
+    onWeb ? Promise.resolve((openInBrowserTab(url), { success: true })) : ipcRenderer.invoke('store-panel-open', { store, url }),
   storePanelClose: (): Promise<{ success: boolean }> =>
     ipcRenderer.invoke('store-panel-close'),
   // Registers the in-DOM <webview> guest's webContents id so main can drive the

@@ -13,6 +13,14 @@ delete process.env.ELECTRON_RUN_AS_NODE;
 
 const args = process.argv.slice(2);
 
+// `npm run web`: build and start Track Lab with no window, serving its web app
+// (electron-kit's web host on :7792) for a Benhäus tab or the phone. A Track
+// Lab that's already open serves it too, so this one just hands over and quits.
+if (args[0] === 'web') {
+  args[0] = 'preview';
+  process.env.ELECTRON_KIT_WEB = '1';
+}
+
 // On Windows, npm installs `electron-vite` as a `.cmd` shim. Node's spawn()
 // can't exec .cmd directly without a shell — that's the EINVAL error. Using
 // shell:true makes the shell resolve the binary, which works on both

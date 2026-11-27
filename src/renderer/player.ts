@@ -1,6 +1,7 @@
 // Global music player (topbar)
 
 import { connectAudio, setVisualizerPlaying } from './visualizer';
+import { isWebApp } from './webApp';
 
 let audio: HTMLAudioElement | null = null;
 let animFrameId: number | null = null;
@@ -74,7 +75,8 @@ function reflectMutedUI() {
 }
 
 function buildMediaUrl(filePath: string): string {
-  return 'media://localhost' + filePath.split('/').map(encodeURIComponent).join('/');
+  // The web app serves the same previews at /media/ (src/lib/webHost.ts).
+  return (isWebApp() ? '/media' : 'media://localhost') + filePath.split('/').map(encodeURIComponent).join('/');
 }
 
 async function loadAlbumArt(filePath: string) {

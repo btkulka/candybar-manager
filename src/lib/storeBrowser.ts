@@ -99,6 +99,30 @@ export async function sessionFetch(
   url: string,
   init: SessionFetchInit = {}
 ): Promise<SessionFetchResult> {
+  const res = await fetchFromHost(partition, origin, url, init);
+  if (res.status !== 403) return res;
+  // A store behind Cloudflare (beatport.com) can turn the hidden page itself
+  // away: it then sits on the challenge, and every call from it is refused
+  // even after a sign-in in the panel or a login window cleared the session.
+  // Stand a fresh page up and ask once more.
+  dropHost(partition, origin);
+  log.info(`${origin} refused a request from the hidden page (403); trying once more from a fresh page`);
+  return fetchFromHost(partition, origin, url, init);
+}
+
+function dropHost(partition: string, origin: string): void {
+  const key = hostKey(partition, origin);
+  const host = hosts.get(key);
+  hosts.delete(key);
+  try { host?.view.webContents.close(); } catch { /* already gone */ }
+}
+
+async function fetchFromHost(
+  partition: string,
+  origin: string,
+  url: string,
+  init: SessionFetchInit
+): Promise<SessionFetchResult> {
   const wc = await getHost(partition, origin);
   const absolute = new URL(url, origin).toString();
   const sameOrigin = safeOrigin(absolute) === origin;

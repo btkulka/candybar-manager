@@ -99,6 +99,16 @@ export function setBeatportToken(accountId: string, token: string, expiresInSeco
   beatportTokens.set(accountId, { token, expiry: Date.now() + expiresInSeconds * 1000 });
   lastBeatportAccountId = accountId;
   log.info(`Beatport[${accountId}]: token set externally, expires in ${Math.round(expiresInSeconds / 60)}m`);
+  for (const listener of beatportTokenListeners) {
+    try { listener(accountId); } catch (err) { log.warn('Beatport token listener failed:', err); }
+  }
+}
+
+const beatportTokenListeners = new Set<(accountId: string) => void>();
+/** Hear each time Track Lab gets a Beatport token (the cart queue fills then). */
+export function onBeatportToken(listener: (accountId: string) => void): () => void {
+  beatportTokenListeners.add(listener);
+  return () => void beatportTokenListeners.delete(listener);
 }
 
 let lastBeatportAccountId: string | null = null;

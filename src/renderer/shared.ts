@@ -352,6 +352,10 @@ declare global {
       onStoreCartProgress: (callback: (payload: StoreCartProgress) => void) => (() => void);
       storeOpenCart: (store: 'qobuz' | 'beatport') => Promise<{ success: boolean }>;
       storeCartCheck: (store: 'qobuz' | 'beatport', items: Array<{ trackId: string; articleId?: string }>) => Promise<StoreCartCheck>;
+      storeCartQueueList: () => Promise<import('../lib/cartQueue').CartQueueState>;
+      storeCartQueueAdd: (store: 'beatport', matches: StoreMatch[]) => Promise<{ queued: number; state: import('../lib/cartQueue').CartQueueState }>;
+      storeCartQueueRemove: (keys: string[]) => Promise<import('../lib/cartQueue').CartQueueState>;
+      onStoreCartQueue: (callback: (state: import('../lib/cartQueue').CartQueueState & { drained?: { store: 'beatport' | 'qobuz'; added: number; failed: number } }) => void) => (() => void);
       storeLoadResults: () => Promise<{ success: boolean; matches?: StoreMatch[]; savedAt?: string; trackCount?: number }>;
       storeClearResults: () => Promise<{ success: boolean }>;
       storeDownloadPurchases: (matches: StoreMatch[]) => Promise<{ success: boolean; downloaded?: number; files?: Array<{ key: string; path: string }>; failed?: Array<{ artist: string; title: string; error: string }>; destDir?: string; error?: string }>;
